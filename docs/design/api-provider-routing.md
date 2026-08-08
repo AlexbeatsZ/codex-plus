@@ -6,6 +6,8 @@ API 接入属于 `codex-plus.exe` 的正式功能，不创建独立管理页面�
 
 个人资料菜单顺序固定为：设置 → API 接入（Lucide `Cable`）→ 切换账户 → 退出登录。
 
+API 接入与账户管理共用同一套 Codex 原生化视觉约束：16×16px 菜单图标、低对比灰阶分组面板、12px 弹窗圆角、30px 紧凑按钮、Codex 蓝色主操作以及深浅主题适配。列表项使用组内分隔线，不回退到绿色强调或逐项独立卡片。
+
 ## 数据与 bridge
 
 `%LOCALAPPDATA%\codex-plus\providers.json` 是版本化数据文件，结构为 provider 列表：

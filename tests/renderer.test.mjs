@@ -43,9 +43,16 @@ test("inserts Cable API item above one UsersRound account item", async () => {
   const apiItem = menu.querySelector("[data-codex-plus-api-item]");
   assert.equal(apiItem.querySelector("svg")?.querySelectorAll("path").length, 2);
   assert.equal(apiItem.querySelector("svg")?.querySelectorAll("line").length, 1);
+  assert.equal(apiItem.querySelector("svg")?.getAttribute("width"), "16");
+  assert.equal(apiItem.querySelector("svg")?.getAttribute("height"), "16");
   const item = menu.querySelector("[data-codex-plus-account-item]");
   assert.equal(item.querySelector("svg")?.getAttribute("viewBox"), "0 0 24 24");
+  assert.equal(item.querySelector("svg")?.getAttribute("width"), "16");
+  assert.equal(item.querySelector("svg")?.getAttribute("height"), "16");
   assert.equal(item.querySelector(".cp-menu-row")?.textContent, "切换账户");
+  assert.match(dom.window.document.getElementById("codex-plus-account-style").textContent, /--cp-accent:#339cff/);
+  assert.match(dom.window.document.getElementById("codex-plus-account-style").textContent, /\.cp-account-list \{ overflow:hidden; border:1px solid var\(--cp-border\)/);
+  assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /--cp-accent:#339cff/);
   dom.window.__codexPlusAccounts.install();
   await flush();
   assert.equal(menu.querySelectorAll("[data-codex-plus-account-item]").length, 1);
@@ -142,7 +149,7 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   assert.ok(calls.includes("/api-providers/list"));
   assert.equal(dom.window.__codexPlusModelRouting.version, 13);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
-  assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option\{color:#f4f4f5;background:#18181b\}/);
+  assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option \{ color:var\(--cp-text\); background:var\(--cp-bg\); \}/);
 });
 
 test("patches the real app-server client for native models and provider routing", async () => {

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 3;
+  const VERSION = 4;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
@@ -12,14 +12,59 @@
   window.__codexPlusApi?.destroy?.();
 
   function cableIcon() {
-    return `<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 19h1a4 4 0 0 0 0-8h-1"></path><path d="M7 5H6a4 4 0 0 0 0 8h1"></path><line x1="8" x2="16" y1="12" y2="12"></line></svg>`;
+    return `<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 19h1a4 4 0 0 0 0-8h-1"></path><path d="M7 5H6a4 4 0 0 0 0 8h1"></path><line x1="8" x2="16" y1="12" y2="12"></line></svg>`;
+  }
+
+  function closeIcon() {
+    return `<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
   }
 
   function installStyle() {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style"); style.id = STYLE_ID;
     style.textContent = `
-      .codex-plus-api-menu-item .cp-api-menu-row{display:flex!important;width:100%!important;min-width:0;flex-direction:row!important;align-items:center!important;gap:6px!important;white-space:nowrap!important}.codex-plus-api-menu-item svg{flex:0 0 auto;opacity:.75}.cp-api-overlay{position:fixed;inset:0;z-index:2147483001;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.58);backdrop-filter:blur(3px)}.cp-api-dialog{width:min(760px,calc(100vw - 28px));max-height:min(760px,calc(100vh - 28px));display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(255,255,255,.13);border-radius:14px;color:#f4f4f5;background:#18181b;box-shadow:0 24px 80px rgba(0,0,0,.45);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}.cp-api-header{display:flex;align-items:flex-start;justify-content:space-between;padding:18px 20px 14px}.cp-api-title{margin:0;font-size:18px}.cp-api-subtitle{margin:4px 0 0;color:#a1a1aa;font-size:12px}.cp-api-close{border:0;border-radius:8px;padding:3px 9px;color:#aaa;background:transparent;font-size:22px;cursor:pointer}.cp-api-body{padding:16px 20px 20px;overflow:auto}.cp-api-toolbar,.cp-api-actions{display:flex;justify-content:space-between;gap:10px}.cp-api-list{display:grid;gap:9px;margin-top:12px}.cp-api-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;border:1px solid rgba(255,255,255,.11);border-radius:10px;padding:12px;background:rgba(255,255,255,.025)}.cp-api-name{font-size:14px;font-weight:650}.cp-api-meta{margin-top:4px;color:#a1a1aa;font-size:12px;overflow:hidden;text-overflow:ellipsis}.cp-api-button{border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:7px 11px;color:inherit;background:rgba(255,255,255,.06);cursor:pointer;font-size:12px}.cp-api-button[data-primary="true"]{border-color:#10a37f;background:#10a37f;color:#fff}.cp-api-button[data-danger="true"]{color:#fca5a5}.cp-api-button:disabled{opacity:.5;cursor:not-allowed}.cp-api-form{display:grid;gap:12px}.cp-api-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cp-api-field{display:grid;gap:6px;color:#d4d4d8;font-size:12px}.cp-api-input,.cp-api-select{box-sizing:border-box;width:100%;border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:9px 10px;color:inherit;background:rgba(0,0,0,.22)}.cp-api-select{color-scheme:dark}.cp-api-select option{color:#f4f4f5;background:#18181b}.cp-api-models{display:grid;gap:7px;max-height:310px;overflow:auto}.cp-api-model{display:grid;grid-template-columns:auto minmax(120px,1fr) minmax(160px,1fr);align-items:center;gap:8px;border:1px solid rgba(255,255,255,.09);border-radius:8px;padding:8px}.cp-api-model-id{overflow:hidden;text-overflow:ellipsis;color:#a1a1aa;font:11px ui-monospace,monospace}.cp-api-status{margin-bottom:12px;border:1px solid rgba(52,211,153,.35);border-radius:8px;padding:9px 11px;color:#6ee7b7;font-size:12px}.cp-api-status[data-error="true"]{border-color:rgba(248,113,113,.4);color:#fca5a5}.cp-api-empty{padding:60px 10px;text-align:center;color:#a1a1aa;font-size:13px}html.light .cp-api-dialog,html[data-theme="light"] .cp-api-dialog{color:#18181b;background:#fff;border-color:#e4e4e7}html.light .cp-api-row,html.light .cp-api-model,html[data-theme="light"] .cp-api-row,html[data-theme="light"] .cp-api-model{border-color:#e4e4e7;background:#fafafa}html.light .cp-api-input,html.light .cp-api-select,html[data-theme="light"] .cp-api-input,html[data-theme="light"] .cp-api-select{border-color:#d4d4d8;background:#fff}html.light .cp-api-select,html[data-theme="light"] .cp-api-select{color-scheme:light}html.light .cp-api-select option,html[data-theme="light"] .cp-api-select option{color:#18181b;background:#fff}@media(max-width:600px){.cp-api-grid{grid-template-columns:1fr}.cp-api-model{grid-template-columns:auto 1fr}.cp-api-model-id{grid-column:2}.cp-api-row{grid-template-columns:1fr}}
+      .codex-plus-api-menu-item .cp-api-menu-row { display:flex!important; width:100%!important; min-width:0; flex-direction:row!important; align-items:center!important; gap:8px!important; white-space:nowrap!important; }
+      .codex-plus-api-menu-item .cp-api-menu-row svg { flex:0 0 auto; width:16px; height:16px; opacity:.72; }
+      .cp-api-overlay { position:fixed; inset:0; z-index:2147483001; display:grid; place-items:center; padding:20px; background:rgba(0,0,0,.56); }
+      .cp-api-dialog { --cp-bg:#1f1f20; --cp-surface:#242425; --cp-surface-hover:#2a2a2c; --cp-border:#38383a; --cp-divider:#303032; --cp-text:#f0f0f1; --cp-muted:#9c9ca3; --cp-button:#29292b; --cp-accent:#339cff; --cp-accent-hover:#2d8fe8; width:min(760px,calc(100vw - 28px)); max-height:min(760px,calc(100vh - 28px)); display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--cp-border); border-radius:12px; color:var(--cp-text); background:var(--cp-bg); box-shadow:0 24px 64px rgba(0,0,0,.48); color-scheme:dark; font-family:inherit; }
+      .cp-api-header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:20px 20px 12px; }
+      .cp-api-title { margin:0; font-size:17px; line-height:24px; font-weight:600; letter-spacing:-.01em; }
+      .cp-api-subtitle { margin:2px 0 0; color:var(--cp-muted); font-size:12px; line-height:18px; }
+      .cp-api-close { display:grid; flex:0 0 auto; place-items:center; width:28px; height:28px; border:0; border-radius:7px; padding:0; color:var(--cp-muted); background:transparent; cursor:pointer; }
+      .cp-api-close:hover { color:var(--cp-text); background:var(--cp-surface-hover); }
+      .cp-api-close svg { width:16px; height:16px; }
+      .cp-api-body { padding:12px 20px 20px; overflow:auto; }
+      .cp-api-toolbar,.cp-api-actions { display:flex; align-items:center; justify-content:space-between; gap:10px; color:var(--cp-muted); font-size:12px; }
+      .cp-api-list { overflow:hidden; margin-top:12px; border:1px solid var(--cp-border); border-radius:12px; background:var(--cp-surface); }
+      .cp-api-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; border:0; border-bottom:1px solid var(--cp-divider); padding:13px 14px; background:transparent; }
+      .cp-api-row:last-child { border-bottom:0; }
+      .cp-api-name { font-size:14px; font-weight:600; }
+      .cp-api-meta { margin-top:3px; color:var(--cp-muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; }
+      .cp-api-button { min-height:30px; border:1px solid var(--cp-border); border-radius:8px; padding:0 11px; color:var(--cp-text); background:var(--cp-button); cursor:pointer; font-size:12px; font-weight:500; }
+      .cp-api-button:hover:not(:disabled) { background:var(--cp-surface-hover); }
+      .cp-api-button[data-primary="true"] { border-color:var(--cp-accent); background:var(--cp-accent); color:#fff; }
+      .cp-api-button[data-primary="true"]:hover:not(:disabled) { border-color:var(--cp-accent-hover); background:var(--cp-accent-hover); }
+      .cp-api-button[data-danger="true"] { color:#ff8b8b; }
+      .cp-api-button:disabled { opacity:.5; cursor:not-allowed; }
+      .cp-api-form { display:grid; gap:12px; }
+      .cp-api-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+      .cp-api-field { display:grid; gap:6px; color:var(--cp-text); font-size:12px; }
+      .cp-api-input,.cp-api-select { box-sizing:border-box; width:100%; min-height:34px; border:1px solid var(--cp-border); border-radius:8px; padding:7px 9px; color:var(--cp-text); background:#181819; }
+      .cp-api-input:focus,.cp-api-select:focus { border-color:var(--cp-accent); outline:0; box-shadow:0 0 0 2px rgba(51,156,255,.16); }
+      .cp-api-select { color-scheme:dark; }
+      .cp-api-select option { color:var(--cp-text); background:var(--cp-bg); }
+      .cp-api-models { max-height:310px; overflow:auto; border:1px solid var(--cp-border); border-radius:10px; background:var(--cp-surface); }
+      .cp-api-model { display:grid; grid-template-columns:auto minmax(120px,1fr) minmax(160px,1fr); align-items:center; gap:8px; border:0; border-bottom:1px solid var(--cp-divider); padding:8px 10px; }
+      .cp-api-model:last-child { border-bottom:0; }
+      .cp-api-model-id { overflow:hidden; text-overflow:ellipsis; color:var(--cp-muted); font:11px ui-monospace,monospace; }
+      .cp-api-status { margin-bottom:10px; border:1px solid rgba(51,156,255,.36); border-radius:8px; padding:8px 10px; color:#8cc9ff; background:var(--cp-surface); font-size:12px; }
+      .cp-api-status[data-error="true"] { border-color:rgba(248,113,113,.4); color:#fca5a5; }
+      .cp-api-empty { margin-top:12px; padding:60px 10px; border:1px solid var(--cp-border); border-radius:12px; color:var(--cp-muted); background:var(--cp-surface); text-align:center; font-size:13px; }
+      .cp-api-close:focus-visible,.cp-api-button:focus-visible { outline:2px solid var(--cp-accent); outline-offset:2px; }
+      html.light .cp-api-dialog,html[data-theme="light"] .cp-api-dialog { --cp-bg:#fff; --cp-surface:#f7f7f8; --cp-surface-hover:#ececef; --cp-border:#dedee1; --cp-divider:#e7e7e9; --cp-text:#202123; --cp-muted:#6e6e75; --cp-button:#fff; color-scheme:light; box-shadow:0 24px 64px rgba(0,0,0,.2); }
+      html.light .cp-api-input,html.light .cp-api-select,html[data-theme="light"] .cp-api-input,html[data-theme="light"] .cp-api-select { background:#fff; }
+      html.light .cp-api-select,html[data-theme="light"] .cp-api-select { color-scheme:light; }
+      @media(max-width:600px) { .cp-api-overlay{padding:8px}.cp-api-dialog{max-height:calc(100vh - 16px)}.cp-api-grid{grid-template-columns:1fr}.cp-api-model{grid-template-columns:auto 1fr}.cp-api-model-id{grid-column:2}.cp-api-row{grid-template-columns:1fr} }
     `;
     document.head.appendChild(style);
   }
@@ -80,7 +125,7 @@
   function close() { document.getElementById(ROOT_ID)?.remove(); }
   function openModal() {
     close(); installStyle(); state.editing = null; state.message = ""; state.error = false;
-    const overlay = document.createElement("div"); overlay.id = ROOT_ID; overlay.className = "cp-api-overlay"; overlay.innerHTML = `<section class="cp-api-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-api-title"><header class="cp-api-header"><div><h2 class="cp-api-title" id="cp-api-title">API 接入</h2><p class="cp-api-subtitle">多个 OpenAI 兼容 API 可同时使用；密钥不会回显。</p></div><button class="cp-api-close" aria-label="关闭">×</button></header><div class="cp-api-body" data-api-body></div></section>`;
+    const overlay = document.createElement("div"); overlay.id = ROOT_ID; overlay.className = "cp-api-overlay"; overlay.innerHTML = `<section class="cp-api-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-api-title"><header class="cp-api-header"><div><h2 class="cp-api-title" id="cp-api-title">API 接入</h2><p class="cp-api-subtitle">多个 OpenAI 兼容 API 可同时使用；密钥不会回显。</p></div><button class="cp-api-close" aria-label="关闭">${closeIcon()}</button></header><div class="cp-api-body" data-api-body></div></section>`;
     overlay.addEventListener("click", (event) => { if (event.target === overlay || event.target.closest(".cp-api-close")) close(); }); document.body.appendChild(overlay); void load();
   }
   function install() { installStyle(); scan(); if (!state.observer) { state.observer = new MutationObserver(scan); state.observer.observe(document.documentElement, { childList: true, subtree: true }); } }
