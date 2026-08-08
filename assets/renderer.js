@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = 2;
+  const VERSION = 3;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -48,15 +48,13 @@
       .cp-account-subtitle { margin:4px 0 0; color:#a1a1aa; font-size:12px; }
       .cp-account-close { width:30px; height:30px; border:0; border-radius:8px; color:#a1a1aa; background:transparent; cursor:pointer; font-size:22px; line-height:1; }
       .cp-account-close:hover { color:#fff; background:rgba(255,255,255,.08); }
-      .cp-account-tabs { display:flex; gap:4px; padding:0 20px 12px; border-bottom:1px solid rgba(255,255,255,.1); }
-      .cp-account-tab { border:0; border-radius:7px; padding:7px 11px; color:#a1a1aa; background:transparent; cursor:pointer; font-size:13px; }
-      .cp-account-tab[aria-selected="true"] { color:#fff; background:rgba(255,255,255,.09); }
       .cp-account-body { min-height:260px; padding:16px 20px 20px; overflow:auto; }
       .cp-account-status { margin-bottom:12px; border:1px solid rgba(255,255,255,.12); border-radius:9px; padding:9px 11px; color:#d4d4d8; font-size:12px; }
       .cp-account-status[data-type="error"] { border-color:rgba(248,113,113,.4); color:#fca5a5; }
       .cp-account-status[data-type="success"] { border-color:rgba(52,211,153,.4); color:#6ee7b7; }
       .cp-account-empty { display:grid; place-items:center; min-height:190px; color:#a1a1aa; font-size:13px; text-align:center; }
       .cp-account-list { display:grid; gap:9px; }
+      .cp-account-list-actions { display:flex; justify-content:flex-end; margin-top:14px; padding-top:14px; border-top:1px solid rgba(255,255,255,.1); }
       .cp-account-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; align-items:center; border:1px solid rgba(255,255,255,.11); border-radius:11px; padding:13px 14px; background:rgba(255,255,255,.025); }
       .cp-account-row[data-active="true"] { border-color:rgba(16,163,127,.55); background:rgba(16,163,127,.08); }
       .cp-account-main { min-width:0; }
@@ -75,20 +73,24 @@
       .cp-account-button[data-primary="true"] { border-color:#10a37f; color:#fff; background:#10a37f; }
       .cp-account-button:disabled { cursor:not-allowed; opacity:.48; }
       .cp-import { display:grid; gap:12px; }
+      .cp-import-heading { display:grid; gap:3px; }
+      .cp-import-title { margin:0; font-size:15px; font-weight:650; }
+      .cp-import-description { margin:0; color:#a1a1aa; font-size:12px; }
       .cp-import-label { display:grid; gap:7px; color:#d4d4d8; font-size:12px; }
       .cp-import-textarea { width:100%; min-height:290px; resize:vertical; box-sizing:border-box; border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:12px; color:#f4f4f5; background:rgba(0,0,0,.22); font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; }
       .cp-import-textarea:focus { border-color:#10a37f; outline:0; box-shadow:0 0 0 2px rgba(16,163,127,.18); }
       .cp-import-actions { display:flex; justify-content:space-between; gap:10px; }
+      .cp-import-submit-actions { display:flex; gap:10px; }
       .cp-file-input { display:none!important; }
-      .cp-account-close:focus-visible,.cp-account-tab:focus-visible,.cp-account-button:focus-visible { outline:2px solid #10a37f; outline-offset:2px; }
+      .cp-account-close:focus-visible,.cp-account-button:focus-visible { outline:2px solid #10a37f; outline-offset:2px; }
       html.light .cp-account-dialog,html[data-theme="light"] .cp-account-dialog { border-color:#e4e4e7; color:#18181b; background:#fff; box-shadow:0 24px 80px rgba(0,0,0,.22); }
-      html.light .cp-account-subtitle,html.light .cp-account-meta,html.light .cp-usage-reset,html.light .cp-usage-loading,html[data-theme="light"] .cp-account-subtitle,html[data-theme="light"] .cp-account-meta,html[data-theme="light"] .cp-usage-reset,html[data-theme="light"] .cp-usage-loading { color:#6b7280; }
+      html.light .cp-account-subtitle,html.light .cp-account-meta,html.light .cp-usage-reset,html.light .cp-usage-loading,html.light .cp-import-description,html[data-theme="light"] .cp-account-subtitle,html[data-theme="light"] .cp-account-meta,html[data-theme="light"] .cp-usage-reset,html[data-theme="light"] .cp-usage-loading,html[data-theme="light"] .cp-import-description { color:#6b7280; }
       html.light .cp-account-row,html[data-theme="light"] .cp-account-row { border-color:#e4e4e7; background:#fafafa; }
       html.light .cp-account-row[data-active="true"],html[data-theme="light"] .cp-account-row[data-active="true"] { border-color:rgba(16,163,127,.52); background:rgba(16,163,127,.07); }
       html.light .cp-account-button,html[data-theme="light"] .cp-account-button { border-color:#d4d4d8; color:#27272a; background:#fff; }
       html.light .cp-account-button[data-primary="true"],html[data-theme="light"] .cp-account-button[data-primary="true"] { border-color:#10a37f; color:#fff; background:#10a37f; }
       html.light .cp-import-textarea,html[data-theme="light"] .cp-import-textarea { border-color:#d4d4d8; color:#18181b; background:#fafafa; }
-      @media (max-width:560px) { .cp-account-overlay{padding:8px}.cp-account-dialog{max-height:calc(100vh - 16px)}.cp-account-row{grid-template-columns:1fr}.cp-account-button{width:100%}.cp-usage-window{grid-template-columns:auto 1fr}.cp-usage-reset{grid-column:1/-1}.cp-import-textarea{min-height:230px} }
+      @media (max-width:560px) { .cp-account-overlay{padding:8px}.cp-account-dialog{max-height:calc(100vh - 16px)}.cp-account-row{grid-template-columns:1fr}.cp-account-button{width:100%}.cp-account-list-actions,.cp-import-actions,.cp-import-submit-actions{flex-direction:column}.cp-usage-window{grid-template-columns:auto 1fr}.cp-usage-reset{grid-column:1/-1}.cp-import-textarea{min-height:230px} }
     `;
     document.head.appendChild(style);
   }
@@ -206,18 +208,7 @@
     return result;
   }
 
-  function renderTabs() {
-    const modal = state.modal;
-    if (!modal) return;
-    modal.querySelectorAll("[data-cp-view]").forEach((button) => {
-      const selected = button.dataset.cpView === state.view;
-      button.setAttribute("aria-selected", String(selected));
-      button.tabIndex = selected ? 0 : -1;
-    });
-  }
-
   function renderBody() {
-    renderTabs();
     if (state.view === "import") renderImport();
     else renderAccounts();
   }
@@ -229,14 +220,14 @@
       body.innerHTML = `${messageMarkup()}<div class="cp-account-empty">正在读取本地账户…</div>`;
       return;
     }
-    if (!state.accounts.length) {
-      body.innerHTML = `${messageMarkup()}<div class="cp-account-empty">暂无账户。请切换到“导入账户”添加 auth.json。</div>`;
-      return;
-    }
-    body.innerHTML = `${messageMarkup()}<div class="cp-account-list">${state.accounts.map(accountMarkup).join("")}</div>`;
+    const list = state.accounts.length
+      ? `<div class="cp-account-list">${state.accounts.map(accountMarkup).join("")}</div>`
+      : '<div class="cp-account-empty">暂无账户。可添加一个 auth.json 账户。</div>';
+    body.innerHTML = `${messageMarkup()}${list}<div class="cp-account-list-actions"><button type="button" class="cp-account-button" data-primary="true" data-cp-add>添加账户</button></div>`;
     body.querySelectorAll("[data-cp-switch]").forEach((button) => {
       button.addEventListener("click", () => void switchAccount(button.dataset.cpSwitch, button));
     });
+    body.querySelector("[data-cp-add]")?.addEventListener("click", () => switchView("import"));
   }
 
   function accountMarkup(account) {
@@ -328,13 +319,15 @@
     const body = state.modal?.querySelector("[data-cp-body]");
     if (!body) return;
     body.innerHTML = `${messageMarkup()}<div class="cp-import">
+      <div class="cp-import-heading"><h3 class="cp-import-title">添加账户</h3><p class="cp-import-description">粘贴或选取完整的 auth.json，确认导入后才会保存。</p></div>
       <label class="cp-import-label"><span>auth.json 内容${state.sourceName ? ` · ${escapeHtml(state.sourceName)}` : ""}</span><textarea class="cp-import-textarea" data-cp-auth autocomplete="off" spellcheck="false" placeholder="粘贴完整的 auth.json 内容">${escapeHtml(state.draft)}</textarea></label>
       <input type="file" class="cp-file-input" data-cp-file>
-      <div class="cp-import-actions"><button type="button" class="cp-account-button" data-cp-choose ${state.importing ? "disabled" : ""}>选取文件</button><button type="button" class="cp-account-button" data-primary="true" data-cp-import ${state.importing ? "disabled" : ""}>${state.importing ? "导入中…" : "导入"}</button></div>
+      <div class="cp-import-actions"><button type="button" class="cp-account-button" data-cp-back ${state.importing ? "disabled" : ""}>返回</button><div class="cp-import-submit-actions"><button type="button" class="cp-account-button" data-cp-choose ${state.importing ? "disabled" : ""}>选取文件</button><button type="button" class="cp-account-button" data-primary="true" data-cp-import ${state.importing ? "disabled" : ""}>${state.importing ? "导入中…" : "导入"}</button></div></div>
     </div>`;
     const textarea = body.querySelector("[data-cp-auth]");
     textarea.addEventListener("input", () => { state.draft = textarea.value; });
     const input = body.querySelector("[data-cp-file]");
+    body.querySelector("[data-cp-back]").addEventListener("click", () => switchView("accounts"));
     body.querySelector("[data-cp-choose]").addEventListener("click", () => input.click());
     input.addEventListener("change", () => {
       const file = input.files?.[0];
@@ -378,7 +371,6 @@
       state.importing = false;
       state.view = "accounts";
       setMessage("账户导入成功。", "success");
-      renderTabs();
       await loadAccounts();
     } catch (error) {
       state.importing = false;
@@ -391,8 +383,7 @@
     state.view = view === "import" ? "import" : "accounts";
     setMessage("");
     renderBody();
-    if (state.view === "accounts") void loadAccounts();
-    else state.modal?.querySelector("[data-cp-auth]")?.focus();
+    if (state.view === "import") state.modal?.querySelector("[data-cp-auth]")?.focus();
   }
 
   function focusable(root) {
@@ -416,16 +407,13 @@
     overlay.className = "cp-account-overlay";
     overlay.innerHTML = `<section class="cp-account-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-account-title">
       <header class="cp-account-header"><div><h2 class="cp-account-title" id="cp-account-title">账户管理</h2><p class="cp-account-subtitle">切换 ChatGPT 账户并查看额度状态</p></div><button type="button" class="cp-account-close" aria-label="关闭">×</button></header>
-      <div class="cp-account-tabs" role="tablist" aria-label="账户管理"><button type="button" class="cp-account-tab" role="tab" data-cp-view="accounts">账户</button><button type="button" class="cp-account-tab" role="tab" data-cp-view="import">导入账户</button></div>
-      <div class="cp-account-body" data-cp-body role="tabpanel" aria-live="polite"></div>
+      <div class="cp-account-body" data-cp-body aria-live="polite"></div>
     </section>`;
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay || event.target.closest(".cp-account-close")) {
         closeModal();
         return;
       }
-      const tab = event.target.closest("[data-cp-view]");
-      if (tab) switchView(tab.dataset.cpView);
     });
     overlay.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
@@ -443,7 +431,6 @@
     document.body.appendChild(overlay);
     state.modal = overlay;
     renderBody();
-    overlay.querySelector('[data-cp-view="accounts"]')?.focus();
     void loadAccounts();
   }
 

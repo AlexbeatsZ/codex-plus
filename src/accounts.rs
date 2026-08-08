@@ -98,6 +98,10 @@ impl AccountPaths {
     pub fn log_path(&self) -> PathBuf {
         self.state_dir.join("codex-plus.log")
     }
+
+    pub fn providers_path(&self) -> PathBuf {
+        self.state_dir.join("providers.json")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

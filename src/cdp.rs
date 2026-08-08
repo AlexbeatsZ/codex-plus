@@ -11,6 +11,8 @@ use crate::service::AccountService;
 
 const BINDING_NAME: &str = "codexPlusAccountsBridgeV1";
 const RENDERER_SCRIPT: &str = include_str!("../assets/renderer.js");
+const API_PROVIDERS_SCRIPT: &str = include_str!("../assets/api-providers.js");
+const MODEL_ROUTING_SCRIPT: &str = include_str!("../assets/model-routing.js");
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,7 +127,12 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
     .await?;
 
     let bridge_script = browser_bridge_script();
-    for script in [&bridge_script, RENDERER_SCRIPT] {
+    for script in [
+        &bridge_script,
+        RENDERER_SCRIPT,
+        API_PROVIDERS_SCRIPT,
+        MODEL_ROUTING_SCRIPT,
+    ] {
         command(
             &mut socket,
             &mut next_id,
@@ -136,10 +143,12 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
     }
     evaluate(&mut socket, &mut next_id, &bridge_script).await?;
     evaluate(&mut socket, &mut next_id, RENDERER_SCRIPT).await?;
+    evaluate(&mut socket, &mut next_id, API_PROVIDERS_SCRIPT).await?;
+    evaluate(&mut socket, &mut next_id, MODEL_ROUTING_SCRIPT).await?;
     let health = evaluate(
         &mut socket,
         &mut next_id,
-        "window.__codexPlusAccounts?.health?.() || null",
+        "({accounts:window.__codexPlusAccounts?.health?.()||null,api:!!window.__codexPlusApi,models:!!window.__codexPlusModelRouting})",
     )
     .await?;
     if !health
@@ -148,8 +157,18 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
         .and_then(|value| value.get("value"))
         .and_then(Value::as_object)
         .is_some_and(|value| {
-            value.get("ready").and_then(Value::as_bool) == Some(true)
-                && value.get("observerReady").and_then(Value::as_bool) == Some(true)
+            value
+                .get("accounts")
+                .and_then(|accounts| accounts.get("ready"))
+                .and_then(Value::as_bool)
+                == Some(true)
+                && value
+                    .get("accounts")
+                    .and_then(|accounts| accounts.get("observerReady"))
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && value.get("api").and_then(Value::as_bool) == Some(true)
+                && value.get("models").and_then(Value::as_bool) == Some(true)
         })
     {
         bail!("renderer 注入健康检查失败：{health}");
@@ -351,5 +370,11 @@ mod tests {
         assert!(script.contains(BINDING_NAME));
         assert!(!script.contains("access_token"));
         assert!(!script.contains("refresh_token"));
+    }
+
+    #[test]
+    fn injected_scripts_do_not_embed_provider_keys() {
+        assert!(!API_PROVIDERS_SCRIPT.contains("secret-value"));
+        assert!(!MODEL_ROUTING_SCRIPT.contains("apiKey"));
     }
 }

@@ -15,7 +15,7 @@ use crate::accounts::{
     AccountPaths, AccountVault, atomic_write, read_optional_file, restore_optional_file,
 };
 
-pub const START_PHASES: [&str; 4] = ["stop", "lock", "launch", "inject"];
+pub const START_PHASES: [&str; 6] = ["stop", "lock", "broker", "config", "launch", "inject"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -333,13 +333,24 @@ mod tests {
 
     #[test]
     fn explicit_start_order_keeps_restart_before_lock_and_launch() {
-        assert_eq!(START_PHASES, ["stop", "lock", "launch", "inject"]);
+        assert_eq!(
+            START_PHASES,
+            ["stop", "lock", "broker", "config", "launch", "inject"]
+        );
         assert!(
             START_PHASES.iter().position(|v| *v == "stop")
                 < START_PHASES.iter().position(|v| *v == "lock")
         );
         assert!(
             START_PHASES.iter().position(|v| *v == "lock")
+                < START_PHASES.iter().position(|v| *v == "broker")
+        );
+        assert!(
+            START_PHASES.iter().position(|v| *v == "broker")
+                < START_PHASES.iter().position(|v| *v == "config")
+        );
+        assert!(
+            START_PHASES.iter().position(|v| *v == "config")
                 < START_PHASES.iter().position(|v| *v == "launch")
         );
     }

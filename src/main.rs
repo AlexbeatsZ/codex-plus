@@ -1,7 +1,12 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod accounts;
+mod broker;
 mod cdp;
+mod config;
+#[allow(dead_code)]
+mod protocol_proxy;
+mod providers;
 mod runtime;
 mod service;
 
@@ -42,7 +47,12 @@ async fn main_impl() -> anyhow::Result<()> {
             "launcher.attach_existing",
             json!({"port": DEBUG_PORT}),
         );
-        return cdp::run_watchdog(DEBUG_PORT, service).await;
+        config::reconcile_codex_config(&paths, broker::BROKER_PORT)?;
+        let broker = broker::start(paths.clone()).await?;
+        return tokio::select! {
+            result = cdp::run_watchdog(DEBUG_PORT, service) => result,
+            result = broker.wait() => result.context("API broker 意外结束"),
+        };
     }
 
     // Resolve read-only installation metadata before terminating the app, but the
@@ -55,6 +65,8 @@ async fn main_impl() -> anyhow::Result<()> {
     );
     runtime::stop_existing_runtime(&paths)?;
     let _guard = runtime::acquire_launcher_guard(&paths)?;
+    let broker = broker::start(paths.clone()).await?;
+    config::reconcile_codex_config(&paths, broker::BROKER_PORT)?;
     runtime::launch_codex(&codex_executable, DEBUG_PORT)?;
     runtime::append_log(
         &paths,
@@ -64,6 +76,7 @@ async fn main_impl() -> anyhow::Result<()> {
 
     tokio::select! {
         result = cdp::run_watchdog(DEBUG_PORT, service) => result.context("注入监测意外结束"),
+        result = broker.wait() => result.context("API broker 意外结束"),
         () = runtime::wait_until_codex_stops(DEBUG_PORT) => Ok(()),
     }
 }

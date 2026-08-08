@@ -8,9 +8,10 @@
 
 1. 结束当前 EXE 的旧实例、已知旧 launcher 名称 `codex-plus-plus`，以及属于 OpenAI Codex/ChatGPT 安装的 `ChatGPT.exe`/`Codex.exe`；排除当前 PID 并核对目标路径。
 2. 确认目标进程退出后获取 `%LOCALAPPDATA%\codex-plus\launcher.lock` 独占锁。
-3. 解析 Microsoft Store OpenAI 包或受支持的独立安装路径，以 `--remote-debugging-port=9229` 启动。
-4. 选择主 `app://-/index.html` target，安装 CDP binding、renderer 脚本和新文档脚本。
-5. launcher 保持运行；target 重建或连接丢失时重新发现并注入。
+3. 启动本机 API broker，并增量核对 Codex provider 配置；详见 `api-provider-routing.md`。
+4. 解析 Microsoft Store OpenAI 包或受支持的独立安装路径，以 `--remote-debugging-port=9229` 启动。
+5. 选择主 `app://-/index.html` target，安装 CDP binding、账户/API UI、模型目录和路由脚本。
+6. launcher 保持运行；target 重建或连接丢失时重新发现并注入。
 
 ## 账户数据
 
@@ -29,8 +30,8 @@
 
 ## UI 与额度
 
-- 入口固定放在个人资料菜单“设置”和“退出登录”之间，图标为 `UsersRound`。
-- 弹窗只有“账户”和“导入账户”两页。
+- 账户入口固定放在个人资料菜单“API 接入”和“退出登录”之间，图标为 `UsersRound`。
+- 弹窗默认显示账户列表，标题栏不提供页面切换；列表最下方的“添加账户”按钮进入添加界面，添加界面通过“返回”回到账户列表，交互与 API 接入的列表/表单模式一致。
 - 账户页先请求本地列表并立即渲染；随后为每个账户分别调用 usage 路由，哪个先完成就先更新哪个账户。
 - usage 超时或单账户失败仅改变该行状态。
 - 文件选择接受任意文本扩展名，只填入 textarea；“导入”负责最终解析和保存。失败保留原文，成功清空并返回账户页。
