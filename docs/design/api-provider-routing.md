@@ -45,7 +45,9 @@ broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 mod
 - `displayName` 使用用户 alias；
 - `description` 显示 API 名称和真实 model ID。
 
-Codex `26.803.5235.0` 的模型目录和任务请求直接经过内部 app-server dispatcher，不经过冻结的 `window.electronBridge`。注入器必须从 React host runtime 获取真实 `AppServerRequestClient`，包装其 `sendRequest`，并同步更新 `models/list` Query 缓存；只修改 fetch、DOM 或 window dispatch 不构成有效路由。
+Codex `26.803.5235.0` 的模型目录和任务请求直接经过内部 app-server dispatcher，不经过冻结的 `window.electronBridge`。注入器必须从 React host runtime 获取真实 `AppServerRequestClient`，包装其最低层 `enqueueRequest`，并同步更新 `models/list` Query 缓存；只修改 fetch、DOM、window dispatch 或上层 `sendRequest` 不构成有效路由。特别是新任务预热使用 `prewarmThreadStart → enqueueRequest("thread/start")`，会完全绕过 `sendRequest`。
+
+安装路由包装时必须清除安装前已经创建的预热任务；原生选择器改变模型时也必须再次清除缓存。之后的普通创建、预热创建和首轮发送都从同一 `enqueueRequest` 包装进入，保证 routeId 与 `codex-plus-api` 同时提交，不能出现 routeId 搭配 `openai` 的混合状态。
 
 创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用 `codex-plus-api`，不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为空数组，使两个 provider 的任务同时可见。
 

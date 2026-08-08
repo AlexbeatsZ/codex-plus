@@ -9,13 +9,13 @@
 - 独立 Rust 项目，产品二进制固定为 `codex-plus.exe`，版本 `0.2.0`。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；当前验证版本为 `26.803.5235.0`，实际进程名为 `ChatGPT.exe`。
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`。
-- 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由。
+- 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
 - 当前自动化基线：`cargo test` 25 项、DOM/路由测试 9 项通过。
-- 发布产物：`target\release\codex-plus.exe`，6,272,000 bytes，构建时间 2026-08-09 01:36:54，SHA-256 `9D005CA240F49D56BADF804E42AC5816C9DE7DB49B5209147A13D2DBF8B4C209`；已热注入 Codex `26.803.5235.0`，真实 `AppServerRequestClient` 已安装，两个原生模型 Query 缓存和直接 `list-models-for-host` 均返回两个已配置 DeepSeek routeId。
+- 发布产物：`target\release\codex-plus.exe`，6,276,096 bytes，构建时间 2026-08-09 01:49:54，SHA-256 `B9FD8494F5408A3510161455C5EF084EAD6DC7DADFF19E8502873A71AC44CBEA`；已由该 EXE 完整重启 Codex `26.803.5235.0`，用户实机确认选择 DeepSeek routeId 后对话成功，不再触发 ChatGPT 账户模型校验。
 
 # Active Work
 
-- 0.2.0 已修复读取模型后表单清空和原生模型列表缺失；DeepSeek 配置已纠正为 Chat Completions，等待用户验证真实对话流。
+- 0.2.0 已修复读取模型后表单清空、原生模型列表缺失，以及 `prewarmThreadStart` 绕过 `sendRequest` 导致 routeId 仍配对 `openai` 的问题；自动化检查、release 构建及用户实机对话均已通过。
 - 跨 provider 原地切换为受控实验；不能验证 resume provider 时必须恢复并阻止发送。
 
 # Build / Run / Test
@@ -40,4 +40,5 @@ cargo build --release
 - Codex 自定义 provider 只接受 Responses wire API；Chat Completions 必须由本机 broker 转换。多个上游不能通过改顶层 `model_provider` 共存，必须用 routeId 在单一 `codex-plus-api` provider 内分发。
 - 模型目录显示 alias，但实际 `model` 必须保留稳定 routeId；描述中再显示 API 名称与真实 model ID，避免不同 API 的同名模型冲突。
 - Codex `26.803.5235.0` 的 `window.electronBridge` 不可扩展，且模型目录与任务请求绕开 window dispatch，直接走 React host runtime 中的 `AppServerRequestClient`。必须包装该 client，并刷新 `models/list` Query 缓存；bridge/window dispatch/Response patch 只能作为兼容补充，不能作为完成依据。
+- `AppServerRequestClient.prewarmThreadStart` 不调用 `sendRequest`，而是直接进入 `enqueueRequest`。provider 路由必须包装 `enqueueRequest`，并在安装及模型选择改变时清除旧预热任务；否则 routeId 会和默认 `openai` provider 组合，直到 ChatGPT 账户校验时报“不支持该模型”。
 - 当前 app bundle 主世界存在会遮蔽裸 `String`/`Function` 的同名绑定；注入脚本需要显式使用 `window` 原生构造器或从函数字面量捕获 `toString`，否则实机动态模块扫描会失败而测试环境仍通过。

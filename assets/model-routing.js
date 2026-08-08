@@ -3,7 +3,7 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 12;
+  const VERSION = 13;
   const PROVIDER = "codex-plus-api";
   const SELECTED_KEY = "codex-plus:selected-model";
   const state = {
@@ -19,10 +19,12 @@
     nativeModelQueries: 0,
   };
   const clientOriginals = new WeakMap();
+  const installedManagers = new WeakSet();
   const threadProviders = new Map();
   const threadModels = new Map();
   let originalSendMessageFromView = null;
   let activeRequestClient = null;
+  let activeConversationManager = null;
   let appServerHost = null;
   let queryClient = null;
   let installTimer = null;
@@ -84,13 +86,30 @@
     try { return localStorage.getItem(SELECTED_KEY) || state.selected; } catch { return state.selected; }
   }
 
+  function discardPrewarmedThreads(reason) {
+    const manager = activeConversationManager;
+    if (!manager) return false;
+    try {
+      if (typeof manager.clearPrewarmedThreads === "function") manager.clearPrewarmedThreads();
+      else if (typeof manager.prewarmedThreadManager?.discardAllPrewarmedThreads === "function") manager.prewarmedThreadManager.discardAllPrewarmedThreads();
+      else return false;
+      diagnostic("prewarmed-threads-cleared", { reason });
+      return true;
+    } catch (error) {
+      diagnostic("prewarmed-threads-clear-failed", { reason, message: String(error?.message || error) });
+      return false;
+    }
+  }
+
   function setSelectedModel(model) {
+    const previous = selectedModel();
     state.selected = String(model || "");
     state.selectedProvider = state.selected ? PROVIDER : "openai";
     try {
       if (model) localStorage.setItem(SELECTED_KEY, model);
       else localStorage.removeItem(SELECTED_KEY);
     } catch {}
+    if (previous !== state.selected) discardPrewarmedThreads("model-selection-changed");
   }
 
   function descriptor(model) {
@@ -303,18 +322,41 @@
 
   function installRequestClient(client) {
     if (!isRequestClient(client) || clientOriginals.has(client)) return false;
-    const original = client.sendRequest;
-    clientOriginals.set(client, original);
-    client.sendRequest = async function (method, params, options) {
-      const nextParams = await prepareRequest(this, original, String(method || ""), params || {});
-      const result = await original.call(this, method, nextParams, options);
-      rememberThreadResult(String(method || ""), nextParams, result);
-      if (method === "list-models" || method === "model/list") return patchModelResult(result);
+    const originalEnqueue = client.enqueueRequest;
+    const rawRequest = function (method, params, options) {
+      return originalEnqueue.call(this, method, params, options);
+    };
+    clientOriginals.set(client, rawRequest);
+    client.enqueueRequest = async function (method, params, options, dispatch, trace) {
+      const normalizedMethod = String(method || "");
+      const nextParams = await prepareRequest(this, rawRequest, normalizedMethod, params || {});
+      if (["thread/start", "thread/resume", "turn/start"].includes(normalizedMethod)) {
+        diagnostic("app-server-request-routed", {
+          method: normalizedMethod,
+          model: String(nextParams?.model || ""),
+          modelProvider: String(nextParams?.modelProvider || nextParams?.model_provider || ""),
+          transport: "enqueueRequest",
+        });
+      }
+      const result = await originalEnqueue.call(this, method, nextParams, options, dispatch, trace);
+      rememberThreadResult(normalizedMethod, nextParams, result);
+      if (normalizedMethod === "list-models" || normalizedMethod === "model/list") return patchModelResult(result);
       return result;
     };
     activeRequestClient = client;
     state.requestClients += 1;
     diagnostic("app-server-client-installed", { count: state.requestClients });
+    return true;
+  }
+
+  function installConversationManager(manager) {
+    if (!manager || !isRequestClient(manager.requestClient)) return false;
+    installRequestClient(manager.requestClient);
+    if (installedManagers.has(manager)) return false;
+    installedManagers.add(manager);
+    activeConversationManager = manager;
+    discardPrewarmedThreads("routing-installed");
+    diagnostic("conversation-manager-installed");
     return true;
   }
 
@@ -382,6 +424,7 @@
     appServerHost.get = function (...args) {
       const value = originalGet.apply(this, args);
       installRequestClient(value);
+      installConversationManager(value);
       return value;
     };
     try { await primeRequestClient(); } catch (error) { diagnostic("app-server-prime-failed", { message: String(error?.message || error) }); }
@@ -454,6 +497,7 @@
     setSelectedModel,
     experimentalSwitchThread,
     installRequestClientForTest: installRequestClient,
+    installConversationManagerForTest: installConversationManager,
     refreshNativeModelQueries,
     setTransportForTest: (send) => { originalSendMessageFromView = send; },
     state,

@@ -140,7 +140,7 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.version, 12);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 13);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option\{color:#f4f4f5;background:#18181b\}/);
 });
@@ -154,8 +154,7 @@ test("patches the real app-server client for native models and provider routing"
   const calls = [];
   const client = {
     requestPromises: new dom.window.Map(),
-    enqueueRequest() {},
-    async sendRequest(method, params) {
+    async enqueueRequest(method, params) {
       calls.push({ method, params });
       if (method === "list-models") return { data: [{ id: "gpt-5", model: "gpt-5", displayName: "GPT-5", supportedReasoningEfforts: [] }] };
       if (method === "thread/list") return { data: [] };
@@ -164,13 +163,26 @@ test("patches the real app-server client for native models and provider routing"
       if (method === "thread/resume") return { thread: { id: params.threadId, modelProvider: params.modelProvider, status: { type: "idle" } } };
       return {};
     },
+    async sendRequest(method, params, options) {
+      return this.enqueueRequest(method, params, options);
+    },
+    async prewarmThreadStart(params, options) {
+      return this.enqueueRequest("thread/start", params, options, () => {});
+    },
   };
   assert.equal(routing.installRequestClientForTest(client), true);
+  let prewarmClears = 0;
+  assert.equal(routing.installConversationManagerForTest({ requestClient: client, clearPrewarmedThreads: () => { prewarmClears += 1; } }), true);
+  assert.equal(prewarmClears, 1);
+  routing.setSelectedModel("cp-route");
+  assert.equal(prewarmClears, 2);
   const models = await client.sendRequest("list-models", {});
   assert.deepEqual(models.data.map((model) => model.model), ["gpt-5", "cp-route"]);
   assert.equal(models.data[1].displayName, "API Alias");
   await client.sendRequest("thread/start", { model: "cp-route" });
   assert.equal(calls.find((call) => call.method === "thread/start").params.modelProvider, "codex-plus-api");
+  await client.prewarmThreadStart({ model: "cp-route" });
+  assert.equal(calls.filter((call) => call.method === "thread/start").at(-1).params.modelProvider, "codex-plus-api");
   await client.sendRequest("thread/list", { modelProviders: ["openai"] });
   assert.equal(calls.find((call) => call.method === "thread/list").params.modelProviders.length, 0);
   await client.sendRequest("turn/start", { threadId: "existing", model: "cp-route" });
