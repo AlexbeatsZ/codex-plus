@@ -1,0 +1,384 @@
+use std::ffi::OsStr;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, bail};
+use fs2::FileExt as _;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sysinfo::{Pid, ProcessesToUpdate, System};
+
+use crate::accounts::{
+    AccountPaths, AccountVault, atomic_write, read_optional_file, restore_optional_file,
+};
+
+pub const START_PHASES: [&str; 4] = ["stop", "lock", "launch", "inject"];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PendingAction {
+    SwitchAccount {
+        #[serde(rename = "accountId")]
+        account_id: String,
+    },
+}
+
+pub struct LauncherGuard {
+    _file: File,
+}
+
+pub fn append_log(paths: &AccountPaths, event: &str, details: serde_json::Value) {
+    let _ = fs::create_dir_all(&paths.state_dir);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let value = json!({
+        "timestamp": timestamp,
+        "event": sanitize_event(event),
+        "details": details,
+    });
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(paths.log_path())
+    {
+        let _ = writeln!(file, "{value}");
+    }
+}
+
+pub fn acquire_launcher_guard(paths: &AccountPaths) -> anyhow::Result<LauncherGuard> {
+    fs::create_dir_all(&paths.state_dir)?;
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(paths.launcher_lock())?;
+    file.try_lock_exclusive()
+        .context("另一个 codex-plus 启动器仍在运行")?;
+    Ok(LauncherGuard { _file: file })
+}
+
+pub fn stop_existing_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
+    let current_pid = std::process::id();
+    let current_exe = std::env::current_exe().context("无法定位 codex-plus.exe")?;
+    let current_key = normalized_path(&current_exe);
+    let mut system = System::new_all();
+    system.refresh_all();
+    let targets = system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let pid_value = pid.as_u32();
+            if pid_value == current_pid {
+                return None;
+            }
+            let same_launcher = process
+                .exe()
+                .is_some_and(|path| normalized_path(path) == current_key);
+            let known_launcher = is_codex_plus_launcher(process.name());
+            let codex = is_openai_codex_process(process.name(), process.exe());
+            (same_launcher || known_launcher || codex)
+                .then_some((*pid, process.name().to_string_lossy().to_string()))
+        })
+        .collect::<Vec<_>>();
+
+    append_log(
+        paths,
+        "runtime.stop.started",
+        json!({"processCount": targets.len()}),
+    );
+    for (pid, _) in &targets {
+        if let Some(process) = system.process(*pid) {
+            let _ = process.kill();
+        }
+    }
+    wait_for_pids(&mut system, targets.iter().map(|(pid, _)| *pid).collect())?;
+    append_log(paths, "runtime.stop.completed", json!({}));
+    Ok(())
+}
+
+pub fn resolve_codex_executable() -> anyhow::Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("CODEX_PLUS_APP_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return normalize_app_candidate(&explicit)
+            .ok_or_else(|| anyhow::anyhow!("CODEX_PLUS_APP_PATH 中未找到 ChatGPT.exe/Codex.exe"));
+    }
+
+    let script = r#"
+$names = @('OpenAI.Codex','OpenAI.CodexBeta','OpenAI.ChatGPT-Desktop')
+$packages = foreach ($name in $names) { Get-AppxPackage -Name $name -ErrorAction SilentlyContinue }
+$packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocation }
+"#;
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .stderr(Stdio::null())
+        .output()
+        .context("无法查询 OpenAI Codex 安装包")?;
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            if let Some(executable) = normalize_app_candidate(Path::new(line)) {
+                return Ok(executable);
+            }
+        }
+    }
+
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let candidates = local
+        .into_iter()
+        .flat_map(|root| {
+            [
+                root.join("Programs").join("ChatGPT"),
+                root.join("Programs").join("OpenAI Codex"),
+                root.join("OpenAI").join("ChatGPT"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    for candidate in candidates {
+        if let Some(executable) = normalize_app_candidate(&candidate) {
+            return Ok(executable);
+        }
+    }
+    bail!("未找到官方 OpenAI Codex/ChatGPT 桌面应用")
+}
+
+pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<()> {
+    let mut command = Command::new(executable);
+    command
+        .arg(format!("--remote-debugging-port={debug_port}"))
+        .arg(format!(
+            "--remote-allow-origins=http://127.0.0.1:{debug_port}"
+        ));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+        .spawn()
+        .with_context(|| format!("无法启动 {}", executable.display()))?;
+    Ok(())
+}
+
+pub fn queue_switch(paths: &AccountPaths, account_id: &str) -> anyhow::Result<()> {
+    let pending = PendingAction::SwitchAccount {
+        account_id: account_id.to_string(),
+    };
+    atomic_write(&paths.pending_action(), &serde_json::to_vec(&pending)?)?;
+    let executable = std::env::current_exe().context("无法定位 codex-plus.exe")?;
+    let mut command = Command::new(executable);
+    command.arg("--apply-pending-action");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000);
+    }
+    if let Err(error) = command.spawn() {
+        let _ = fs::remove_file(paths.pending_action());
+        return Err(error).context("无法启动账户切换 helper");
+    }
+    Ok(())
+}
+
+pub fn apply_pending_action(paths: &AccountPaths) -> anyhow::Result<()> {
+    let bytes = fs::read(paths.pending_action()).context("没有可执行的账户切换动作")?;
+    let action: PendingAction = serde_json::from_slice(&bytes).context("账户切换动作无效")?;
+    let PendingAction::SwitchAccount { account_id } = action;
+    let vault = AccountVault::new(paths.clone());
+    vault.validate_switch(&account_id)?;
+
+    std::thread::sleep(Duration::from_millis(350));
+    let previous = read_optional_file(&paths.live_auth())?;
+    stop_existing_runtime(paths)?;
+    let switch_result = vault.switch_after_shutdown(&account_id);
+    if let Err(error) = &switch_result {
+        let restore = restore_optional_file(&paths.live_auth(), previous.as_deref());
+        append_log(
+            paths,
+            "account.switch.failed",
+            json!({"message": error.to_string(), "rollbackOk": restore.is_ok()}),
+        );
+    } else {
+        append_log(paths, "account.switch.completed", json!({}));
+    }
+    let _ = fs::remove_file(paths.pending_action());
+    spawn_normal_launcher()?;
+    switch_result.map(|_| ()).map_err(Into::into)
+}
+
+pub fn spawn_normal_launcher() -> anyhow::Result<()> {
+    let executable = std::env::current_exe().context("无法定位 codex-plus.exe")?;
+    let mut command = Command::new(executable);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000);
+    }
+    command.spawn().context("无法重新启动 codex-plus")?;
+    Ok(())
+}
+
+pub async fn wait_until_codex_stops(debug_port: u16) {
+    let mut seen = false;
+    let mut missing = 0_u8;
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let running = has_openai_codex_process();
+        let cdp = crate::cdp::endpoint_available(debug_port).await;
+        seen |= running || cdp;
+        if seen && !running && !cdp {
+            missing = missing.saturating_add(1);
+            if missing >= 5 {
+                return;
+            }
+        } else {
+            missing = 0;
+        }
+    }
+}
+
+fn has_openai_codex_process() -> bool {
+    let system = System::new_all();
+    system
+        .processes()
+        .values()
+        .any(|process| is_openai_codex_process(process.name(), process.exe()))
+}
+
+fn wait_for_pids(system: &mut System, mut pids: Vec<Pid>) -> anyhow::Result<()> {
+    for _ in 0..100 {
+        if pids.is_empty() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+        pids.retain(|pid| system.process(*pid).is_some());
+    }
+    if pids.is_empty() {
+        Ok(())
+    } else {
+        bail!("无法停止现有 Codex/codex-plus 进程")
+    }
+}
+
+fn is_openai_codex_process(name: &OsStr, executable: Option<&Path>) -> bool {
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    if !matches!(
+        name.as_str(),
+        "chatgpt.exe" | "codex.exe" | "chatgpt" | "codex"
+    ) {
+        return false;
+    }
+    let Some(executable) = executable else {
+        return false;
+    };
+    let path = normalized_path(executable);
+    path.contains("\\windowsapps\\openai.codex_")
+        || path.contains("\\windowsapps\\openai.codexbeta_")
+        || path.contains("\\windowsapps\\openai.chatgpt-desktop_")
+        || path.contains("\\openai\\chatgpt\\")
+        || path.contains("\\openai codex\\")
+}
+
+fn is_codex_plus_launcher(name: &OsStr) -> bool {
+    matches!(
+        name.to_string_lossy().to_ascii_lowercase().as_str(),
+        "codex-plus.exe" | "codex-plus-plus.exe" | "codex-plus" | "codex-plus-plus"
+    )
+}
+
+fn normalize_app_candidate(path: &Path) -> Option<PathBuf> {
+    let candidates = if path.is_file() {
+        vec![path.to_path_buf()]
+    } else {
+        vec![
+            path.join("app").join("ChatGPT.exe"),
+            path.join("app").join("Codex.exe"),
+            path.join("ChatGPT.exe"),
+            path.join("Codex.exe"),
+        ]
+    };
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn normalized_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+}
+
+fn sanitize_event(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_start_order_keeps_restart_before_lock_and_launch() {
+        assert_eq!(START_PHASES, ["stop", "lock", "launch", "inject"]);
+        assert!(
+            START_PHASES.iter().position(|v| *v == "stop")
+                < START_PHASES.iter().position(|v| *v == "lock")
+        );
+        assert!(
+            START_PHASES.iter().position(|v| *v == "lock")
+                < START_PHASES.iter().position(|v| *v == "launch")
+        );
+    }
+
+    #[test]
+    fn only_known_openai_process_paths_match() {
+        assert!(is_openai_codex_process(
+            OsStr::new("ChatGPT.exe"),
+            Some(Path::new(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0_x64__id\app\ChatGPT.exe"
+            ))
+        ));
+        assert!(!is_openai_codex_process(
+            OsStr::new("ChatGPT.exe"),
+            Some(Path::new(r"D:\Unrelated\ChatGPT.exe"))
+        ));
+        assert!(!is_openai_codex_process(
+            OsStr::new("explorer.exe"),
+            Some(Path::new(r"C:\Windows\explorer.exe"))
+        ));
+    }
+
+    #[test]
+    fn recognizes_previous_and_current_launcher_names() {
+        assert!(is_codex_plus_launcher(OsStr::new("codex-plus.exe")));
+        assert!(is_codex_plus_launcher(OsStr::new("codex-plus-plus.exe")));
+        assert!(!is_codex_plus_launcher(OsStr::new("other-launcher.exe")));
+    }
+
+    #[test]
+    fn pending_action_contains_no_auth_material() {
+        let action = PendingAction::SwitchAccount {
+            account_id: "account-1".to_string(),
+        };
+        let encoded = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"kind":"switchAccount","accountId":"account-1"}"#
+        );
+        assert!(!encoded.contains("token"));
+    }
+}

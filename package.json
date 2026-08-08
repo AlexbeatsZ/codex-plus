@@ -1,0 +1,12 @@
+{
+  "name": "codex-plus-renderer-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/renderer.test.mjs",
+    "check": "node --check assets/renderer.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}
