@@ -41,17 +41,19 @@ broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 mod
 
 注入模型 descriptor 时：
 
-- `model/id/slug` 使用 routeId；
+- `model/id` 使用 routeId；
 - `displayName` 使用用户 alias；
 - `description` 显示 API 名称和真实 model ID。
 
-模型选择写入 renderer 本地选择状态。创建任务时同时修正 `model` 与 `modelProvider`：官方模型使用 `openai`，API 模型使用 `codex-plus-api`。`thread/list` 的 `modelProviders` 固定为空数组，使两个 provider 的任务同时可见。
+Codex `26.803.5235.0` 的模型目录和任务请求直接经过内部 app-server dispatcher，不经过冻结的 `window.electronBridge`。注入器必须从 React host runtime 获取真实 `AppServerRequestClient`，包装其 `sendRequest`，并同步更新 `models/list` Query 缓存；只修改 fetch、DOM 或 window dispatch 不构成有效路由。
+
+创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用 `codex-plus-api`，不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为空数组，使两个 provider 的任务同时可见。
 
 同 provider 的 API→API 切换只覆盖下一次 `turn/start.model`。跨 provider 切换是受控实验：仅空闲任务允许执行 `thread/shutdown` 后带目标 model/provider `thread/resume`；验证返回 provider 后才更新选择和允许下一条消息。失败时尝试用原 model/provider resume，并把失败暴露给 UI；不得静默新建任务或把请求发送到错误 provider。
 
 ## 验收不变量
 
-- 密钥不出现在 bridge 摘要、模型目录、DOM 或日志；
+- 密钥不出现在 bridge 返回值、模型目录或日志；renderer 只在用户正在编辑时保留密码输入框中的草稿；
 - 两个 API 可同时流式工作，相同真实模型名不会串线；
 - 官方 provider 不受 API 保存、删除或模型选择影响；
 - API 出错只影响命中的 routeId；

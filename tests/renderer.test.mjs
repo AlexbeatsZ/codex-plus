@@ -72,6 +72,12 @@ test("discovers models, edits aliases, and saves without receiving a key", async
   form.elements.apiKey.value = "test-secret";
   dom.window.document.querySelector("[data-api-discover]").click();
   await flush();
+  const discoveredForm = dom.window.document.querySelector("[data-api-form]");
+  assert.equal(discoveredForm.elements.name.value, "Local API");
+  assert.equal(discoveredForm.elements.baseUrl.value, "http://127.0.0.1:18080/v1");
+  assert.equal(discoveredForm.elements.apiKey.value, "test-secret");
+  assert.equal(discoveredForm.elements.protocol.value, "chatCompletions");
+  assert.equal(discoveredForm.elements.enabled.checked, true);
   const alias = dom.window.document.querySelector("[data-model-name]");
   assert.equal(alias.value, "same-model");
   alias.value = "我的模型";
@@ -91,15 +97,12 @@ test("routes official and API thread starts and removes thread list provider fil
   await flush();
   const routing = dom.window.__codexPlusModelRouting;
   await routing.loadCatalog(true);
-  routing.setSelectedModel("cp-route");
-  assert.equal(routing.selectedModel(), "cp-route");
   assert.equal(routing.state.byRoute.has("cp-route"), true);
-  const apiStart = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/start", params: { model: "gpt-5" } } });
+  const apiStart = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/start", params: { model: "cp-route" } } });
   assert.equal(apiStart.request.params.model, "cp-route");
   assert.equal(apiStart.request.params.modelProvider, "codex-plus-api");
   const list = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/list", params: { modelProviders: ["openai"] } } });
   assert.equal(list.request.params.modelProviders.length, 0);
-  routing.setSelectedModel("");
   const official = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/start", params: { model: "gpt-5" } } });
   assert.equal(official.request.params.modelProvider, "openai");
 });
@@ -110,10 +113,9 @@ test("applies API to API turns and controls cross-provider resume with rollback"
   } : { status: "ok", accounts: [] });
   const routing = dom.window.__codexPlusModelRouting;
   await routing.loadCatalog(true);
-  routing.setSelectedModel("cp-b");
-  const turn = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "turn/start", params: { threadId: "t", model: "cp-a", modelProvider: "codex-plus-api" } } });
+  const turn = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "turn/start", params: { threadId: "t", model: "cp-b", modelProvider: "codex-plus-api" } } });
   assert.equal(turn.request.params.model, "cp-b");
-  assert.throws(() => routing.patchRoutingMessage({ type: "mcp-request", request: { method: "turn/start", params: { threadId: "t", model: "gpt-5", modelProvider: "openai" } } }), /阻止发送/);
+  assert.throws(() => routing.patchRoutingMessage({ type: "mcp-request", request: { method: "turn/start", params: { threadId: "t", model: "cp-b", modelProvider: "openai" } } }), /阻止发送/);
   await assert.rejects(routing.experimentalSwitchThread({ threadId: "t", currentModel: "gpt-5", currentProvider: "openai", targetModel: "cp-b", targetProvider: "codex-plus-api", idle: false }), /仍在运行/);
 
   const calls = [];
@@ -138,9 +140,42 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.state.diagnostics.some((entry) => entry.event === "immutable-electron-bridge"), true);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 12);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option\{color:#f4f4f5;background:#18181b\}/);
+});
+
+test("patches the real app-server client for native models and provider routing", async () => {
+  const dom = setup(async (path) => path === "/api-providers/catalog" ? {
+    status: "ok", models: [{ routeId: "cp-route", modelId: "upstream-model", displayName: "API Alias", providerName: "API A" }],
+  } : { status: "ok", accounts: [] });
+  const routing = dom.window.__codexPlusModelRouting;
+  await routing.loadCatalog(true);
+  const calls = [];
+  const client = {
+    requestPromises: new dom.window.Map(),
+    enqueueRequest() {},
+    async sendRequest(method, params) {
+      calls.push({ method, params });
+      if (method === "list-models") return { data: [{ id: "gpt-5", model: "gpt-5", displayName: "GPT-5", supportedReasoningEfforts: [] }] };
+      if (method === "thread/list") return { data: [] };
+      if (method === "thread/start") return { thread: { id: "new-thread", modelProvider: params.modelProvider, status: { type: "idle" } } };
+      if (method === "thread/read") return { thread: { id: params.threadId, modelProvider: "openai", status: { type: "idle" } } };
+      if (method === "thread/resume") return { thread: { id: params.threadId, modelProvider: params.modelProvider, status: { type: "idle" } } };
+      return {};
+    },
+  };
+  assert.equal(routing.installRequestClientForTest(client), true);
+  const models = await client.sendRequest("list-models", {});
+  assert.deepEqual(models.data.map((model) => model.model), ["gpt-5", "cp-route"]);
+  assert.equal(models.data[1].displayName, "API Alias");
+  await client.sendRequest("thread/start", { model: "cp-route" });
+  assert.equal(calls.find((call) => call.method === "thread/start").params.modelProvider, "codex-plus-api");
+  await client.sendRequest("thread/list", { modelProviders: ["openai"] });
+  assert.equal(calls.find((call) => call.method === "thread/list").params.modelProviders.length, 0);
+  await client.sendRequest("turn/start", { threadId: "existing", model: "cp-route" });
+  assert.deepEqual(calls.slice(-4).map((call) => call.method), ["thread/read", "thread/shutdown", "thread/resume", "turn/start"]);
+  assert.equal(calls.at(-2).params.modelProvider, "codex-plus-api");
 });
 
 test("renders account buttons before independent usage requests finish", async () => {

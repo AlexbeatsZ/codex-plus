@@ -1,5 +1,6 @@
 (() => {
   "use strict";
+  const String = window.String;
 
   const VERSION = 3;
   const ROOT_ID = "codex-plus-account-modal";
