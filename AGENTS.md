@@ -12,6 +12,7 @@
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
 - 当前自动化基线：`cargo test` 25 项、DOM/路由测试 9 项通过。
 - 发布产物：`target\release\codex-plus.exe`，6,276,096 bytes，构建时间 2026-08-09 02:00:36，SHA-256 `E22B29A4AB8177066BCC428CF1B82EA68E553141E7D7FBF17F2F4E1FAA79F4DB`；已在 Codex `26.803.5235.0` 的 9229 CDP 实例热注入验证账户/API 弹窗和 16px 菜单图标，先前 DeepSeek routeId 实机对话验证仍有效。
+- 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 指向上述 release 产物；旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
 
 # Active Work
 
