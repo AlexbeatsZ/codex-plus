@@ -67,17 +67,28 @@ async fn main_impl() -> anyhow::Result<()> {
     let _guard = runtime::acquire_launcher_guard(&paths)?;
     let broker = broker::start(paths.clone()).await?;
     config::reconcile_codex_config(&paths, broker::BROKER_PORT)?;
-    runtime::launch_codex(&codex_executable, DEBUG_PORT)?;
+    let debug_port = runtime::select_debug_port(DEBUG_PORT)?;
+    runtime::append_log(
+        &paths,
+        "launcher.debug_port.selected",
+        json!({
+            "preferredPort": DEBUG_PORT,
+            "selectedPort": debug_port.port,
+            "fallback": debug_port.preferred_bind_error.is_some(),
+            "preferredBindError": debug_port.preferred_bind_error,
+        }),
+    );
+    runtime::launch_codex(&codex_executable, debug_port.port)?;
     runtime::append_log(
         &paths,
         "launcher.codex_started",
-        json!({"executable": codex_executable, "debugPort": DEBUG_PORT}),
+        json!({"executable": codex_executable, "debugPort": debug_port.port}),
     );
 
     tokio::select! {
-        result = cdp::run_watchdog(DEBUG_PORT, service) => result.context("注入监测意外结束"),
+        result = cdp::run_watchdog(debug_port.port, service) => result.context("注入监测意外结束"),
         result = broker.wait() => result.context("API broker 意外结束"),
-        () = runtime::wait_until_codex_stops(DEBUG_PORT) => Ok(()),
+        () = runtime::wait_until_codex_stops(debug_port.port) => Ok(()),
     }
 }
 

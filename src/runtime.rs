@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
+use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -28,6 +29,12 @@ pub enum PendingAction {
 
 pub struct LauncherGuard {
     _file: File,
+}
+
+#[derive(Debug)]
+pub struct DebugPortSelection {
+    pub port: u16,
+    pub preferred_bind_error: Option<String>,
 }
 
 pub fn append_log(paths: &AccountPaths, event: &str, details: serde_json::Value) {
@@ -61,6 +68,29 @@ pub fn acquire_launcher_guard(paths: &AccountPaths) -> anyhow::Result<LauncherGu
     file.try_lock_exclusive()
         .context("另一个 codex-plus 启动器仍在运行")?;
     Ok(LauncherGuard { _file: file })
+}
+
+pub fn select_debug_port(preferred_port: u16) -> anyhow::Result<DebugPortSelection> {
+    match TcpListener::bind((Ipv4Addr::LOCALHOST, preferred_port)) {
+        Ok(listener) => {
+            let port = listener.local_addr()?.port();
+            drop(listener);
+            Ok(DebugPortSelection {
+                port,
+                preferred_bind_error: None,
+            })
+        }
+        Err(error) => {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .context("无法为 Codex CDP 选择备用本机端口")?;
+            let port = listener.local_addr()?.port();
+            drop(listener);
+            Ok(DebugPortSelection {
+                port,
+                preferred_bind_error: Some(error.to_string()),
+            })
+        }
+    }
 }
 
 pub fn stop_existing_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
@@ -378,6 +408,24 @@ mod tests {
         assert!(is_codex_plus_launcher(OsStr::new("codex-plus.exe")));
         assert!(is_codex_plus_launcher(OsStr::new("codex-plus-plus.exe")));
         assert!(!is_codex_plus_launcher(OsStr::new("other-launcher.exe")));
+    }
+
+    #[test]
+    fn debug_port_selection_falls_back_when_preferred_port_is_occupied() {
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let preferred_port = occupied.local_addr().unwrap().port();
+
+        let selected = select_debug_port(preferred_port).unwrap();
+
+        assert_ne!(selected.port, 0);
+        assert_ne!(selected.port, preferred_port);
+        assert!(selected.preferred_bind_error.is_some());
+        TcpListener::bind((Ipv4Addr::LOCALHOST, selected.port)).unwrap();
+
+        drop(occupied);
+        let recovered = select_debug_port(preferred_port).unwrap();
+        assert_eq!(recovered.port, preferred_port);
+        assert!(recovered.preferred_bind_error.is_none());
     }
 
     #[test]

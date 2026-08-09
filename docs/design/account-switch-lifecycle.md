@@ -9,7 +9,7 @@
 1. 结束当前 EXE 的旧实例、已知旧 launcher 名称 `codex-plus-plus`，以及属于 OpenAI Codex/ChatGPT 安装的 `ChatGPT.exe`/`Codex.exe`；排除当前 PID 并核对目标路径。
 2. 确认目标进程退出后获取 `%LOCALAPPDATA%\codex-plus\launcher.lock` 独占锁。
 3. 启动本机 API broker，并增量核对 Codex provider 配置；详见 `api-provider-routing.md`。
-4. 解析 Microsoft Store OpenAI 包或受支持的独立安装路径，以 `--remote-debugging-port=9229` 启动。
+4. 解析 Microsoft Store OpenAI 包或受支持的独立安装路径；优先以 `--remote-debugging-port=9229` 启动。若旧进程退出后 9229 仍无法在本机绑定（包括 Windows 遗留的失效监听端点），自动选择一个空闲本机端口，并让启动、注入 watchdog 与退出监测全程使用同一端口。
 5. 选择主 `app://-/index.html` target，安装 CDP binding、账户/API UI、模型目录和路由脚本。
 6. launcher 保持运行；target 重建或连接丢失时重新发现并注入。
 
