@@ -44,6 +44,8 @@ cargo build --release
 
 开发时可以使用 `codex-plus.exe --attach-existing` 附加已在 `9229` 开启 CDP 的 Codex；该模式不会执行正常入口的重启流程。
 
+若要随 Windows 登录启动，注册表启动命令应使用 `"codex-plus.exe 的完整路径" --login-startup`。这个模式不会主动打开 Codex，只会静默等待；用户之后从官方入口打开 Codex 时，它会接管并重启为可注入实例。直接双击不带参数的 `codex-plus.exe` 仍会立即重启 Codex。
+
 ## 支持范围
 
 当前支持 Windows 11 上的 Microsoft Store `OpenAI.Codex`，并兼容可发现的 `OpenAI.CodexBeta`、`OpenAI.ChatGPT-Desktop` 与常见独立安装目录。第三方仅支持 OpenAI 兼容的 Responses 与 Chat Completions，不支持厂商专有协议。

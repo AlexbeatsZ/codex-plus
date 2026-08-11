@@ -18,6 +18,28 @@ use service::AccountService;
 
 const DEBUG_PORT: u16 = 9229;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchMode {
+    ApplyPendingAction,
+    AttachExisting,
+    LoginStartup,
+    Explicit,
+}
+
+impl LaunchMode {
+    fn from_args(args: &[String]) -> Self {
+        if args.iter().any(|arg| arg == "--apply-pending-action") {
+            Self::ApplyPendingAction
+        } else if args.iter().any(|arg| arg == "--attach-existing") {
+            Self::AttachExisting
+        } else if args.iter().any(|arg| arg == "--login-startup") {
+            Self::LoginStartup
+        } else {
+            Self::Explicit
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = main_impl().await {
@@ -36,31 +58,57 @@ async fn main_impl() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let paths = AccountPaths::discover()?;
 
-    if args.iter().any(|arg| arg == "--apply-pending-action") {
-        return runtime::apply_pending_action(&paths);
+    match LaunchMode::from_args(&args) {
+        LaunchMode::ApplyPendingAction => runtime::apply_pending_action(&paths),
+        LaunchMode::AttachExisting => run_attach_existing(paths).await,
+        LaunchMode::LoginStartup => run_login_startup(paths).await,
+        LaunchMode::Explicit => run_managed_codex(paths, "launcher.explicit_start").await,
     }
+}
 
+async fn run_attach_existing(paths: AccountPaths) -> anyhow::Result<()> {
     let service = AccountService::new(paths.clone());
-    if args.iter().any(|arg| arg == "--attach-existing") {
-        runtime::append_log(
-            &paths,
-            "launcher.attach_existing",
-            json!({"port": DEBUG_PORT}),
-        );
-        config::reconcile_codex_config(&paths, broker::BROKER_PORT)?;
-        let broker = broker::start(paths.clone()).await?;
-        return tokio::select! {
-            result = cdp::run_watchdog(DEBUG_PORT, service) => result,
-            result = broker.wait() => result.context("API broker 意外结束"),
-        };
+    runtime::append_log(
+        &paths,
+        "launcher.attach_existing",
+        json!({"port": DEBUG_PORT}),
+    );
+    config::reconcile_codex_config(&paths, broker::BROKER_PORT)?;
+    let broker = broker::start(paths.clone()).await?;
+    tokio::select! {
+        result = cdp::run_watchdog(DEBUG_PORT, service) => result,
+        result = broker.wait() => result.context("API broker 意外结束"),
     }
+}
+
+async fn run_login_startup(paths: AccountPaths) -> anyhow::Result<()> {
+    let monitor_guard = match runtime::acquire_launcher_guard(&paths) {
+        Ok(guard) => guard,
+        Err(error) => {
+            runtime::append_log(
+                &paths,
+                "launcher.login_startup.skipped",
+                json!({"reason": "launcherAlreadyRunning", "message": error.to_string()}),
+            );
+            return Ok(());
+        }
+    };
+    runtime::append_log(&paths, "launcher.login_startup.waiting", json!({}));
+    runtime::wait_until_codex_starts().await;
+    runtime::append_log(&paths, "launcher.login_startup.detected", json!({}));
+    drop(monitor_guard);
+    run_managed_codex(paths, "launcher.login_startup.takeover").await
+}
+
+async fn run_managed_codex(paths: AccountPaths, start_event: &str) -> anyhow::Result<()> {
+    let service = AccountService::new(paths.clone());
 
     // Resolve read-only installation metadata before terminating the app, but the
     // state-changing lifecycle remains stop -> lock -> launch -> inject.
     let codex_executable = runtime::resolve_codex_executable()?;
     runtime::append_log(
         &paths,
-        "launcher.explicit_start",
+        start_event,
         json!({"phases": runtime::START_PHASES}),
     );
     runtime::stop_existing_runtime(&paths)?;
@@ -89,6 +137,36 @@ async fn main_impl() -> anyhow::Result<()> {
         result = cdp::run_watchdog(debug_port.port, service) => result.context("注入监测意外结束"),
         result = broker.wait() => result.context("API broker 意外结束"),
         () = runtime::wait_until_codex_stops(debug_port.port) => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn launch_mode_keeps_click_and_login_startup_distinct() {
+        assert_eq!(LaunchMode::from_args(&args(&[])), LaunchMode::Explicit);
+        assert_eq!(
+            LaunchMode::from_args(&args(&["--login-startup"])),
+            LaunchMode::LoginStartup
+        );
+    }
+
+    #[test]
+    fn internal_modes_take_priority_over_login_startup() {
+        assert_eq!(
+            LaunchMode::from_args(&args(&["--login-startup", "--attach-existing"])),
+            LaunchMode::AttachExisting
+        );
+        assert_eq!(
+            LaunchMode::from_args(&args(&["--login-startup", "--apply-pending-action"])),
+            LaunchMode::ApplyPendingAction
+        );
     }
 }
 

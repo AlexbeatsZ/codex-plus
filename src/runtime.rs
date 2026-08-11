@@ -255,6 +255,15 @@ pub fn spawn_normal_launcher() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn wait_until_codex_starts() {
+    loop {
+        if has_openai_codex_process() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(750)).await;
+    }
+}
+
 pub async fn wait_until_codex_stops(debug_port: u16) {
     let mut seen = false;
     let mut missing = 0_u8;

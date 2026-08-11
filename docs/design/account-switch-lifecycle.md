@@ -2,7 +2,14 @@
 
 ## 产品边界
 
-`codex-plus.exe` 是唯一产品入口。所有操作都发生在 Codex 注入窗口内；内部 `--apply-pending-action` 与 `--attach-existing` 仍由同一个二进制提供，不构成第二产品或管理界面。
+`codex-plus.exe` 是唯一产品入口。所有操作都发生在 Codex 注入窗口内；内部 `--apply-pending-action`、`--attach-existing` 与 `--login-startup` 仍由同一个二进制提供，不构成第二产品或管理界面。
+
+## 登录自启
+
+- Windows 当前用户登录启动项使用 `codex-plus.exe --login-startup`，不能使用无参数入口。
+- 登录模式先获取 launcher 锁并静默等待，不启动 broker、不修改配置，也不主动打开 Codex；若已有 launcher 持锁则直接退出。
+- 用户之后从官方入口打开 Codex 时，登录模式检测到受支持的 OpenAI 进程，释放等待锁，再进入与普通启动相同的 `stop → lock → broker → config → launch → inject` 生命周期。
+- 用户直接双击无参数 EXE 时，仍立即执行普通启动；它会停止等待中的登录实例，因此不会被后台 monitor 阻塞。
 
 ## 普通启动
 
