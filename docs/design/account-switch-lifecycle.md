@@ -35,6 +35,8 @@
 4. 再次验证目标，保存当前实时账户，备份实时 `auth.json`，原子写入目标快照。
 5. 清理 pending action 并重新启动普通 `codex-plus.exe`。写入失败时先恢复备份，再启动原账户。
 
+账户切换 helper、重启后的 launcher、Codex 进程以及安装位置查询所用的 PowerShell 都必须通过统一的后台子进程入口启动；Windows 下设置 `CREATE_NO_WINDOW`，避免无父控制台时 PowerShell 在切换过程中短暂创建命令行窗口。
+
 ## UI 与额度
 
 - 账户入口固定放在个人资料菜单“API 接入”和“退出登录”之间，图标为 `UsersRound`。

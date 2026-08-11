@@ -16,6 +16,9 @@ use crate::accounts::{
     AccountPaths, AccountVault, atomic_write, read_optional_file, restore_optional_file,
 };
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 pub const START_PHASES: [&str; 6] = ["stop", "lock", "broker", "config", "launch", "inject"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -146,7 +149,8 @@ $names = @('OpenAI.Codex','OpenAI.CodexBeta','OpenAI.ChatGPT-Desktop')
 $packages = foreach ($name in $names) { Get-AppxPackage -Name $name -ErrorAction SilentlyContinue }
 $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocation }
 "#;
-    let output = Command::new("powershell.exe")
+    let mut command = background_command("powershell.exe");
+    let output = command
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .stderr(Stdio::null())
         .output()
@@ -180,17 +184,12 @@ $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocatio
 }
 
 pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<()> {
-    let mut command = Command::new(executable);
+    let mut command = background_command(executable);
     command
         .arg(format!("--remote-debugging-port={debug_port}"))
         .arg(format!(
             "--remote-allow-origins=http://127.0.0.1:{debug_port}"
         ));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
     command
         .spawn()
         .with_context(|| format!("无法启动 {}", executable.display()))?;
@@ -203,13 +202,8 @@ pub fn queue_switch(paths: &AccountPaths, account_id: &str) -> anyhow::Result<()
     };
     atomic_write(&paths.pending_action(), &serde_json::to_vec(&pending)?)?;
     let executable = std::env::current_exe().context("无法定位 codex-plus.exe")?;
-    let mut command = Command::new(executable);
+    let mut command = background_command(executable);
     command.arg("--apply-pending-action");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
     if let Err(error) = command.spawn() {
         let _ = fs::remove_file(paths.pending_action());
         return Err(error).context("无法启动账户切换 helper");
@@ -245,14 +239,19 @@ pub fn apply_pending_action(paths: &AccountPaths) -> anyhow::Result<()> {
 
 pub fn spawn_normal_launcher() -> anyhow::Result<()> {
     let executable = std::env::current_exe().context("无法定位 codex-plus.exe")?;
-    let mut command = Command::new(executable);
+    let mut command = background_command(executable);
+    command.spawn().context("无法重新启动 codex-plus")?;
+    Ok(())
+}
+
+fn background_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
+        command.creation_flags(CREATE_NO_WINDOW);
     }
-    command.spawn().context("无法重新启动 codex-plus")?;
-    Ok(())
+    command
 }
 
 pub async fn wait_until_codex_starts() {
@@ -448,5 +447,20 @@ mod tests {
             r#"{"kind":"switchAccount","accountId":"account-1"}"#
         );
         assert!(!encoded.contains("token"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn background_powershell_has_no_console_window() {
+        let script = r#"
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class NativeConsole { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
+if ([NativeConsole]::GetConsoleWindow() -ne [IntPtr]::Zero) { exit 1 }
+"#;
+        let status = background_command("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .status()
+            .unwrap();
+
+        assert!(status.success(), "后台 PowerShell 获得了可见控制台窗口");
     }
 }

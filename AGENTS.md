@@ -10,8 +10,8 @@
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；当前安装/进程识别验证版本为 `26.803.10989.0`，实际进程名为 `ChatGPT.exe`。
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
-- 当前自动化基线：`cargo test` 28 项、DOM/路由测试 9 项通过。
-- 发布产物：`target\release\codex-plus.exe`，6,324,224 bytes，构建时间 2026-08-11 18:21:42，SHA-256 `45A2D1B6A742FC595DE929D36A530DAC4548F5210A1E3353CD82256EABDE9D5C`；先前已在 Codex `26.803.5235.0` 实机触发 9229 失效监听冲突并自动回退到 64539，验证 `injection.ready`、菜单顺序、账户/API 弹窗和 16px 菜单图标，DeepSeek routeId 实机对话验证仍有效。
+- 当前自动化基线：`cargo test` 29 项、DOM/路由测试 9 项通过；Windows 回归测试会在后台 PowerShell 内核对 `GetConsoleWindow()` 为空。
+- 发布产物：`target\release\codex-plus.exe`，6,324,736 bytes，构建时间 2026-08-12 00:08:11，SHA-256 `3174B9F8A2230BDC1D2C65FF2F6B722B3FF824F27A16C9FD1DA24442B63B1DFF`；已在当前 Codex `26.803.10989.0` 的 9229 会话用 `--attach-existing` 恢复运行并验证 `injection.ready`。先前在 Codex `26.803.5235.0` 实机触发 9229 失效监听冲突并自动回退到 64539、检查菜单顺序、账户/API 弹窗和 16px 菜单图标，DeepSeek routeId 实机对话验证仍有效。
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时只等待官方 Codex 被用户打开再接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
 
 # Active Work
@@ -20,6 +20,7 @@
 - 0.2.0 已将账户与 API 注入 UI 调整为 Codex 原生化风格：菜单图标为 16px，弹窗使用灰阶分组面板、行分隔线、30px 紧凑按钮与蓝色强调；实机检查账户弹窗 680px 宽、12px 圆角，4 个账户无换行或溢出。
 - 0.2.0 已修复 Windows 强停旧 Codex 后 9229 留下失效监听端点、导致以后所有启动都无 CDP/无注入的问题；正常启动在 stop/lock/config 后实际绑定探测 9229，被占用时改用动态本机端口，并让 launch、watchdog 和退出监测使用同一端口。
 - 0.2.0 已区分登录自启与显式点击：`--login-startup` 持锁静默等待，不启动 Codex；检测到用户从官方入口打开 Codex 后释放等待锁并进入普通接管生命周期。无参数双击仍立即重启 Codex。
+- 0.2.0 已统一将账户切换 helper、重启 launcher、Codex 与安装位置查询 PowerShell 作为无窗口后台子进程启动，避免切换后重新解析 Store 安装路径时闪现命令行窗口。
 - 跨 provider 原地切换为受控实验；不能验证 resume provider 时必须恢复并阻止发送。
 
 # Build / Run / Test
@@ -52,3 +53,4 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - 当前 app bundle 主世界存在会遮蔽裸 `String`/`Function` 的同名绑定；注入脚本需要显式使用 `window` 原生构造器或从函数字面量捕获 `toString`，否则实机动态模块扫描会失败而测试环境仍通过。
 - Windows 上旧 Codex PID 已退出并不保证其 CDP 监听端口立即可重新绑定；2026-08-09 实测 9229 可残留为 Owner PID 已不存在、HTTP 拒绝/超时但 bind 返回 `WSAEADDRINUSE (10048)` 的失效 listener。启动就绪判断必须以本机 bind/CDP target 为准，不能只等待 PID；遇到占用应回退端口，不能继续把“spawn 成功”当作可注入。
 - Windows `HKCU Run` 无法区分登录触发与用户双击；登录启动命令必须显式带 `--login-startup`。等待模式不提前启动 broker 或修改配置，检测到官方 Codex 后再复用 `stop → lock → broker → config → launch → inject`，避免登录时弹出应用，同时保留官方快捷方式与无参数 EXE 的接管能力。
+- release 主程序使用 Windows GUI 子系统并不意味着其后代控制台进程也会自动隐藏；无父控制台时，未设置创建标志的 `powershell.exe` 仍会自行创建可见窗口。所有内部 `Command` 都应走统一后台构造器，并在 Windows 设置 `CREATE_NO_WINDOW`。
