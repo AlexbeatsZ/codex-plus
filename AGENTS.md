@@ -10,12 +10,13 @@
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；当前安装/进程识别验证版本为 `26.803.10989.0`，实际进程名为 `ChatGPT.exe`。
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
-- 当前自动化基线：`cargo test` 29 项、DOM/路由测试 9 项通过；Windows 回归测试会在后台 PowerShell 内核对 `GetConsoleWindow()` 为空。
-- 发布产物：`target\release\codex-plus.exe`，6,324,736 bytes，构建时间 2026-08-12 00:08:11，SHA-256 `3174B9F8A2230BDC1D2C65FF2F6B722B3FF824F27A16C9FD1DA24442B63B1DFF`；已在当前 Codex `26.803.10989.0` 的 9229 会话用 `--attach-existing` 恢复运行并验证 `injection.ready`。先前在 Codex `26.803.5235.0` 实机触发 9229 失效监听冲突并自动回退到 64539、检查菜单顺序、账户/API 弹窗和 16px 菜单图标，DeepSeek routeId 实机对话验证仍有效。
+- 当前自动化基线：`cargo test` 29 项、DOM/路由测试 10 项通过；Windows 回归测试会在后台 PowerShell 内核对 `GetConsoleWindow()` 为空。
+- 发布产物：`target\release\codex-plus.exe`，6,324,736 bytes，构建时间 2026-08-12 14:57:09，SHA-256 `5E6C421A5ACFAD115079D123869C57E5B695D668F19C683329295B269AAA2A6B`；已在当前 Codex `26.803.10989.0` 的 9229 会话用 `--attach-existing` 恢复运行并验证 `injection.ready`，并在真实 renderer 内验证顶部编辑菜单结构不注入、个人资料菜单结构仍按既定顺序注入。先前在 Codex `26.803.5235.0` 实机触发 9229 失效监听冲突并自动回退到 64539、检查菜单顺序、账户/API 弹窗和 16px 菜单图标，DeepSeek routeId 实机对话验证仍有效。
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时只等待官方 Codex 被用户打开再接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
 
 # Active Work
 
+- 0.2.0 已将账户/API 菜单注入目标收紧为同一容器内同时具有原生“设置”和“退出登录”的个人资料菜单，避免顶部“编辑”菜单中的“设置”被误判并注入两个自定义选项。
 - 0.2.0 已修复读取模型后表单清空、原生模型列表缺失，以及 `prewarmThreadStart` 绕过 `sendRequest` 导致 routeId 仍配对 `openai` 的问题；自动化检查、release 构建及用户实机对话均已通过。
 - 0.2.0 已将账户与 API 注入 UI 调整为 Codex 原生化风格：菜单图标为 16px，弹窗使用灰阶分组面板、行分隔线、30px 紧凑按钮与蓝色强调；实机检查账户弹窗 680px 宽、12px 圆角，4 个账户无换行或溢出。
 - 0.2.0 已修复 Windows 强停旧 Codex 后 9229 留下失效监听端点、导致以后所有启动都无 CDP/无注入的问题；正常启动在 stop/lock/config 后实际绑定探测 9229，被占用时改用动态本机端口，并让 launch、watchdog 和退出监测使用同一端口。
@@ -42,6 +43,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 
 # Durable Lessons
 
+- Codex 顶部“编辑”菜单与个人资料菜单都可能包含文字为“设置”的 `role=menuitem`；账户/API 注入不能仅匹配该文字，必须要求同一直接父容器还包含原生“退出登录”。
 - Codex `26.803.5235.0` 的个人资料菜单项外层是 `flex flex-col`；图标和标签直接作为外层子节点会换行。自定义内容必须放进一个 `w-full` 的横向内层，且实际菜单项高度应约为 30px。
 - Codex `26.803.5235.0` 的原生菜单图标视觉尺寸是 16px；`UsersRound` 在 20px 时比相邻图标明显抢眼。账户/API 弹窗应复用低对比灰阶分组、组内分隔线和 30px 控件，强调色跟随当前 Codex 蓝色，不使用旧版绿色后台卡片风格。
 - 2026-08-08 的 usage 响应中 `credits.balance` 是字符串；把它固定反序列化为浮点数会导致整个额度响应失败。

@@ -21,7 +21,7 @@ async function flush(rounds = 4) {
 }
 
 function setup(invoke) {
-  const dom = new JSDOM(`<!doctype html><html><head></head><body><div role="menu" id="profile-menu"><button role="menuitem" class="native">设置</button><button role="menuitem" class="native">退出登录</button></div></body></html>`, {
+  const dom = new JSDOM(`<!doctype html><html><head></head><body><div role="menu" id="edit-menu"><button role="menuitem" class="native">撤销</button><button role="menuitem" class="native">设置 Ctrl+,</button></div><div role="menu" id="profile-menu"><button role="menuitem" class="native">设置</button><button role="menuitem" class="native">退出登录</button></div></body></html>`, {
     runScripts: "dangerously",
     url: "app://-/index.html",
   });
@@ -56,6 +56,15 @@ test("inserts Cable API item above one UsersRound account item", async () => {
   dom.window.__codexPlusAccounts.install();
   await flush();
   assert.equal(menu.querySelectorAll("[data-codex-plus-account-item]").length, 1);
+});
+
+test("does not inject account or API items into the application Edit menu", async () => {
+  const dom = setup(async () => ({ status: "ok", accounts: [] }));
+  await flush();
+  const editMenu = dom.window.document.getElementById("edit-menu");
+  assert.equal(editMenu.querySelector("[data-codex-plus-account-item]"), null);
+  assert.equal(editMenu.querySelector("[data-codex-plus-api-item]"), null);
+  assert.deepEqual([...editMenu.children].map((node) => node.textContent.trim()), ["撤销", "设置 Ctrl+,"]);
 });
 
 test("discovers models, edits aliases, and saves without receiving a key", async () => {

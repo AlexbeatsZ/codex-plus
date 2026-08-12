@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 4;
+  const VERSION = 5;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -111,6 +111,14 @@
     return /^(退出登录|登出|Sign out(?:\s|$)|Log out(?:\s|$))/i.test(normalizedText(node));
   }
 
+  function profileMenuContext(settingsItem) {
+    const parent = settingsItem.parentElement;
+    if (!parent) return null;
+    const siblings = Array.from(parent.children);
+    const logout = siblings.find(isLogout);
+    return logout ? { parent, logout } : null;
+  }
+
   function createMenuItem(settingsItem) {
     const item = settingsItem.cloneNode(false);
     item.removeAttribute("id");
@@ -135,13 +143,12 @@
   function scanMenus() {
     const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
     for (const settingsItem of items.filter(isSettings)) {
-      const parent = settingsItem.parentElement;
+      const context = profileMenuContext(settingsItem);
+      if (!context) continue;
+      const { parent, logout } = context;
       if (!parent || parent.querySelector(`:scope > [${ITEM_ATTR}]`)) continue;
-      const siblings = Array.from(parent.children);
-      const logout = siblings.find(isLogout);
       const item = createMenuItem(settingsItem);
-      if (logout) parent.insertBefore(item, logout);
-      else settingsItem.insertAdjacentElement("afterend", item);
+      parent.insertBefore(item, logout);
     }
   }
 

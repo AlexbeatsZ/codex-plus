@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 4;
+  const VERSION = 5;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
@@ -71,6 +71,7 @@
 
   function text(node) { return String(node?.textContent || "").replace(/\s+/g, " ").trim(); }
   function settings(node) { return /^(设置|Settings(?:\s|$))/i.test(text(node)); }
+  function logout(node) { return /^(退出登录|登出|Sign out(?:\s|$)|Log out(?:\s|$))/i.test(text(node)); }
   function esc(value) { return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
   async function invoke(path, payload = {}) { const result = await window.codexPlusInvoke(path, payload); if (["failed","error"].includes(String(result?.status || "").toLowerCase())) throw new Error(result?.message || "操作失败"); return result; }
 
@@ -84,7 +85,8 @@
 
   function scan() {
     for (const item of [...document.querySelectorAll('[role="menuitem"]')].filter(settings)) {
-      const parent = item.parentElement; if (!parent || parent.querySelector(`:scope > [${ITEM_ATTR}]`)) continue;
+      const parent = item.parentElement;
+      if (!parent || ![...parent.children].some(logout) || parent.querySelector(`:scope > [${ITEM_ATTR}]`)) continue;
       const api = createItem(item); const account = parent.querySelector(`:scope > [${ACCOUNT_ATTR}]`);
       if (account) parent.insertBefore(api, account); else item.insertAdjacentElement("afterend", api);
     }
