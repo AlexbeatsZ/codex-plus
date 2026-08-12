@@ -3,6 +3,7 @@ fn main() {
     {
         let mut resource = winresource::WindowsResource::new();
         resource
+            .set_icon("assets/app-icon.ico")
             .set("ProductName", "codex-plus")
             .set(
                 "FileDescription",
