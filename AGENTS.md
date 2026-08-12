@@ -11,7 +11,7 @@
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
 - 当前自动化基线：`cargo test` 29 项、DOM/路由测试 10 项通过；Windows 回归测试会在后台 PowerShell 内核对 `GetConsoleWindow()` 为空。
-- 发布产物：`target\release\codex-plus.exe`，6,353,920 bytes，构建时间 2026-08-12 21:55:32，SHA-256 `90D232F6D656950A8C0E86D9D5F4040A5ADF9909BAAC5271AB67858B44C742E4`；从成品 EXE 反向提取到非默认 Person Swap 图标。图标重建后的当前 Codex `26.803.10989.0` 实例仍在实际 59833 CDP renderer 验证账户 `ready`、观察器、API 注入和模型路由全部就绪，本机 broker 监听 57321。先前在 Codex `26.803.5235.0` 实机触发 9229 失效监听冲突并自动回退到 64539、检查菜单顺序、账户/API 弹窗和 16px 菜单图标，DeepSeek routeId 实机对话验证仍有效。
+- 发布产物：`target\release\codex-plus.exe`，6,344,192 bytes，构建时间 2026-08-12 22:00:42，SHA-256 `73FC753003A77899109E50A995D6D1ADFBE3BCEBD0B63D3FECFABAEBEAAB60CA`；从成品 EXE 反向提取到非默认 Person Swap 图标。图标重建后的当前 Codex `26.803.10989.0` 实例通过 `--attach-existing-port=59833` 接回实际 CDP renderer，日志确认 `injection.ready`，账户 `ready`、观察器、API 注入和模型路由全部就绪，本机 broker 监听 57321。先前在 Codex `26.803.5235.0` 实机触发 9229 失效监听冲突并自动回退到 64539、检查菜单顺序、账户/API 弹窗和 16px 菜单图标，DeepSeek routeId 实机对话验证仍有效。
 - Windows 发布 EXE 通过 `build.rs` 嵌入 `assets/app-icon.ico`；图标以 Microsoft Fluent UI System Icons 的 Person Swap 为主体，蓝色圆角底用于和其他自制工具区分。
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时只等待官方 Codex 被用户打开再接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
 
@@ -39,7 +39,7 @@ cargo build --release
 
 Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模式等待用户打开官方 Codex，不主动拉起应用。
 
-开发时仅附加现有 9229 CDP、不重启 Codex：`target\release\codex-plus.exe --attach-existing`。
+开发时仅附加现有 9229 CDP、不重启 Codex：`target\release\codex-plus.exe --attach-existing`。若普通启动已回退到动态端口，使用 `target\release\codex-plus.exe --attach-existing-port=<实际端口>`。
 普通启动优先使用 9229；若该地址不可绑定，会在日志 `launcher.debug_port.selected` 中记录实际回退端口。`--attach-existing` 仍只表示附加开发者显式启动的 9229 实例。
 
 # Durable Lessons

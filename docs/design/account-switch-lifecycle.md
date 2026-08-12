@@ -20,6 +20,8 @@
 5. 选择主 `app://-/index.html` target，安装 CDP binding、账户/API UI、模型目录和路由脚本。
 6. launcher 保持运行；target 重建或连接丢失时重新发现并注入。
 
+维护时若需在不重启 Codex 的情况下重新附加 launcher，`--attach-existing` 仍连接默认 9229；当当前实例已由普通启动回退到动态端口时，使用内部参数 `--attach-existing-port=<实际端口>`。该入口只恢复 broker、配置核对和注入 watchdog，不执行普通启动的 stop/launch 生命周期。
+
 ## 账户数据
 
 - 实时凭据：`CODEX_HOME\auth.json`，未设置 `CODEX_HOME` 时为 `%USERPROFILE%\.codex\auth.json`。
