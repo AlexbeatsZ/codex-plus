@@ -74,6 +74,7 @@ mod tests {
         assert!(output.contains("[model_providers.other]"));
         assert!(output.contains("[model_providers.codex-plus-api]"));
         assert!(output.contains("wire_api = \"responses\""));
+        assert!(output.contains("base_url = \"http://127.0.0.1:57321/v1\""));
         assert!(paths.codex_home.join("config.toml.codex-plus.bak").exists());
     }
 }

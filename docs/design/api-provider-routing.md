@@ -23,19 +23,19 @@ renderer 只使用 `/api-providers/list|discover|save|delete|catalog`。`list` �
 
 ## 单 broker provider
 
-启动顺序是：`stop → lock → broker → config → launch → inject`。broker 固定监听 `127.0.0.1:57321`，只接受 codex-plus 配置的本机 Bearer token。
+启动顺序是：`stop → lock → broker → config → launch → inject`。broker 只监听 `127.0.0.1`，只接受 codex-plus 配置的本机 Bearer token。首选稳定端口为 43121，刻意避开 Windows 默认动态客户端端口范围 49152–65535；若该端口仍因普通占用、Windows 保留范围或 WSL mirrored networking/FSE 端口跟踪而无法绑定，必须直接绑定系统分配的空闲本机端口，并在保持该 listener 的同时把实际端口写入 Codex 配置。不能先探测再释放端口，也不能因一个固定端口失败而终止整个接管生命周期。
 
 用户级 `config.toml` 只增量维护：
 
 ```toml
 [model_providers.codex-plus-api]
 name = "codex-plus API broker"
-base_url = "http://127.0.0.1:57321/v1"
+base_url = "http://127.0.0.1:43121/v1"
 wire_api = "responses"
 experimental_bearer_token = "codex-plus-loopback"
 ```
 
-不得改写顶层 `model_provider`、官方 `auth.json`、其他 provider 或未知配置。第一次变更前保留 `config.toml.codex-plus.bak`。
+以上是首选端口示例；发生回退时 `base_url` 使用本次 broker 实际持有的端口。不得改写顶层 `model_provider`、官方 `auth.json`、其他 provider 或未知配置。第一次变更前保留 `config.toml.codex-plus.bak`。
 
 broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 model ID，替换后并发转发。Responses 上游保持原协议和 SSE；Chat Completions 上游转换输入、非流式响应和流式事件，保留工具调用、推理内容、usage 与错误隔离。不存在、停用或隐藏的 routeId 必须明确失败，绝不回退到其他 API。
 

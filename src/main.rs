@@ -78,8 +78,9 @@ async fn run_attach_existing(paths: AccountPaths, debug_port: u16) -> anyhow::Re
         "launcher.attach_existing",
         json!({"port": debug_port}),
     );
-    config::reconcile_codex_config(&paths, broker::BROKER_PORT)?;
     let broker = broker::start(paths.clone()).await?;
+    log_broker_port_selection(&paths, &broker);
+    config::reconcile_codex_config(&paths, broker.port())?;
     tokio::select! {
         result = cdp::run_watchdog(debug_port, service) => result,
         result = broker.wait() => result.context("API broker 意外结束"),
@@ -119,7 +120,8 @@ async fn run_managed_codex(paths: AccountPaths, start_event: &str) -> anyhow::Re
     runtime::stop_existing_runtime(&paths)?;
     let _guard = runtime::acquire_launcher_guard(&paths)?;
     let broker = broker::start(paths.clone()).await?;
-    config::reconcile_codex_config(&paths, broker::BROKER_PORT)?;
+    log_broker_port_selection(&paths, &broker);
+    config::reconcile_codex_config(&paths, broker.port())?;
     let debug_port = runtime::select_debug_port(DEBUG_PORT)?;
     runtime::append_log(
         &paths,
@@ -143,6 +145,19 @@ async fn run_managed_codex(paths: AccountPaths, start_event: &str) -> anyhow::Re
         result = broker.wait() => result.context("API broker 意外结束"),
         () = runtime::wait_until_codex_stops(debug_port.port) => Ok(()),
     }
+}
+
+fn log_broker_port_selection(paths: &AccountPaths, broker: &broker::BrokerHandle) {
+    runtime::append_log(
+        paths,
+        "launcher.broker_port.selected",
+        json!({
+            "preferredPort": broker::PREFERRED_BROKER_PORT,
+            "selectedPort": broker.port(),
+            "fallback": broker.preferred_bind_error().is_some(),
+            "preferredBindError": broker.preferred_bind_error(),
+        }),
+    );
 }
 
 #[cfg(test)]

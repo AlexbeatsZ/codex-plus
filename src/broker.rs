@@ -18,7 +18,10 @@ use crate::protocol_proxy::{
 };
 use crate::providers::ProviderStore;
 
-pub const BROKER_PORT: u16 = 57321;
+// Keep the stable port below Windows' default dynamic client range
+// (49152-65535). WSL mirrored networking tracks client ports in that range
+// and can make an otherwise unused host port fail to bind with WSAEACCES.
+pub const PREFERRED_BROKER_PORT: u16 = 43121;
 
 #[derive(Clone)]
 struct BrokerState {
@@ -26,21 +29,44 @@ struct BrokerState {
 }
 
 pub struct BrokerHandle {
+    port: u16,
+    preferred_bind_error: Option<String>,
     task: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
 impl BrokerHandle {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn preferred_bind_error(&self) -> Option<&str> {
+        self.preferred_bind_error.as_deref()
+    }
+
     pub async fn wait(self) -> anyhow::Result<()> {
         self.task.await.map_err(anyhow::Error::from)?
     }
 }
 
 pub async fn start(paths: AccountPaths) -> anyhow::Result<BrokerHandle> {
-    let listener = TcpListener::bind(("127.0.0.1", BROKER_PORT))
+    start_on_port(paths, PREFERRED_BROKER_PORT).await
+}
+
+async fn start_on_port(paths: AccountPaths, preferred_port: u16) -> anyhow::Result<BrokerHandle> {
+    let (listener, preferred_bind_error) = match TcpListener::bind(("127.0.0.1", preferred_port))
         .await
-        .map_err(|error| {
-            anyhow::anyhow!("无法启动本机 API broker 127.0.0.1:{BROKER_PORT}: {error}")
-        })?;
+    {
+        Ok(listener) => (listener, None),
+        Err(preferred_error) => {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.map_err(|fallback_error| {
+                    anyhow::anyhow!(
+                        "无法启动本机 API broker；首选端口 127.0.0.1:{preferred_port} 失败: {preferred_error}；选择备用端口失败: {fallback_error}"
+                    )
+                })?;
+            (listener, Some(preferred_error.to_string()))
+        }
+    };
+    let port = listener.local_addr().map_err(anyhow::Error::from)?.port();
     let state = BrokerState {
         paths: Arc::new(paths),
     };
@@ -58,7 +84,11 @@ pub async fn start(paths: AccountPaths) -> anyhow::Result<BrokerHandle> {
             .await
             .map_err(anyhow::Error::from)
     });
-    Ok(BrokerHandle { task })
+    Ok(BrokerHandle {
+        port,
+        preferred_bind_error,
+        task,
+    })
 }
 
 async fn models(State(state): State<BrokerState>, headers: HeaderMap) -> Response<Body> {
@@ -210,4 +240,52 @@ fn build_response(status: StatusCode, content_type: &str, body: Body) -> Respons
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, TcpListener as StdTcpListener};
+    use tempfile::TempDir;
+
+    fn test_paths(temp: &TempDir) -> AccountPaths {
+        AccountPaths {
+            codex_home: temp.path().join("codex"),
+            state_dir: temp.path().join("state"),
+            usage_endpoint: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_the_preferred_port_when_it_is_available() {
+        let candidate = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let preferred_port = candidate.local_addr().unwrap().port();
+        drop(candidate);
+        let temp = TempDir::new().unwrap();
+
+        let handle = start_on_port(test_paths(&temp), preferred_port)
+            .await
+            .unwrap();
+
+        assert_eq!(handle.port(), preferred_port);
+        assert!(handle.preferred_bind_error().is_none());
+        assert!(StdTcpListener::bind((Ipv4Addr::LOCALHOST, handle.port())).is_err());
+        handle.task.abort();
+    }
+
+    #[tokio::test]
+    async fn falls_back_and_keeps_the_selected_port_reserved() {
+        let occupied = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let preferred_port = occupied.local_addr().unwrap().port();
+        let temp = TempDir::new().unwrap();
+
+        let handle = start_on_port(test_paths(&temp), preferred_port)
+            .await
+            .unwrap();
+
+        assert_ne!(handle.port(), preferred_port);
+        assert!(handle.preferred_bind_error().is_some());
+        assert!(StdTcpListener::bind((Ipv4Addr::LOCALHOST, handle.port())).is_err());
+        handle.task.abort();
+    }
 }
