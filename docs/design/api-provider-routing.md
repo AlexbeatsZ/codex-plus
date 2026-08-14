@@ -51,7 +51,7 @@ Codex `26.803.5235.0` 的模型目录和任务请求直接经过内部 app-serve
 
 安装路由包装时必须清除安装前已经创建的预热任务；原生选择器改变模型时也必须再次清除缓存。之后的普通创建、预热创建和首轮发送都从同一 `enqueueRequest` 包装进入，保证 routeId 与 `codex-plus-api` 同时提交，不能出现 routeId 搭配 `openai` 的混合状态。
 
-创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用 `codex-plus-api`，不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为空数组，使两个 provider 的任务同时可见。
+创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用 `codex-plus-api`，不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为当前官方客户端使用的 `null` 全 provider 哨兵，同时原样保留 `sourceKinds`、`archived` 等目录范围参数；不得再使用旧的空数组语义扩大本地目录扫描范围。
 
 同 provider 的 API→API 切换只覆盖下一次 `turn/start.model`。Codex `26.803.10989.0` 的 provider 在任务 ID 创建时固定：`thread/resume` 不能改变 provider，`thread/shutdown` 已移除，二者都不得用于跨 provider 切换。
 

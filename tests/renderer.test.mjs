@@ -106,7 +106,7 @@ test("discovers models, edits aliases, and saves without receiving a key", async
   assert.ok(lists.every((call) => !("apiKey" in call.payload)));
 });
 
-test("routes official and API thread starts and removes thread list provider filter", async () => {
+test("routes official and API thread starts with the native all-provider list sentinel", async () => {
   const dom = setup(async (path) => path === "/api-providers/catalog" ? {
     status: "ok", providerId: "codex-plus-api", models: [{ routeId: "cp-route", modelId: "same", displayName: "Alias", providerName: "API A" }],
   } : { status: "ok", accounts: [] });
@@ -117,8 +117,10 @@ test("routes official and API thread starts and removes thread list provider fil
   const apiStart = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/start", params: { model: "cp-route" } } });
   assert.equal(apiStart.request.params.model, "cp-route");
   assert.equal(apiStart.request.params.modelProvider, "codex-plus-api");
-  const list = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/list", params: { modelProviders: ["openai"] } } });
-  assert.equal(list.request.params.modelProviders.length, 0);
+  const list = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/list", params: { modelProviders: ["openai"], sourceKinds: ["vscode"], archived: false } } });
+  assert.equal(list.request.params.modelProviders, null);
+  assert.deepEqual(list.request.params.sourceKinds, ["vscode"]);
+  assert.equal(list.request.params.archived, false);
   const official = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/start", params: { model: "gpt-5" } } });
   assert.equal(official.request.params.modelProvider, "openai");
 });
@@ -224,7 +226,7 @@ test("patches the real app-server client for native models and provider routing"
   await client.prewarmThreadStart({ model: "cp-route" });
   assert.equal(calls.filter((call) => call.method === "thread/start").at(-1).params.modelProvider, "codex-plus-api");
   await client.sendRequest("thread/list", { modelProviders: ["openai"] });
-  assert.equal(calls.find((call) => call.method === "thread/list").params.modelProviders.length, 0);
+  assert.equal(calls.find((call) => call.method === "thread/list").params.modelProviders, null);
   await client.sendRequest("turn/start", { threadId: "existing", model: "cp-route" });
   assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "dispatch:fork-conversation-from-latest", "thread/read", "dispatch:set-thread-title", "turn/start"]);
   assert.equal(calls.at(-4).params.model, "cp-route");

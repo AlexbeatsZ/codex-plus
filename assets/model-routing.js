@@ -209,7 +209,7 @@
   }
 
   function routeParams(method, params = {}) {
-    if (method === "thread/list") return { ...params, modelProviders: [] };
+    if (method === "thread/list") return { ...params, modelProviders: null };
     if (method === "thread/start" || method === "thread/resume" || method === "thread/fork") {
       const targetProvider = providerForModel(params.model);
       return targetProvider ? { ...params, modelProvider: targetProvider } : params;
