@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 5;
+  const VERSION = 6;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -23,6 +23,8 @@
     usage: new Map(),
     loading: false,
     switching: "",
+    deleting: "",
+    webLoginStarting: false,
     message: "",
     messageType: "",
     draft: "",
@@ -60,7 +62,8 @@
       .cp-account-status[data-type="success"] { border-color:rgba(51,156,255,.36); color:#8cc9ff; }
       .cp-account-empty { display:grid; place-items:center; min-height:190px; color:var(--cp-muted); font-size:13px; text-align:center; }
       .cp-account-list { overflow:hidden; border:1px solid var(--cp-border); border-radius:12px; background:var(--cp-surface); }
-      .cp-account-list-actions { display:flex; justify-content:flex-end; margin-top:12px; }
+      .cp-account-list-actions,.cp-account-row-actions { display:flex; justify-content:flex-end; gap:8px; }
+      .cp-account-list-actions { margin-top:12px; }
       .cp-account-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; align-items:center; border:0; border-bottom:1px solid var(--cp-divider); padding:14px 16px; background:transparent; }
       .cp-account-row:last-child { border-bottom:0; }
       .cp-account-row[data-active="true"] { background:rgba(51,156,255,.055); box-shadow:inset 2px 0 0 var(--cp-accent); }
@@ -79,6 +82,8 @@
       .cp-account-button:hover:not(:disabled) { background:var(--cp-surface-hover); }
       .cp-account-button[data-primary="true"] { border-color:var(--cp-accent); color:#fff; background:var(--cp-accent); }
       .cp-account-button[data-primary="true"]:hover:not(:disabled) { border-color:var(--cp-accent-hover); background:var(--cp-accent-hover); }
+      .cp-account-button[data-danger="true"] { color:#fca5a5; }
+      .cp-account-button[data-danger="true"]:hover:not(:disabled) { border-color:rgba(248,113,113,.45); background:rgba(248,113,113,.1); }
       .cp-account-button:disabled { cursor:not-allowed; opacity:.48; }
       .cp-import { display:grid; gap:12px; }
       .cp-import-heading { display:grid; gap:3px; }
@@ -94,7 +99,7 @@
       html.light .cp-account-dialog,html[data-theme="light"] .cp-account-dialog { --cp-bg:#fff; --cp-surface:#f7f7f8; --cp-surface-hover:#ececef; --cp-border:#dedee1; --cp-divider:#e7e7e9; --cp-text:#202123; --cp-muted:#6e6e75; --cp-button:#fff; color-scheme:light; box-shadow:0 24px 64px rgba(0,0,0,.2); }
       html.light .cp-account-row[data-active="true"],html[data-theme="light"] .cp-account-row[data-active="true"] { background:rgba(51,156,255,.07); }
       html.light .cp-import-textarea,html[data-theme="light"] .cp-import-textarea { background:#fff; }
-      @media (max-width:560px) { .cp-account-overlay{padding:8px}.cp-account-dialog{max-height:calc(100vh - 16px)}.cp-account-row{grid-template-columns:1fr}.cp-account-button{width:100%}.cp-account-list-actions,.cp-import-actions,.cp-import-submit-actions{flex-direction:column}.cp-usage-window{grid-template-columns:auto 1fr}.cp-usage-reset{grid-column:1/-1}.cp-import-textarea{min-height:230px} }
+      @media (max-width:560px) { .cp-account-overlay{padding:8px}.cp-account-dialog{max-height:calc(100vh - 16px)}.cp-account-row{grid-template-columns:1fr}.cp-account-button{width:100%}.cp-account-list-actions,.cp-account-row-actions,.cp-import-actions,.cp-import-submit-actions{flex-direction:column}.cp-usage-window{grid-template-columns:auto 1fr}.cp-usage-reset{grid-column:1/-1}.cp-import-textarea{min-height:230px} }
     `;
     document.head.appendChild(style);
   }
@@ -233,12 +238,17 @@
     }
     const list = state.accounts.length
       ? `<div class="cp-account-list">${state.accounts.map(accountMarkup).join("")}</div>`
-      : '<div class="cp-account-empty">暂无账户。可添加一个 auth.json 账户。</div>';
-    body.innerHTML = `${messageMarkup()}${list}<div class="cp-account-list-actions"><button type="button" class="cp-account-button" data-primary="true" data-cp-add>添加账户</button></div>`;
+      : '<div class="cp-account-empty">暂无已保存账户。可导入 auth.json，或通过官方登录页面添加。</div>';
+    const busy = state.switching || state.deleting || state.webLoginStarting;
+    body.innerHTML = `${messageMarkup()}${list}<div class="cp-account-list-actions"><button type="button" class="cp-account-button" data-cp-add ${busy ? "disabled" : ""}>导入 auth.json</button><button type="button" class="cp-account-button" data-primary="true" data-cp-web-login ${busy ? "disabled" : ""}>${state.webLoginStarting ? "正在重启…" : "网页登录新账户"}</button></div>`;
     body.querySelectorAll("[data-cp-switch]").forEach((button) => {
       button.addEventListener("click", () => void switchAccount(button.dataset.cpSwitch, button));
     });
+    body.querySelectorAll("[data-cp-delete]").forEach((button) => {
+      button.addEventListener("click", () => void deleteAccount(button.dataset.cpDelete));
+    });
     body.querySelector("[data-cp-add]")?.addEventListener("click", () => switchView("import"));
+    body.querySelector("[data-cp-web-login]")?.addEventListener("click", () => void startWebLogin());
   }
 
   function accountMarkup(account) {
@@ -253,7 +263,7 @@
         <div class="cp-account-meta">${secondary ? `<span>${escapeHtml(secondary)}</span>` : ""}${account?.plan ? `<span>${escapeHtml(account.plan)}</span>` : ""}</div>
         <div class="cp-account-usage">${usageMarkup(usageState)}</div>
       </div>
-      <button type="button" class="cp-account-button" data-primary="${!active}" data-cp-switch="${escapeHtml(id)}" ${active || state.switching ? "disabled" : ""}>${state.switching === id ? "切换中…" : active ? "当前账户" : "切换"}</button>
+      <div class="cp-account-row-actions"><button type="button" class="cp-account-button" data-primary="${!active}" data-cp-switch="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""}>${state.switching === id ? "切换中…" : active ? "当前账户" : "切换"}</button><button type="button" class="cp-account-button" data-danger="true" data-cp-delete="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""} title="${active ? "请先切换到其他账户再删除" : "删除已保存账户"}">${state.deleting === id ? "删除中…" : "删除"}</button></div>
     </div>`;
   }
 
@@ -311,7 +321,7 @@
   }
 
   async function switchAccount(accountId, button) {
-    if (!accountId || state.switching) return;
+    if (!accountId || state.switching || state.deleting || state.webLoginStarting) return;
     state.switching = accountId;
     setMessage("");
     button.disabled = true;
@@ -321,6 +331,43 @@
       setMessage(result?.message || "正在切换账户并重新启动 Codex…", "success");
     } catch (error) {
       state.switching = "";
+      setMessage(error?.message || String(error), "error");
+    }
+    renderAccounts();
+  }
+
+  async function deleteAccount(accountId) {
+    if (!accountId || state.switching || state.deleting || state.webLoginStarting) return;
+    const account = state.accounts.find((value) => String(value?.accountId || "") === accountId);
+    const label = account?.email || account?.name || "这个账户";
+    if (!window.confirm(`确定删除已保存账户“${label}”吗？\n\n这不会删除 ChatGPT 账户本身。`)) return;
+    state.deleting = accountId;
+    setMessage("");
+    renderAccounts();
+    try {
+      await invoke("/accounts/delete", { accountId });
+      state.accounts = state.accounts.filter((value) => String(value?.accountId || "") !== accountId);
+      state.usage.delete(accountId);
+      setMessage("已删除保存的账户。", "success");
+    } catch (error) {
+      setMessage(error?.message || String(error), "error");
+    } finally {
+      state.deleting = "";
+      renderAccounts();
+    }
+  }
+
+  async function startWebLogin() {
+    if (state.switching || state.deleting || state.webLoginStarting) return;
+    if (!window.confirm("将保存当前账户并重新启动 Codex，随后进入官方登录页面。登录成功后，新账户会自动加入列表。\n\n是否继续？")) return;
+    state.webLoginStarting = true;
+    setMessage("");
+    renderAccounts();
+    try {
+      const result = await invoke("/accounts/web-login", {});
+      setMessage(result?.message || "正在保存当前账户并重新启动到登录页面…", "success");
+    } catch (error) {
+      state.webLoginStarting = false;
       setMessage(error?.message || String(error), "error");
     }
     renderAccounts();
@@ -410,6 +457,8 @@
     state.usage.clear();
     state.loading = false;
     state.switching = "";
+    state.deleting = "";
+    state.webLoginStarting = false;
     state.message = "";
     state.messageType = "";
     state.importing = false;

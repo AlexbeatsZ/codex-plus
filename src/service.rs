@@ -29,7 +29,9 @@ impl AccountService {
             "/accounts/list" => self.list().await,
             "/accounts/usage" => self.usage(payload).await,
             "/accounts/import" => self.import(payload).await,
+            "/accounts/delete" => self.delete(payload).await,
             "/accounts/switch" => self.switch(payload).await,
+            "/accounts/web-login" => self.web_login().await,
             "/api-providers/list" => self.api_list().await,
             "/api-providers/discover" => self.api_discover(payload).await,
             "/api-providers/save" => self.api_save(payload).await,
@@ -105,6 +107,36 @@ impl AccountService {
             "status": "accepted",
             "accountId": account_id,
             "message": "正在切换账户并重新启动 Codex…"
+        }))
+    }
+
+    async fn delete(&self, payload: Value) -> anyhow::Result<Value> {
+        let account_id = required_id(&payload)?;
+        let paths = self.paths.as_ref().clone();
+        let delete_id = account_id.clone();
+        tokio::task::spawn_blocking(move || {
+            AccountVault::new(paths)
+                .delete_account(&delete_id)
+                .map_err(anyhow::Error::from)
+        })
+        .await
+        .context("账户删除任务失败")??;
+        Ok(json!({"status": "ok", "accountId": account_id}))
+    }
+
+    async fn web_login(&self) -> anyhow::Result<Value> {
+        let paths = self.paths.as_ref().clone();
+        tokio::task::spawn_blocking(move || {
+            AccountVault::new(paths)
+                .validate_web_login()
+                .map_err(anyhow::Error::from)
+        })
+        .await
+        .context("网页登录验证任务失败")??;
+        crate::runtime::queue_web_login(self.paths())?;
+        Ok(json!({
+            "status": "accepted",
+            "message": "正在保存当前账户并重新启动到登录页面…"
         }))
     }
 

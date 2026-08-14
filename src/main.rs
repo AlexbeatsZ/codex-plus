@@ -21,6 +21,7 @@ const DEBUG_PORT: u16 = 9229;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaunchMode {
     ApplyPendingAction,
+    WebLogin,
     AttachExisting(u16),
     LoginStartup,
     Explicit,
@@ -30,6 +31,8 @@ impl LaunchMode {
     fn from_args(args: &[String]) -> Self {
         if args.iter().any(|arg| arg == "--apply-pending-action") {
             Self::ApplyPendingAction
+        } else if args.iter().any(|arg| arg == "--web-login") {
+            Self::WebLogin
         } else if let Some(port) = args.iter().find_map(|arg| {
             arg.strip_prefix("--attach-existing-port=")
                 .and_then(|value| value.parse::<u16>().ok())
@@ -65,9 +68,10 @@ async fn main_impl() -> anyhow::Result<()> {
 
     match LaunchMode::from_args(&args) {
         LaunchMode::ApplyPendingAction => runtime::apply_pending_action(&paths),
+        LaunchMode::WebLogin => run_managed_codex(paths, "launcher.web_login_start", true).await,
         LaunchMode::AttachExisting(debug_port) => run_attach_existing(paths, debug_port).await,
         LaunchMode::LoginStartup => run_login_startup(paths).await,
-        LaunchMode::Explicit => run_managed_codex(paths, "launcher.explicit_start").await,
+        LaunchMode::Explicit => run_managed_codex(paths, "launcher.explicit_start", false).await,
     }
 }
 
@@ -103,10 +107,14 @@ async fn run_login_startup(paths: AccountPaths) -> anyhow::Result<()> {
     runtime::wait_until_codex_starts().await;
     runtime::append_log(&paths, "launcher.login_startup.detected", json!({}));
     drop(monitor_guard);
-    run_managed_codex(paths, "launcher.login_startup.takeover").await
+    run_managed_codex(paths, "launcher.login_startup.takeover", false).await
 }
 
-async fn run_managed_codex(paths: AccountPaths, start_event: &str) -> anyhow::Result<()> {
+async fn run_managed_codex(
+    paths: AccountPaths,
+    start_event: &str,
+    capture_web_login: bool,
+) -> anyhow::Result<()> {
     let service = AccountService::new(paths.clone());
 
     // Resolve read-only installation metadata before terminating the app, but the
@@ -139,6 +147,10 @@ async fn run_managed_codex(paths: AccountPaths, start_event: &str) -> anyhow::Re
         "launcher.codex_started",
         json!({"executable": codex_executable, "debugPort": debug_port.port}),
     );
+
+    if capture_web_login {
+        tokio::spawn(runtime::capture_web_login(paths.clone()));
+    }
 
     tokio::select! {
         result = cdp::run_watchdog(debug_port.port, service) => result.context("注入监测意外结束"),
@@ -186,6 +198,10 @@ mod tests {
         assert_eq!(
             LaunchMode::from_args(&args(&["--login-startup", "--apply-pending-action"])),
             LaunchMode::ApplyPendingAction
+        );
+        assert_eq!(
+            LaunchMode::from_args(&args(&["--login-startup", "--web-login"])),
+            LaunchMode::WebLogin
         );
     }
 

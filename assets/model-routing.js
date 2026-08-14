@@ -3,7 +3,7 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 13;
+  const VERSION = 16;
   const PROVIDER = "codex-plus-api";
   const SELECTED_KEY = "codex-plus:selected-model";
   const state = {
@@ -14,6 +14,7 @@
     loaded: false,
     selected: "",
     selectedProvider: "",
+    pendingOfficialModel: "",
     diagnostics: [],
     requestClients: 0,
     nativeModelQueries: 0,
@@ -25,9 +26,11 @@
   let originalSendMessageFromView = null;
   let activeRequestClient = null;
   let activeConversationManager = null;
+  let appServerDispatch = null;
   let appServerHost = null;
   let queryClient = null;
   let installTimer = null;
+  let pendingThreadNavigation = null;
 
   if (window.__codexPlusModelRouting?.version === VERSION) {
     window.__codexPlusModelRouting.install();
@@ -83,6 +86,7 @@
   }
 
   function selectedModel() {
+    if (state.pendingOfficialModel) return state.pendingOfficialModel;
     try { return localStorage.getItem(SELECTED_KEY) || state.selected; } catch { return state.selected; }
   }
 
@@ -103,6 +107,7 @@
 
   function setSelectedModel(model) {
     const previous = selectedModel();
+    state.pendingOfficialModel = "";
     state.selected = String(model || "");
     state.selectedProvider = state.selected ? PROVIDER : "openai";
     try {
@@ -110,6 +115,16 @@
       else localStorage.removeItem(SELECTED_KEY);
     } catch {}
     if (previous !== state.selected) discardPrewarmedThreads("model-selection-changed");
+  }
+
+  function setSelectedOfficialModel(model) {
+    const next = String(model || "");
+    const previous = selectedModel();
+    state.pendingOfficialModel = next;
+    state.selected = "";
+    state.selectedProvider = next ? "openai" : "";
+    try { localStorage.removeItem(SELECTED_KEY); } catch {}
+    if (previous !== next) discardPrewarmedThreads("model-selection-changed");
   }
 
   function descriptor(model) {
@@ -195,7 +210,7 @@
 
   function routeParams(method, params = {}) {
     if (method === "thread/list") return { ...params, modelProviders: [] };
-    if (method === "thread/start" || method === "thread/resume") {
+    if (method === "thread/start" || method === "thread/resume" || method === "thread/fork") {
       const targetProvider = providerForModel(params.model);
       return targetProvider ? { ...params, modelProvider: targetProvider } : params;
     }
@@ -243,7 +258,8 @@
     if (!threadId) return;
     const provider = String(thread?.modelProvider || thread?.model_provider || fallbackProvider || "");
     if (provider) threadProviders.set(threadId, provider);
-    if (fallbackModel) threadModels.set(threadId, fallbackModel);
+    const model = String(fallbackModel || thread?.model || "");
+    if (model && providerForModel(model) === provider && (fallbackModel || !threadModels.has(threadId))) threadModels.set(threadId, model);
   }
 
   function rememberThreadResult(method, params, result) {
@@ -251,36 +267,100 @@
       for (const thread of result.data) rememberThread(thread);
       return;
     }
-    if (["thread/start", "thread/read", "thread/resume"].includes(method)) {
+    if (["thread/start", "thread/read", "thread/resume", "thread/fork"].includes(method)) {
       rememberThread(result, String(params?.model || ""), String(params?.modelProvider || ""));
     }
   }
 
   function isIdleThread(thread) {
     const type = String(thread?.status?.type || thread?.status || "idle").toLowerCase();
-    return type === "idle" || type === "notloaded" || type === "not_loaded";
+    return ["idle", "notloaded", "not_loaded", "systemerror", "system_error", "failed"].includes(type);
   }
 
-  async function switchThreadWithClient(client, original, { threadId, currentModel, currentProvider, targetModel, targetProvider, idle = true }) {
+  function restoreSelection(model, provider) {
+    if (provider === PROVIDER && model) setSelectedModel(model);
+    else if (provider === "openai" && model) setSelectedOfficialModel(model);
+    else setSelectedModel("");
+  }
+
+  function threadElement(threadId, hostId = "") {
+    for (const element of document.querySelectorAll("[data-app-action-sidebar-thread-id]")) {
+      const value = String(element.getAttribute("data-app-action-sidebar-thread-id") || "");
+      if ((hostId && value === `${hostId}:${threadId}`) || (!hostId && value.endsWith(`:${threadId}`))) return element;
+    }
+    return null;
+  }
+
+  function threadUiInfo(threadId) {
+    const element = threadElement(threadId);
+    return {
+      hostId: String(element?.getAttribute("data-app-action-sidebar-thread-host-id") || "local"),
+      title: String(element?.getAttribute("data-app-action-sidebar-thread-title") || element?.textContent || "").trim(),
+    };
+  }
+
+  function navigateToThread(threadId, hostId) {
+    let attempts = 0;
+    const navigate = () => {
+      attempts += 1;
+      const element = threadElement(threadId, hostId);
+      if (element) {
+        element.click();
+        diagnostic("provider-fork-navigated", { threadId, hostId, attempts });
+        return;
+      }
+      if (attempts < 40) window.setTimeout(navigate, 100);
+      else diagnostic("provider-fork-navigation-failed", { threadId, hostId });
+    };
+    window.setTimeout(navigate, 0);
+  }
+
+  function providerLabel(provider) {
+    return provider === PROVIDER ? "API 模型" : "GPT";
+  }
+
+  function confirmProviderFork(currentProvider, targetProvider) {
+    return window.confirm(`当前 Codex 不能在同一个任务 ID 内从 ${providerLabel(currentProvider)} 切换到 ${providerLabel(targetProvider)}。\n\n继续会创建一个继承完整对话历史的新任务分支，把本条消息发送到新分支，并自动切换过去；原任务会保留。\n\n是否继续？`);
+  }
+
+  async function forkThreadWithClient(client, original, { threadId, currentModel, currentProvider, targetModel, targetProvider, idle = true, ask = true }) {
     if (!idle) throw new Error("任务仍在运行，不能切换 provider");
     if (!threadId) throw new Error("缺少任务 ID");
     if (currentProvider === targetProvider) return { status: "ok", inPlace: true };
-    await original.call(client, "thread/shutdown", { threadId });
+    if (ask && !confirmProviderFork(currentProvider, targetProvider)) {
+      restoreSelection(currentModel, currentProvider);
+      diagnostic("provider-fork-cancelled", { currentProvider, targetProvider });
+      throw new Error("已取消跨 provider 历史分支，消息未发送");
+    }
+    const ui = threadUiInfo(threadId);
     try {
-      const resumed = await original.call(client, "thread/resume", { threadId, model: targetModel, modelProvider: targetProvider });
-      const verified = String(resumed?.thread?.modelProvider || resumed?.modelProvider || resumed?.model_provider || "");
+      let childId = "";
+      if (appServerDispatch) {
+        childId = String(await appServerDispatch("fork-conversation-from-latest", {
+          hostId: ui.hostId,
+          conversationId: threadId,
+          model: targetModel,
+        }) || "");
+      } else {
+        const forked = await original.call(client, "thread/fork", { threadId, model: targetModel, modelProvider: targetProvider });
+        childId = String(forked?.thread?.id || forked?.threadId || forked?.id || "");
+      }
+      if (!childId) throw new Error("fork 未返回新任务 ID");
+      const read = await original.call(client, "thread/read", { threadId: childId, includeTurns: false });
+      const verified = String(read?.thread?.modelProvider || read?.modelProvider || read?.model_provider || "");
       if (verified !== targetProvider) throw new Error(`provider 验证失败：${verified || "未返回 provider"}`);
-      threadProviders.set(threadId, targetProvider);
-      threadModels.set(threadId, targetModel);
-      setSelectedModel(targetProvider === PROVIDER ? targetModel : "");
-      diagnostic("provider-switch-complete", { currentProvider, targetProvider });
-      return { status: "ok", provider: targetProvider };
+      threadProviders.set(childId, targetProvider);
+      threadModels.set(childId, targetModel);
+      if (appServerDispatch && ui.title) {
+        try { await appServerDispatch("set-thread-title", { hostId: ui.hostId, conversationId: childId, title: ui.title }); } catch {}
+      }
+      pendingThreadNavigation = appServerDispatch ? { threadId: childId, hostId: ui.hostId } : null;
+      diagnostic("provider-fork-complete", { sourceThreadId: threadId, targetThreadId: childId, currentProvider, targetProvider });
+      return { status: "ok", provider: targetProvider, threadId: childId };
     } catch (error) {
-      const rollback = { threadId, modelProvider: currentProvider };
-      if (currentModel) rollback.model = currentModel;
-      try { await original.call(client, "thread/resume", rollback); } catch {}
-      diagnostic("provider-switch-rollback", { currentProvider, targetProvider });
-      throw new Error(`provider 切换失败，已尝试恢复原任务：${error?.message || error}`);
+      restoreSelection(currentModel, currentProvider);
+      diagnostic("provider-fork-failed", { currentProvider, targetProvider, message: String(error?.message || error) });
+      throw new Error(`跨 provider 历史分支失败，原任务未改变，消息已阻止发送：${error?.message || error}`);
     }
   }
 
@@ -290,7 +370,9 @@
     const targetProvider = providerForModel(desiredModel);
     const threadId = String(params.threadId || params.thread_id || "");
     if (!desiredModel || !targetProvider || !threadId) return routeParams(method, params);
-    let currentProvider = String(params.modelProvider || params.model_provider || threadProviders.get(threadId) || "");
+    // A turn request may already describe the newly selected provider. The
+    // source thread is authoritative: its provider is fixed at creation time.
+    let currentProvider = String(threadProviders.get(threadId) || "");
     let thread = null;
     if (!currentProvider) {
       const read = await original.call(client, "thread/read", { threadId, includeTurns: false });
@@ -304,7 +386,7 @@
         thread = read?.thread || null;
         rememberThread(read);
       }
-      await switchThreadWithClient(client, original, {
+      const forked = await forkThreadWithClient(client, original, {
         threadId,
         currentModel: threadModels.get(threadId) || "",
         currentProvider,
@@ -312,6 +394,10 @@
         targetProvider,
         idle: isIdleThread(thread),
       });
+      const next = { ...params, model: desiredModel };
+      if ("thread_id" in next && !("threadId" in next)) next.thread_id = forked.threadId;
+      else next.threadId = forked.threadId;
+      return next;
     }
     return { ...params, model: desiredModel };
   }
@@ -330,7 +416,7 @@
     client.enqueueRequest = async function (method, params, options, dispatch, trace) {
       const normalizedMethod = String(method || "");
       const nextParams = await prepareRequest(this, rawRequest, normalizedMethod, params || {});
-      if (["thread/start", "thread/resume", "turn/start"].includes(normalizedMethod)) {
+      if (["thread/start", "thread/resume", "thread/fork", "turn/start"].includes(normalizedMethod)) {
         diagnostic("app-server-request-routed", {
           method: normalizedMethod,
           model: String(nextParams?.model || ""),
@@ -339,6 +425,18 @@
         });
       }
       const result = await originalEnqueue.call(this, method, nextParams, options, dispatch, trace);
+      if (normalizedMethod === "turn/start" && state.pendingOfficialModel && String(nextParams?.model || "") === state.pendingOfficialModel) {
+        state.pendingOfficialModel = "";
+        state.selectedProvider = "";
+      }
+      if (normalizedMethod === "turn/start" && pendingThreadNavigation) {
+        const sentThreadId = String(nextParams?.threadId || nextParams?.thread_id || "");
+        if (sentThreadId === pendingThreadNavigation.threadId) {
+          const navigation = pendingThreadNavigation;
+          pendingThreadNavigation = null;
+          navigateToThread(navigation.threadId, navigation.hostId);
+        }
+      }
       rememberThreadResult(normalizedMethod, nextParams, result);
       if (normalizedMethod === "list-models" || normalizedMethod === "model/list") return patchModelResult(result);
       return result;
@@ -409,6 +507,7 @@
       }
     });
     if (!dispatch) { diagnostic("app-server-dispatch-not-found"); return false; }
+    appServerDispatch = dispatch;
     await dispatch("list-models-for-host", { hostId: "local", includeHidden: true, cursor: null, limit: 100 });
     return true;
   }
@@ -439,20 +538,13 @@
   async function experimentalSwitchThread({ threadId, currentModel, currentProvider, targetModel, targetProvider, idle }) {
     if (!idle) throw new Error("任务仍在运行，不能切换 provider");
     if (originalSendMessageFromView) {
-      await originalSendMessageFromView({ type: "send-cli-request-for-host", method: "thread/shutdown", params: { threadId } });
-      try {
-        const resumed = await originalSendMessageFromView({ type: "send-cli-request-for-host", method: "thread/resume", params: { threadId, model: targetModel, modelProvider: targetProvider } });
-        const verified = String(resumed?.thread?.modelProvider || resumed?.modelProvider || resumed?.model_provider || "");
-        if (verified !== targetProvider) throw new Error(`provider 验证失败：${verified || "未返回 provider"}`);
-        setSelectedModel(targetProvider === PROVIDER ? targetModel : "");
-        return { status: "ok", provider: targetProvider };
-      } catch (error) {
-        try { await originalSendMessageFromView({ type: "send-cli-request-for-host", method: "thread/resume", params: { threadId, model: currentModel, modelProvider: currentProvider } }); } catch {}
-        throw new Error(`provider 切换失败，已尝试恢复原任务：${error?.message || error}`);
-      }
+      const forked = await originalSendMessageFromView({ type: "send-cli-request-for-host", method: "thread/fork", params: { threadId, model: targetModel, modelProvider: targetProvider } });
+      const verified = String(forked?.thread?.modelProvider || forked?.modelProvider || forked?.model_provider || "");
+      if (verified !== targetProvider) throw new Error(`provider 验证失败：${verified || "未返回 provider"}`);
+      return { status: "ok", provider: targetProvider, threadId: String(forked?.thread?.id || forked?.threadId || forked?.id || "") };
     }
     if (!activeRequestClient) throw new Error("Codex app-server client 不可用");
-    return switchThreadWithClient(activeRequestClient, clientOriginals.get(activeRequestClient), { threadId, currentModel, currentProvider, targetModel, targetProvider, idle });
+    return forkThreadWithClient(activeRequestClient, clientOriginals.get(activeRequestClient), { threadId, currentModel, currentProvider, targetModel, targetProvider, idle, ask: false });
   }
 
   function install() {
@@ -472,7 +564,11 @@
       const label = String(option.textContent || "").replace(/\s+/g, " ").trim();
       const api = state.catalog.find((model) => value === model.routeId || label === String(model.displayName || "").trim() || label.startsWith(`${String(model.displayName || "").trim()} `));
       if (api) setSelectedModel(api.routeId);
-      else if (state.officialModels.has(value) || state.officialNames.has(label) || /^(gpt-|codex-|o[1-9](?:-|$))/i.test(value)) setSelectedModel("");
+      else {
+        const officialByLabel = state.officialNames.get(label) || [...state.officialNames].find(([name]) => label.startsWith(`${name} `))?.[1] || "";
+        const official = state.officialModels.has(value) || /^(gpt-|codex-|o[1-9](?:-|$))/i.test(value) ? value : officialByLabel;
+        if (official) setSelectedOfficialModel(official);
+      }
     }, true);
     void loadCatalog().catch((error) => diagnostic("catalog-failed", { message: String(error?.message || error) }));
     void installAppServer().then((installed) => {
@@ -500,6 +596,7 @@
     installConversationManagerForTest: installConversationManager,
     refreshNativeModelQueries,
     setTransportForTest: (send) => { originalSendMessageFromView = send; },
+    setAppDispatchForTest: (dispatch) => { appServerDispatch = dispatch; },
     state,
   };
   install();

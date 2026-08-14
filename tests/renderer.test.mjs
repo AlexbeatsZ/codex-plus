@@ -123,7 +123,7 @@ test("routes official and API thread starts and removes thread list provider fil
   assert.equal(official.request.params.modelProvider, "openai");
 });
 
-test("applies API to API turns and controls cross-provider resume with rollback", async () => {
+test("applies API to API turns and routes cross-provider forks", async () => {
   const dom = setup(async (path) => path === "/api-providers/catalog" ? {
     status: "ok", models: [{ routeId: "cp-a", modelId: "a", displayName: "A", providerName: "API" }, { routeId: "cp-b", modelId: "b", displayName: "B", providerName: "API" }],
   } : { status: "ok", accounts: [] });
@@ -132,17 +132,20 @@ test("applies API to API turns and controls cross-provider resume with rollback"
   const turn = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "turn/start", params: { threadId: "t", model: "cp-b", modelProvider: "codex-plus-api" } } });
   assert.equal(turn.request.params.model, "cp-b");
   assert.throws(() => routing.patchRoutingMessage({ type: "mcp-request", request: { method: "turn/start", params: { threadId: "t", model: "cp-b", modelProvider: "openai" } } }), /阻止发送/);
+  const fork = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/fork", params: { threadId: "t", model: "cp-b" } } });
+  assert.equal(fork.request.params.modelProvider, "codex-plus-api");
   await assert.rejects(routing.experimentalSwitchThread({ threadId: "t", currentModel: "gpt-5", currentProvider: "openai", targetModel: "cp-b", targetProvider: "codex-plus-api", idle: false }), /仍在运行/);
 
   const calls = [];
   routing.setTransportForTest(async (message) => {
     calls.push(message);
-    if (message.method === "thread/resume" && message.params.modelProvider === "codex-plus-api") throw new Error("resume rejected");
-    return { modelProvider: message.params?.modelProvider };
+    return { thread: { id: "forked", modelProvider: message.params?.modelProvider } };
   });
-  await assert.rejects(routing.experimentalSwitchThread({ threadId: "t", currentModel: "gpt-5", currentProvider: "openai", targetModel: "cp-b", targetProvider: "codex-plus-api", idle: true }), /已尝试恢复/);
-  assert.deepEqual(calls.map((call) => call.method), ["thread/shutdown", "thread/resume", "thread/resume"]);
-  assert.equal(calls.at(-1).params.modelProvider, "openai");
+  const switched = await routing.experimentalSwitchThread({ threadId: "t", currentModel: "gpt-5", currentProvider: "openai", targetModel: "cp-b", targetProvider: "codex-plus-api", idle: true });
+  assert.deepEqual(calls.map((call) => call.method), ["thread/fork"]);
+  assert.equal(calls[0].params.modelProvider, "codex-plus-api");
+  assert.equal("excludeTurns" in calls[0].params, false);
+  assert.equal(switched.threadId, "forked");
 });
 
 test("installs with a non-extensible Electron bridge and keeps API bridge usable", async () => {
@@ -156,7 +159,7 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.version, 13);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 16);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option \{ color:var\(--cp-text\); background:var\(--cp-bg\); \}/);
 });
@@ -167,6 +170,7 @@ test("patches the real app-server client for native models and provider routing"
   } : { status: "ok", accounts: [] });
   const routing = dom.window.__codexPlusModelRouting;
   await routing.loadCatalog(true);
+  dom.window.confirm = () => true;
   const calls = [];
   const client = {
     requestPromises: new dom.window.Map(),
@@ -175,8 +179,10 @@ test("patches the real app-server client for native models and provider routing"
       if (method === "list-models") return { data: [{ id: "gpt-5", model: "gpt-5", displayName: "GPT-5", supportedReasoningEfforts: [] }] };
       if (method === "thread/list") return { data: [] };
       if (method === "thread/start") return { thread: { id: "new-thread", modelProvider: params.modelProvider, status: { type: "idle" } } };
-      if (method === "thread/read") return { thread: { id: params.threadId, modelProvider: "openai", status: { type: "idle" } } };
-      if (method === "thread/resume") return { thread: { id: params.threadId, modelProvider: params.modelProvider, status: { type: "idle" } } };
+      if (method === "thread/read") {
+        const provider = ["new-thread", "api-child"].includes(params.threadId) ? "codex-plus-api" : "openai";
+        return { thread: { id: params.threadId, modelProvider: provider, status: { type: "idle" } } };
+      }
       return {};
     },
     async sendRequest(method, params, options) {
@@ -187,6 +193,24 @@ test("patches the real app-server client for native models and provider routing"
     },
   };
   assert.equal(routing.installRequestClientForTest(client), true);
+  const addThreadRow = (threadId, title) => {
+    const row = dom.window.document.createElement("div");
+    row.setAttribute("data-app-action-sidebar-thread-id", `local:${threadId}`);
+    row.setAttribute("data-app-action-sidebar-thread-host-id", "local");
+    row.setAttribute("data-app-action-sidebar-thread-title", title);
+    row.addEventListener("click", () => row.setAttribute("data-clicked", "true"));
+    dom.window.document.body.append(row);
+    return row;
+  };
+  addThreadRow("existing", "Official source");
+  addThreadRow("new-thread", "API source");
+  const apiChildRow = addThreadRow("api-child", "API child");
+  const gptChildRow = addThreadRow("gpt-child", "GPT child");
+  routing.setAppDispatchForTest(async (method, params) => {
+    calls.push({ method: `dispatch:${method}`, params });
+    if (method === "fork-conversation-from-latest") return params.conversationId === "existing" ? "api-child" : "gpt-child";
+    return {};
+  });
   let prewarmClears = 0;
   assert.equal(routing.installConversationManagerForTest({ requestClient: client, clearPrewarmedThreads: () => { prewarmClears += 1; } }), true);
   assert.equal(prewarmClears, 1);
@@ -202,8 +226,101 @@ test("patches the real app-server client for native models and provider routing"
   await client.sendRequest("thread/list", { modelProviders: ["openai"] });
   assert.equal(calls.find((call) => call.method === "thread/list").params.modelProviders.length, 0);
   await client.sendRequest("turn/start", { threadId: "existing", model: "cp-route" });
-  assert.deepEqual(calls.slice(-4).map((call) => call.method), ["thread/read", "thread/shutdown", "thread/resume", "turn/start"]);
-  assert.equal(calls.at(-2).params.modelProvider, "codex-plus-api");
+  assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "dispatch:fork-conversation-from-latest", "thread/read", "dispatch:set-thread-title", "turn/start"]);
+  assert.equal(calls.at(-4).params.model, "cp-route");
+  assert.equal(calls.at(-1).params.threadId, "api-child");
+  await flush();
+  assert.equal(apiChildRow.getAttribute("data-clicked"), "true");
+  const officialOption = dom.window.document.createElement("button");
+  officialOption.setAttribute("role", "option");
+  officialOption.setAttribute("data-value", "gpt-5");
+  officialOption.textContent = "GPT-5";
+  dom.window.document.body.append(officialOption);
+  officialOption.click();
+  await client.sendRequest("turn/start", { threadId: "new-thread", modelProvider: "openai" });
+  assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "dispatch:fork-conversation-from-latest", "thread/read", "dispatch:set-thread-title", "turn/start"]);
+  assert.equal(calls.at(-4).params.model, "gpt-5");
+  assert.equal(calls.at(-1).params.threadId, "gpt-child");
+  assert.equal(calls.at(-1).params.model, "gpt-5");
+  assert.equal(routing.selectedModel(), "");
+  await flush();
+  assert.equal(gptChildRow.getAttribute("data-clicked"), "true");
+});
+
+test("does not fork or send when the user cancels a provider branch", async () => {
+  const dom = setup(async (path) => path === "/api-providers/catalog" ? {
+    status: "ok", models: [{ routeId: "cp-route", modelId: "upstream-model", displayName: "API Alias", providerName: "API A" }],
+  } : { status: "ok", accounts: [] });
+  const routing = dom.window.__codexPlusModelRouting;
+  await routing.loadCatalog(true);
+  dom.window.confirm = () => false;
+  const calls = [];
+  const client = {
+    requestPromises: new dom.window.Map(),
+    async enqueueRequest(method, params) {
+      calls.push({ method, params });
+      if (method === "list-models") return { data: [{ id: "gpt-5", model: "gpt-5", displayName: "GPT-5", supportedReasoningEfforts: [] }] };
+      if (method === "thread/start") return { thread: { id: "api-thread", model: params.model, modelProvider: params.modelProvider, status: { type: "idle" } } };
+      if (method === "thread/read") return { thread: { id: params.threadId, model: "cp-route", modelProvider: "codex-plus-api", status: { type: "idle" } } };
+      return {};
+    },
+    async sendRequest(method, params, options) {
+      return this.enqueueRequest(method, params, options);
+    },
+  };
+  routing.installRequestClientForTest(client);
+  await client.sendRequest("list-models", {});
+  await client.sendRequest("thread/start", { model: "cp-route" });
+  const officialOption = dom.window.document.createElement("button");
+  officialOption.setAttribute("role", "option");
+  officialOption.setAttribute("data-value", "gpt-5");
+  officialOption.textContent = "GPT-5";
+  dom.window.document.body.append(officialOption);
+  officialOption.click();
+  await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread" }), /已取消跨 provider 历史分支/);
+  assert.equal(calls.at(-1).method, "thread/read");
+  assert.equal(calls.some((call) => call.method === "turn/start" || call.method === "thread/fork"), false);
+  assert.equal(routing.selectedModel(), "cp-route");
+});
+
+test("blocks the turn when a provider fork cannot be verified", async () => {
+  const dom = setup(async (path) => path === "/api-providers/catalog" ? {
+    status: "ok", models: [{ routeId: "cp-route", modelId: "upstream-model", displayName: "API Alias", providerName: "API A" }],
+  } : { status: "ok", accounts: [] });
+  const routing = dom.window.__codexPlusModelRouting;
+  await routing.loadCatalog(true);
+  dom.window.confirm = () => true;
+  const calls = [];
+  const client = {
+    requestPromises: new dom.window.Map(),
+    async enqueueRequest(method, params) {
+      calls.push({ method, params });
+      if (method === "list-models") return { data: [{ id: "gpt-5", model: "gpt-5", displayName: "GPT-5", supportedReasoningEfforts: [] }] };
+      if (method === "thread/start") return { thread: { id: "api-thread", model: params.model, modelProvider: params.modelProvider, status: { type: "idle" } } };
+      if (method === "thread/read") return { thread: { id: params.threadId, model: "cp-route", modelProvider: "codex-plus-api", status: { type: "idle" } } };
+      return {};
+    },
+    async sendRequest(method, params, options) {
+      return this.enqueueRequest(method, params, options);
+    },
+  };
+  routing.installRequestClientForTest(client);
+  routing.setAppDispatchForTest(async (method, params) => {
+    calls.push({ method: `dispatch:${method}`, params });
+    if (method === "fork-conversation-from-latest") return "bad-child";
+    return {};
+  });
+  await client.sendRequest("list-models", {});
+  await client.sendRequest("thread/start", { model: "cp-route" });
+  const officialOption = dom.window.document.createElement("button");
+  officialOption.setAttribute("role", "option");
+  officialOption.setAttribute("data-value", "gpt-5");
+  officialOption.textContent = "GPT-5";
+  dom.window.document.body.append(officialOption);
+  officialOption.click();
+  await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread" }), /provider 验证失败：codex-plus-api/);
+  assert.equal(calls.some((call) => call.method === "turn/start"), false);
+  assert.equal(routing.selectedModel(), "cp-route");
 });
 
 test("renders account buttons before independent usage requests finish", async () => {
@@ -227,8 +344,11 @@ test("renders account buttons before independent usage requests finish", async (
   await flush();
   assert.equal(dom.window.document.querySelectorAll(".cp-account-row").length, 2);
   assert.equal(dom.window.document.querySelector('[data-cp-switch="two"]')?.textContent, "切换");
+  assert.equal(dom.window.document.querySelector('[data-cp-delete="one"]')?.disabled, true);
+  assert.equal(dom.window.document.querySelector('[data-cp-delete="two"]')?.disabled, false);
   assert.equal(dom.window.document.querySelectorAll(".cp-usage-loading").length, 2);
-  assert.equal(dom.window.document.querySelector(".cp-account-list + .cp-account-list-actions [data-cp-add]")?.textContent, "添加账户");
+  assert.equal(dom.window.document.querySelector(".cp-account-list + .cp-account-list-actions [data-cp-add]")?.textContent, "导入 auth.json");
+  assert.equal(dom.window.document.querySelector("[data-cp-web-login]")?.textContent, "网页登录新账户");
   assert.equal(dom.window.document.querySelector(".cp-account-tabs"), null);
 
   usageOne.resolve({
@@ -277,8 +397,64 @@ test("file selection only fills the textarea and import requires the second butt
   const imports = calls.filter((call) => call.path === "/accounts/import");
   assert.equal(imports.length, 1);
   assert.equal(imports[0].payload.authContents, auth);
-  assert.equal(dom.window.document.querySelector("[data-cp-add]")?.textContent, "添加账户");
+  assert.equal(dom.window.document.querySelector("[data-cp-add]")?.textContent, "导入 auth.json");
   assert.equal(dom.window.document.querySelector("[data-cp-auth]"), null);
+});
+
+test("deletes only an inactive saved account after explicit confirmation", async () => {
+  const calls = [];
+  const dom = setup(async (path, payload) => {
+    calls.push({ path, payload });
+    if (path === "/accounts/list") return {
+      status: "ok",
+      accounts: [
+        { accountId: "one", email: "one@example.com", active: true },
+        { accountId: "two", email: "two@example.com", active: false },
+      ],
+    };
+    if (path === "/accounts/usage") return { status: "ok", usage: {} };
+    if (path === "/accounts/delete") return { status: "ok", accountId: payload.accountId };
+    throw new Error(`unexpected ${path}`);
+  });
+  dom.window.confirm = () => true;
+  await flush();
+  dom.window.document.querySelector("[data-codex-plus-account-item]").click();
+  await flush();
+
+  assert.equal(dom.window.document.querySelector('[data-cp-delete="one"]').disabled, true);
+  dom.window.document.querySelector('[data-cp-delete="two"]').click();
+  await flush();
+
+  const deletes = calls.filter((call) => call.path === "/accounts/delete");
+  assert.deepEqual(deletes.map((call) => call.payload.accountId), ["two"]);
+  assert.equal(dom.window.document.querySelector('[data-account-id="two"]'), null);
+  assert.match(dom.window.document.querySelector(".cp-account-status").textContent, /已删除/);
+});
+
+test("web login requires confirmation and requests the controlled restart", async () => {
+  const calls = [];
+  const dom = setup(async (path, payload) => {
+    calls.push({ path, payload });
+    if (path === "/accounts/list") return { status: "ok", accounts: [] };
+    if (path === "/accounts/web-login") return { status: "accepted", message: "正在重启" };
+    throw new Error(`unexpected ${path}`);
+  });
+  let confirmed = false;
+  dom.window.confirm = () => confirmed;
+  await flush();
+  dom.window.document.querySelector("[data-codex-plus-account-item]").click();
+  await flush();
+
+  dom.window.document.querySelector("[data-cp-web-login]").click();
+  await flush();
+  assert.equal(calls.filter((call) => call.path === "/accounts/web-login").length, 0);
+
+  confirmed = true;
+  dom.window.document.querySelector("[data-cp-web-login]").click();
+  await flush();
+  assert.equal(calls.filter((call) => call.path === "/accounts/web-login").length, 1);
+  assert.equal(dom.window.document.querySelector("[data-cp-web-login]").textContent, "正在重启…");
+  assert.match(dom.window.document.querySelector(".cp-account-status").textContent, /正在重启/);
 });
 
 test("invalid JSON preserves the draft and never calls the backend", async () => {

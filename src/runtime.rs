@@ -28,6 +28,7 @@ pub enum PendingAction {
         #[serde(rename = "accountId")]
         account_id: String,
     },
+    WebLogin,
 }
 
 pub struct LauncherGuard {
@@ -197,16 +198,26 @@ pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<()> {
 }
 
 pub fn queue_switch(paths: &AccountPaths, account_id: &str) -> anyhow::Result<()> {
-    let pending = PendingAction::SwitchAccount {
-        account_id: account_id.to_string(),
-    };
+    queue_pending_action(
+        paths,
+        PendingAction::SwitchAccount {
+            account_id: account_id.to_string(),
+        },
+    )
+}
+
+pub fn queue_web_login(paths: &AccountPaths) -> anyhow::Result<()> {
+    queue_pending_action(paths, PendingAction::WebLogin)
+}
+
+fn queue_pending_action(paths: &AccountPaths, pending: PendingAction) -> anyhow::Result<()> {
     atomic_write(&paths.pending_action(), &serde_json::to_vec(&pending)?)?;
     let executable = std::env::current_exe().context("无法定位 codex-plus.exe")?;
     let mut command = background_command(executable);
     command.arg("--apply-pending-action");
     if let Err(error) = command.spawn() {
         let _ = fs::remove_file(paths.pending_action());
-        return Err(error).context("无法启动账户切换 helper");
+        return Err(error).context("无法启动账户操作 helper");
     }
     Ok(())
 }
@@ -214,27 +225,55 @@ pub fn queue_switch(paths: &AccountPaths, account_id: &str) -> anyhow::Result<()
 pub fn apply_pending_action(paths: &AccountPaths) -> anyhow::Result<()> {
     let bytes = fs::read(paths.pending_action()).context("没有可执行的账户切换动作")?;
     let action: PendingAction = serde_json::from_slice(&bytes).context("账户切换动作无效")?;
-    let PendingAction::SwitchAccount { account_id } = action;
     let vault = AccountVault::new(paths.clone());
-    vault.validate_switch(&account_id)?;
+    match &action {
+        PendingAction::SwitchAccount { account_id } => vault.validate_switch(account_id)?,
+        PendingAction::WebLogin => vault.validate_web_login()?,
+    }
 
     std::thread::sleep(Duration::from_millis(350));
     let previous = read_optional_file(&paths.live_auth())?;
     stop_existing_runtime(paths)?;
-    let switch_result = vault.switch_after_shutdown(&account_id);
-    if let Err(error) = &switch_result {
+    let action_result = match &action {
+        PendingAction::SwitchAccount { account_id } => {
+            vault.switch_after_shutdown(account_id).map(|_| ())
+        }
+        PendingAction::WebLogin => vault.begin_web_login_after_shutdown(),
+    };
+    if let Err(error) = &action_result {
         let restore = restore_optional_file(&paths.live_auth(), previous.as_deref());
         append_log(
             paths,
-            "account.switch.failed",
+            match action {
+                PendingAction::SwitchAccount { .. } => "account.switch.failed",
+                PendingAction::WebLogin => "account.web_login.failed",
+            },
             json!({"message": error.to_string(), "rollbackOk": restore.is_ok()}),
         );
     } else {
-        append_log(paths, "account.switch.completed", json!({}));
+        append_log(
+            paths,
+            match action {
+                PendingAction::SwitchAccount { .. } => "account.switch.completed",
+                PendingAction::WebLogin => "account.web_login.started",
+            },
+            json!({}),
+        );
     }
     let _ = fs::remove_file(paths.pending_action());
-    spawn_normal_launcher()?;
-    switch_result.map(|_| ()).map_err(Into::into)
+    let launch_result = match action {
+        PendingAction::SwitchAccount { .. } => spawn_normal_launcher(),
+        PendingAction::WebLogin if action_result.is_ok() => spawn_web_login_launcher(),
+        PendingAction::WebLogin => spawn_normal_launcher(),
+    };
+    if let Err(error) = launch_result {
+        if matches!(action, PendingAction::WebLogin) && action_result.is_ok() {
+            let _ = restore_optional_file(&paths.live_auth(), previous.as_deref());
+            let _ = spawn_normal_launcher();
+        }
+        return Err(error);
+    }
+    action_result.map_err(Into::into)
 }
 
 pub fn spawn_normal_launcher() -> anyhow::Result<()> {
@@ -242,6 +281,44 @@ pub fn spawn_normal_launcher() -> anyhow::Result<()> {
     let mut command = background_command(executable);
     command.spawn().context("无法重新启动 codex-plus")?;
     Ok(())
+}
+
+fn spawn_web_login_launcher() -> anyhow::Result<()> {
+    let executable = std::env::current_exe().context("无法定位 codex-plus.exe")?;
+    let mut command = background_command(executable);
+    command.arg("--web-login");
+    command
+        .spawn()
+        .context("无法重新启动 codex-plus 网页登录流程")?;
+    Ok(())
+}
+
+pub async fn capture_web_login(paths: AccountPaths) {
+    loop {
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        let capture_paths = paths.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            AccountVault::new(capture_paths).capture_live_account()
+        })
+        .await;
+        match result {
+            Ok(Ok(Some(_))) => {
+                append_log(&paths, "account.web_login.completed", json!({}));
+                return;
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => append_log(
+                &paths,
+                "account.web_login.capture_retry",
+                json!({"message": error.to_string()}),
+            ),
+            Err(error) => append_log(
+                &paths,
+                "account.web_login.capture_retry",
+                json!({"message": error.to_string()}),
+            ),
+        }
+    }
 }
 
 fn background_command(program: impl AsRef<OsStr>) -> Command {
@@ -447,6 +524,10 @@ mod tests {
             r#"{"kind":"switchAccount","accountId":"account-1"}"#
         );
         assert!(!encoded.contains("token"));
+
+        let web_login = serde_json::to_string(&PendingAction::WebLogin).unwrap();
+        assert_eq!(web_login, r#"{"kind":"webLogin"}"#);
+        assert!(!web_login.contains("token"));
     }
 
     #[cfg(windows)]

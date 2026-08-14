@@ -27,6 +27,8 @@ pub enum AccountError {
     InvalidSize,
     #[error("账户不存在")]
     NotFound,
+    #[error("当前账户正在使用中，请先切换到其他账户再删除")]
+    ActiveAccount,
     #[error("账户存储目录不安全")]
     UnsafeVault,
     #[error("Codex 当前使用 {0} 保存凭据，无法通过 auth.json 切换账户")]
@@ -212,6 +214,22 @@ impl AccountVault {
         Ok(auth.summary(active))
     }
 
+    pub fn delete_account(&self, account_id: &str) -> Result<()> {
+        validate_identifier(account_id)?;
+        let _guard = self.lock_vault()?;
+        self.load_unlocked(account_id)?;
+        if read_live_chatgpt(&self.paths.live_auth())?
+            .is_some_and(|current| current.account_id == account_id)
+        {
+            return Err(AccountError::ActiveAccount);
+        }
+        match fs::remove_file(self.paths.accounts_dir().join(account_filename(account_id))) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(AccountError::NotFound),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn validate_switch(&self, account_id: &str) -> Result<()> {
         validate_identifier(account_id)?;
         validate_credential_storage(&self.paths.codex_config())?;
@@ -227,6 +245,26 @@ impl AccountVault {
         self.snapshot_live_unlocked()?;
         atomic_write(&self.paths.live_auth(), &target.raw)?;
         Ok(target.summary(true))
+    }
+
+    pub fn validate_web_login(&self) -> Result<()> {
+        validate_credential_storage(&self.paths.codex_config())
+    }
+
+    pub fn begin_web_login_after_shutdown(&self) -> Result<()> {
+        validate_credential_storage(&self.paths.codex_config())?;
+        let _guard = self.lock_vault()?;
+        self.snapshot_live_unlocked()?;
+        restore_optional_file(&self.paths.live_auth(), None)
+    }
+
+    pub fn capture_live_account(&self) -> Result<Option<AccountSummary>> {
+        let _guard = self.lock_vault()?;
+        let Some(current) = read_live_chatgpt(&self.paths.live_auth())? else {
+            return Ok(None);
+        };
+        self.store_unlocked(&current)?;
+        Ok(Some(current.summary(true)))
     }
 
     pub async fn fetch_usage(&self, account_id: &str) -> Result<Usage> {
@@ -639,6 +677,82 @@ mod tests {
             accounts.iter().find(|a| a.active).unwrap().account_id,
             "target"
         );
+    }
+
+    #[test]
+    fn deleting_removes_only_an_inactive_saved_account() {
+        let (_temp, vault) = fixture();
+        atomic_write(
+            &vault.paths().live_auth(),
+            &auth("current", "current-token", "current@example.com"),
+        )
+        .unwrap();
+        vault.list_accounts().unwrap();
+        vault
+            .import_auth(&auth("saved", "saved-token", "saved@example.com"))
+            .unwrap();
+
+        vault.delete_account("saved").unwrap();
+
+        let accounts = vault.list_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].account_id, "current");
+        assert!(matches!(
+            vault.delete_account("missing"),
+            Err(AccountError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn deleting_the_live_account_is_rejected_without_removing_its_snapshot() {
+        let (_temp, vault) = fixture();
+        atomic_write(
+            &vault.paths().live_auth(),
+            &auth("current", "current-token", "current@example.com"),
+        )
+        .unwrap();
+        vault.list_accounts().unwrap();
+
+        assert!(matches!(
+            vault.delete_account("current"),
+            Err(AccountError::ActiveAccount)
+        ));
+        assert_eq!(vault.list_accounts().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn web_login_preserves_current_account_then_removes_live_auth() {
+        let (_temp, vault) = fixture();
+        atomic_write(
+            &vault.paths().live_auth(),
+            &auth("current", "current-token", "current@example.com"),
+        )
+        .unwrap();
+
+        vault.begin_web_login_after_shutdown().unwrap();
+
+        assert!(!vault.paths().live_auth().exists());
+        let accounts = vault.list_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].account_id, "current");
+        assert!(!accounts[0].active);
+    }
+
+    #[test]
+    fn capturing_web_login_saves_the_new_live_account() {
+        let (_temp, vault) = fixture();
+        assert!(vault.capture_live_account().unwrap().is_none());
+        atomic_write(
+            &vault.paths().live_auth(),
+            &auth("new", "new-token", "new@example.com"),
+        )
+        .unwrap();
+
+        let captured = vault.capture_live_account().unwrap().unwrap();
+
+        assert_eq!(captured.account_id, "new");
+        assert!(captured.active);
+        assert_eq!(vault.list_accounts().unwrap().len(), 1);
     }
 
     #[test]

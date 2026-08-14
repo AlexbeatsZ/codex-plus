@@ -53,7 +53,9 @@ Codex `26.803.5235.0` 的模型目录和任务请求直接经过内部 app-serve
 
 创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用 `codex-plus-api`，不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为空数组，使两个 provider 的任务同时可见。
 
-同 provider 的 API→API 切换只覆盖下一次 `turn/start.model`。跨 provider 切换是受控实验：仅空闲任务允许执行 `thread/shutdown` 后带目标 model/provider `thread/resume`；验证返回 provider 后才更新选择和允许下一条消息。失败时尝试用原 model/provider resume，并把失败暴露给 UI；不得静默新建任务或把请求发送到错误 provider。
+同 provider 的 API→API 切换只覆盖下一次 `turn/start.model`。Codex `26.803.10989.0` 的 provider 在任务 ID 创建时固定：`thread/resume` 不能改变 provider，`thread/shutdown` 已移除，二者都不得用于跨 provider 切换。
+
+跨 provider 发送仅允许空闲或上一轮失败的任务，并采用明确确认的历史分支流程：发送前说明当前限制、会继承完整历史创建新任务分支且保留原任务；用户取消时不 fork、不发送并恢复原选择。用户确认后，通过应用原生 `fork-conversation-from-latest` 命令触发 `thread/fork`，由最低层路由包装同时写入目标 `model` 与 `modelProvider`；随后 `thread/read` 验证新任务 provider，验证成功才把本轮 `turn/start.threadId` 改为新任务 ID。完成发送后复制原标题并自动导航到新分支。任何 fork、验证或导航前置步骤失败都必须保留原任务、恢复选择并阻止消息，绝不能把 GPT 模型名送入 API broker，或把 routeId 送入 `openai`。普通历史分支不得传 `excludeTurns: true`；该字段在当前应用原生实现中只用于 side conversation，会隐藏继承的 turns。
 
 ## 验收不变量
 
