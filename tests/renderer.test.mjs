@@ -67,6 +67,40 @@ test("does not inject account or API items into the application Edit menu", asyn
   assert.deepEqual([...editMenu.children].map((node) => node.textContent.trim()), ["撤销", "设置 Ctrl+,"]);
 });
 
+test("menu observers ignore unrelated DOM churn and react to a new profile menu", async () => {
+  const dom = setup(async () => ({ status: "ok", accounts: [] }));
+  await flush();
+  dom.window.document.getElementById("profile-menu").remove();
+  await flush();
+
+  const originalQuerySelectorAll = dom.window.document.querySelectorAll.bind(dom.window.document);
+  let fullMenuScans = 0;
+  dom.window.document.querySelectorAll = (selector) => {
+    if (selector === '[role="menuitem"]') fullMenuScans += 1;
+    return originalQuerySelectorAll(selector);
+  };
+
+  const unrelated = dom.window.document.createElement("section");
+  dom.window.document.body.appendChild(unrelated);
+  for (let index = 0; index < 100; index += 1) {
+    unrelated.appendChild(dom.window.document.createElement("span"));
+  }
+  await flush();
+  assert.equal(fullMenuScans, 0);
+
+  const profile = dom.window.document.createElement("div");
+  profile.id = "replacement-profile-menu";
+  profile.setAttribute("role", "menu");
+  profile.innerHTML = '<button role="menuitem">设置</button><button role="menuitem">退出登录</button>';
+  dom.window.document.body.appendChild(profile);
+  await flush();
+  assert.ok(fullMenuScans >= 2);
+  assert.deepEqual(
+    [...profile.children].map((node) => node.textContent.trim()),
+    ["设置", "API 接入", "切换账户", "退出登录"],
+  );
+});
+
 test("discovers models, edits aliases, and saves without receiving a key", async () => {
   const calls = [];
   const dom = setup(async (path, payload) => {

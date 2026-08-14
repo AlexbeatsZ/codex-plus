@@ -3,14 +3,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::accounts::{
     AccountPaths, AccountVault, atomic_write, read_optional_file, restore_optional_file,
@@ -101,8 +101,8 @@ pub fn stop_existing_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
     let current_pid = std::process::id();
     let current_exe = std::env::current_exe().context("无法定位 codex-plus.exe")?;
     let current_key = normalized_path(&current_exe);
-    let mut system = System::new_all();
-    system.refresh_all();
+    let mut system = System::new();
+    refresh_process_identity(&mut system, ProcessesToUpdate::All);
     let targets = system
         .processes()
         .iter()
@@ -184,17 +184,17 @@ $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocatio
     bail!("未找到官方 OpenAI Codex/ChatGPT 桌面应用")
 }
 
-pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<()> {
+pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<Child> {
     let mut command = background_command(executable);
     command
         .arg(format!("--remote-debugging-port={debug_port}"))
         .arg(format!(
             "--remote-allow-origins=http://127.0.0.1:{debug_port}"
         ));
-    command
+    let child = command
         .spawn()
         .with_context(|| format!("无法启动 {}", executable.display()))?;
-    Ok(())
+    Ok(child)
 }
 
 pub fn queue_switch(paths: &AccountPaths, account_id: &str) -> anyhow::Result<()> {
@@ -332,26 +332,40 @@ fn background_command(program: impl AsRef<OsStr>) -> Command {
 }
 
 pub async fn wait_until_codex_starts() {
+    let mut system = System::new();
     loop {
-        if has_openai_codex_process() {
+        refresh_process_identity(&mut system, ProcessesToUpdate::All);
+        if system
+            .processes()
+            .values()
+            .any(|process| is_openai_codex_process(process.name(), process.exe()))
+        {
             return;
         }
-        tokio::time::sleep(Duration::from_millis(750)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
-pub async fn wait_until_codex_stops(debug_port: u16) {
-    let mut seen = false;
+pub async fn wait_until_codex_stops(
+    mut root_process: Child,
+    debug_port: u16,
+) -> anyhow::Result<()> {
     let mut missing = 0_u8;
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let running = has_openai_codex_process();
-        let cdp = crate::cdp::endpoint_available(debug_port).await;
-        seen |= running || cdp;
-        if seen && !running && !cdp {
+        if root_process
+            .try_wait()
+            .context("无法查询 Codex 主进程状态")?
+            .is_none()
+        {
+            missing = 0;
+            continue;
+        }
+
+        if !crate::cdp::endpoint_available(debug_port).await {
             missing = missing.saturating_add(1);
             if missing >= 5 {
-                return;
+                return Ok(());
             }
         } else {
             missing = 0;
@@ -359,12 +373,12 @@ pub async fn wait_until_codex_stops(debug_port: u16) {
     }
 }
 
-fn has_openai_codex_process() -> bool {
-    let system = System::new_all();
-    system
-        .processes()
-        .values()
-        .any(|process| is_openai_codex_process(process.name(), process.exe()))
+fn refresh_process_identity(system: &mut System, processes: ProcessesToUpdate<'_>) {
+    system.refresh_processes_specifics(
+        processes,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+    );
 }
 
 fn wait_for_pids(system: &mut System, mut pids: Vec<Pid>) -> anyhow::Result<()> {
@@ -373,7 +387,7 @@ fn wait_for_pids(system: &mut System, mut pids: Vec<Pid>) -> anyhow::Result<()> 
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
-        system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+        refresh_process_identity(system, ProcessesToUpdate::Some(&pids));
         pids.retain(|pid| system.process(*pid).is_some());
     }
     if pids.is_empty() {

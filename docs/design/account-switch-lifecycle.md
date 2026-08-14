@@ -18,7 +18,9 @@
 3. 启动本机 API broker，并增量核对 Codex provider 配置；详见 `api-provider-routing.md`。
 4. 解析 Microsoft Store OpenAI 包或受支持的独立安装路径；优先以 `--remote-debugging-port=9229` 启动。若旧进程退出后 9229 仍无法在本机绑定（包括 Windows 遗留的失效监听端点），自动选择一个空闲本机端口，并让启动、注入 watchdog 与退出监测全程使用同一端口。
 5. 选择主 `app://-/index.html` target，安装 CDP binding、账户/API UI、模型目录和路由脚本。
-6. launcher 保持运行；target 重建或连接丢失时重新发现并注入。
+6. launcher 保持运行；target 重建或连接丢失时重新发现并注入。常驻退出监测持有本次启动的 Codex 根进程句柄，根进程存活时不得周期性枚举全机进程或探测 CDP；只有根进程退出后才用 CDP 端点确认是否仍有接管后的 Codex 实例。登录自启等待模式可枚举进程，但必须复用轻量 monitor、只刷新名称与可执行路径，并使用低频轮询。
+
+注入 observer 只响应新增或变化的原生菜单节点；聊天流、终端输出和其他无关 DOM 变化不得触发全页面菜单扫描。CDP 健康心跳只在 observer/style 缺失时重新安装注入，不应把健康检查本身变成固定频率的 DOM 扫描。
 
 维护时若需在不重启 Codex 的情况下重新附加 launcher，`--attach-existing` 仍连接默认 9229；当当前实例已由普通启动回退到动态端口时，使用内部参数 `--attach-existing-port=<实际端口>`。该入口只恢复 broker、配置核对和注入 watchdog，不执行普通启动的 stop/launch 生命周期。
 

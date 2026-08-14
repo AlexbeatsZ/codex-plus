@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 6;
+  const VERSION = 7;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -157,7 +157,20 @@
     }
   }
 
-  function queueScan() {
+  function mutationMayContainMenu(records) {
+    if (!records) return true;
+    return records.some((record) => {
+      const target = record.target;
+      if (target?.nodeType === 1 && (target.matches?.('[role="menuitem"]') || target.closest?.('[role="menuitem"]'))) return true;
+      return Array.from(record.addedNodes || []).some((node) =>
+        (node.nodeType === 1 || node.nodeType === 11)
+        && (node.matches?.('[role="menuitem"]') || node.querySelector?.('[role="menuitem"]'))
+      );
+    });
+  }
+
+  function queueScan(records) {
+    if (!mutationMayContainMenu(records)) return;
     if (state.scanQueued) return;
     state.scanQueued = true;
     queueMicrotask(() => {

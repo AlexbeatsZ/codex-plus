@@ -10,14 +10,16 @@
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-08-14 当前安装/进程识别验证版本为 `26.810.4967.0`，实际进程名为 `ChatGPT.exe`。
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
-- 当前自动化基线：`cargo test` 36 项、DOM/路由测试 14 项通过；Windows 回归测试会在后台 PowerShell 内核对 `GetConsoleWindow()` 为空。
-- 当前自启动产物仍是账户脚本 v5/路由脚本 v13：`target\release\codex-plus.exe`，6,371,840 bytes，SHA-256 `6551BA36CCE44FE6C7941E32B5F6C96F7017A04D6B6782D1F309F61DD6BC1123`。2026-08-14 当前官方 Codex 进程没有 CDP 参数，也没有运行中的 codex-plus launcher；不得把旧日志中的注入状态当作当前状态。
-- 本轮隔离 release 候选为账户脚本 v6/路由脚本 v17：`target\candidate-release\release\codex-plus.exe`，6,469,120 bytes，SHA-256 `0540363C07C1C385BE51EB8888E2A512D30357C621854FE44FDAAC5A7E47A009`；已构建但遵照用户要求未替换自启动产物、未重启或实机注入。
+- 当前自动化基线：`cargo test` 36 项、DOM/路由测试 15 项通过；Windows 回归测试会在后台 PowerShell 内核对 `GetConsoleWindow()` 为空。
+- 当前自启动产物为账户脚本 v7/API 脚本 v6/路由脚本 v16：`target\release\codex-plus.exe`，6,461,440 bytes，SHA-256 `A45A62D449BA255080B64592973903848EACA5D1EE1D401C8C1B5EADFB065A35`。2026-08-15 已热附加当前 9229 Codex 实例并验证 `injection.ready`、43121 broker 和脚本版本；下一次普通启动将使用新的根进程句柄退出监测。
+- 隔离 release 候选与正式产物相同：`target\candidate-release\release\codex-plus.exe`，6,461,440 bytes，SHA-256 `A45A62D449BA255080B64592973903848EACA5D1EE1D401C8C1B5EADFB065A35`。
 - Windows 发布 EXE 通过 `build.rs` 嵌入 `assets/app-icon.ico`；图标以 Microsoft Fluent UI System Icons 的 Person Swap 为主体，蓝色圆角底用于和其他自制工具区分。
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时只等待官方 Codex 被用户打开再接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
 
 # Active Work
 
+- 0.2.0 已修复 launcher 常驻期间每秒 `System::new_all()` 全量采集所有进程 CPU/内存/磁盘信息导致的持续占用：普通启动现在持有 Codex 根进程 `Child` 并用 `try_wait()` 监测，只在根进程退出后确认 CDP 端点；登录等待复用轻量 `System`，每 2 秒只刷新进程名称与可执行路径；停止清理同样只刷新身份字段和目标 PID。2026-08-15 热部署前后 20 秒采样从约 31.4% 单核、38MB private 降至 0.00%、3.6MB private。
+- CDP 固定健康心跳由 2 秒降至 15 秒，健康时不再重复调用 `install()`；账户/API MutationObserver 只对菜单相关 mutation 排队扫描。新增回归覆盖 100 次无关 DOM 变更不触发全菜单扫描，同时新个人资料菜单仍正确注入。
 - 0.2.0 已将账户/API 菜单注入目标收紧为同一容器内同时具有原生“设置”和“退出登录”的个人资料菜单，避免顶部“编辑”菜单中的“设置”被误判并注入两个自定义选项。
 - 0.2.0 已修复读取模型后表单清空、原生模型列表缺失，以及 `prewarmThreadStart` 绕过 `sendRequest` 导致 routeId 仍配对 `openai` 的问题；自动化检查、release 构建及用户实机对话均已通过。
 - 0.2.0 已将账户与 API 注入 UI 调整为 Codex 原生化风格：菜单图标为 16px，弹窗使用灰阶分组面板、行分隔线、30px 紧凑按钮与蓝色强调；实机检查账户弹窗 680px 宽、12px 圆角，4 个账户无换行或溢出。
@@ -67,3 +69,4 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - WSL mirrored networking 的 FSE/PortTracker 会跟踪 Linux 连接使用的 Windows 动态客户端端口；2026-08-14 实测 Ubuntu 1080 代理遗留的 `CLOSE-WAIT` 对端 57321 会让 Windows host 对无普通监听进程的 `127.0.0.1:57321` 绑定返回 `WSAEACCES (10013)`。本机服务首选端口应避开默认动态范围，且仍需在任何 bind 错误时直接绑定并持有端口 0 listener，再把实际端口传给消费者。
 - Windows `HKCU Run` 无法区分登录触发与用户双击；登录启动命令必须显式带 `--login-startup`。等待模式不提前启动 broker 或修改配置，检测到官方 Codex 后再复用 `stop → lock → broker → config → launch → inject`，避免登录时弹出应用，同时保留官方快捷方式与无参数 EXE 的接管能力。
 - release 主程序使用 Windows GUI 子系统并不意味着其后代控制台进程也会自动隐藏；无父控制台时，未设置创建标志的 `powershell.exe` 仍会自行创建可见窗口。所有内部 `Command` 都应走统一后台构造器，并在 Windows 设置 `CREATE_NO_WINDOW`。
+- `System::new_all()` 会采集所有进程的 CPU、内存、磁盘和路径，不能放在常驻秒级轮询中；由 launcher 自己启动的 Codex 应保留根 `Child` 句柄并用 `try_wait()`，登录前不得不发现外部 Codex 时则复用单个 `System`，用 `ProcessRefreshKind::nothing().with_exe(OnlyIfNotSet)` 只刷新身份字段。全页面 MutationObserver 同样必须先按新增/变化的菜单节点过滤，避免聊天流和终端输出把一次菜单查找放大成持续扫描。

@@ -110,7 +110,6 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
     let mut next_id = 1_u64;
 
     command(&mut socket, &mut next_id, "Runtime.enable", json!({})).await?;
-    command(&mut socket, &mut next_id, "Page.enable", json!({})).await?;
     let _ = command(
         &mut socket,
         &mut next_id,
@@ -176,7 +175,7 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
     crate::runtime::append_log(service.paths(), "injection.ready", json!({}));
 
     let (responses_tx, mut responses_rx) = mpsc::unbounded_channel::<(String, Value)>();
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
     loop {
         tokio::select! {
             next = socket.next() => {
@@ -216,7 +215,7 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
                 send_evaluate_without_wait(
                     &mut socket,
                     &mut next_id,
-                    "window.__codexPlusAccounts?.install?.(); true",
+                    "(() => { const health = window.__codexPlusAccounts?.health?.(); if (!health?.ready || !health?.observerReady) window.__codexPlusAccounts?.install?.(); return true; })()",
                 ).await?;
             }
         }

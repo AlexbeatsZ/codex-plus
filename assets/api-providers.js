@@ -1,12 +1,12 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 5;
+  const VERSION = 6;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
   const STYLE_ID = "codex-plus-api-style";
-  const state = { observer: null, providers: [], editing: null, models: [], loading: false, message: "", error: false };
+  const state = { observer: null, scanQueued: false, providers: [], editing: null, models: [], loading: false, message: "", error: false };
 
   if (window.__codexPlusApi?.version === VERSION) { window.__codexPlusApi.install(); return; }
   window.__codexPlusApi?.destroy?.();
@@ -92,6 +92,27 @@
     }
   }
 
+  function mutationMayContainMenu(records) {
+    if (!records) return true;
+    return records.some((record) => {
+      const target = record.target;
+      if (target?.nodeType === 1 && (target.matches?.('[role="menuitem"]') || target.closest?.('[role="menuitem"]'))) return true;
+      return Array.from(record.addedNodes || []).some((node) =>
+        (node.nodeType === 1 || node.nodeType === 11)
+        && (node.matches?.('[role="menuitem"]') || node.querySelector?.('[role="menuitem"]'))
+      );
+    });
+  }
+
+  function queueScan(records) {
+    if (!mutationMayContainMenu(records) || state.scanQueued) return;
+    state.scanQueued = true;
+    queueMicrotask(() => {
+      state.scanQueued = false;
+      scan();
+    });
+  }
+
   function status() { return state.message ? `<div class="cp-api-status" data-error="${state.error}">${esc(state.message)}</div>` : ""; }
   function body() { return document.querySelector(`#${ROOT_ID} [data-api-body]`); }
   function renderList() {
@@ -130,8 +151,8 @@
     const overlay = document.createElement("div"); overlay.id = ROOT_ID; overlay.className = "cp-api-overlay"; overlay.innerHTML = `<section class="cp-api-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-api-title"><header class="cp-api-header"><div><h2 class="cp-api-title" id="cp-api-title">API 接入</h2><p class="cp-api-subtitle">多个 OpenAI 兼容 API 可同时使用；密钥不会回显。</p></div><button class="cp-api-close" aria-label="关闭">${closeIcon()}</button></header><div class="cp-api-body" data-api-body></div></section>`;
     overlay.addEventListener("click", (event) => { if (event.target === overlay || event.target.closest(".cp-api-close")) close(); }); document.body.appendChild(overlay); void load();
   }
-  function install() { installStyle(); scan(); if (!state.observer) { state.observer = new MutationObserver(scan); state.observer.observe(document.documentElement, { childList: true, subtree: true }); } }
-  function destroy() { state.observer?.disconnect(); state.observer = null; document.querySelectorAll(`[${ITEM_ATTR}]`).forEach((node) => node.remove()); close(); document.getElementById(STYLE_ID)?.remove(); }
+  function install() { installStyle(); queueScan(); if (!state.observer) { state.observer = new MutationObserver(queueScan); state.observer.observe(document.documentElement, { childList: true, subtree: true }); } }
+  function destroy() { state.observer?.disconnect(); state.observer = null; state.scanQueued = false; document.querySelectorAll(`[${ITEM_ATTR}]`).forEach((node) => node.remove()); close(); document.getElementById(STYLE_ID)?.remove(); }
   window.__codexPlusApi = { version: VERSION, install, destroy, open: openModal, state };
   install();
 })();

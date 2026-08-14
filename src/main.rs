@@ -141,11 +141,12 @@ async fn run_managed_codex(
             "preferredBindError": debug_port.preferred_bind_error,
         }),
     );
-    runtime::launch_codex(&codex_executable, debug_port.port)?;
+    let codex_process = runtime::launch_codex(&codex_executable, debug_port.port)?;
+    let codex_pid = codex_process.id();
     runtime::append_log(
         &paths,
         "launcher.codex_started",
-        json!({"executable": codex_executable, "debugPort": debug_port.port}),
+        json!({"executable": codex_executable, "debugPort": debug_port.port, "pid": codex_pid}),
     );
 
     if capture_web_login {
@@ -155,7 +156,7 @@ async fn run_managed_codex(
     tokio::select! {
         result = cdp::run_watchdog(debug_port.port, service) => result.context("注入监测意外结束"),
         result = broker.wait() => result.context("API broker 意外结束"),
-        () = runtime::wait_until_codex_stops(debug_port.port) => Ok(()),
+        result = runtime::wait_until_codex_stops(codex_process, debug_port.port) => result.context("Codex 退出监测意外结束"),
     }
 }
 
