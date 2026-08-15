@@ -9,6 +9,8 @@
 - Windows 当前用户登录启动项使用 `codex-plus.exe --login-startup`，不能使用无参数入口。
 - 登录模式先获取 launcher 锁并静默等待，不启动 broker、不修改配置，也不主动打开 Codex；若已有 launcher 持锁则直接退出。
 - 用户之后从官方入口打开 Codex 时，登录模式检测到受支持的 OpenAI 进程，释放等待锁，再进入与普通启动相同的 `stop → lock → broker → config → launch → inject` 生命周期。
+- 接管的 Codex 会以 Windows `BelowNormal` priority class 启动，避免官方 Electron 主进程出现持续 CPU 忙循环时以普通或更高线程优先级阻塞桌面输入；该设置仅作用于本次 Codex 进程树，不修改系统全局调度配置。
+- 一次受管 Codex 生命周期结束后，登录模式必须重新获取等待锁并回到静默监测；官方应用更新或自重启产生的新根进程也要再次接管。根进程发现必须排除带 `--type=` 的 Electron 子进程和 `codex app-server`，避免残留 crashpad/renderer 触发无意义重启。
 - 用户直接双击无参数 EXE 时，仍立即执行普通启动；它会停止等待中的登录实例，因此不会被后台 monitor 阻塞。
 
 ## 普通启动
@@ -18,7 +20,7 @@
 3. 启动本机 API broker，并增量核对 Codex provider 配置；详见 `api-provider-routing.md`。
 4. 解析 Microsoft Store OpenAI 包或受支持的独立安装路径；优先以 `--remote-debugging-port=9229` 启动。若旧进程退出后 9229 仍无法在本机绑定（包括 Windows 遗留的失效监听端点），自动选择一个空闲本机端口，并让启动、注入 watchdog 与退出监测全程使用同一端口。
 5. 选择主 `app://-/index.html` target，安装 CDP binding、账户/API UI、模型目录和路由脚本。
-6. launcher 保持运行；target 重建或连接丢失时重新发现并注入。常驻退出监测持有本次启动的 Codex 根进程句柄，根进程存活时不得周期性枚举全机进程或探测 CDP；只有根进程退出后才用 CDP 端点确认是否仍有接管后的 Codex 实例。登录自启等待模式可枚举进程，但必须复用轻量 monitor、只刷新名称与可执行路径，并使用低频轮询。
+6. launcher 保持运行；target 重建或连接丢失时重新发现并注入。常驻退出监测持有本次启动的 Codex 根进程句柄，根进程存活时不得周期性枚举全机进程或探测 CDP；只有根进程退出后才用 CDP 端点确认是否仍有接管后的 Codex 实例。登录自启等待模式可枚举进程，但必须复用轻量 monitor、只刷新名称、可执行路径和一次性命令行，并使用低频轮询。
 
 注入 observer 只响应新增或变化的原生菜单节点；聊天流、终端输出和其他无关 DOM 变化不得触发全页面菜单扫描。CDP 健康心跳只在 observer/style 缺失时重新安装注入，不应把健康检查本身变成固定频率的 DOM 扫描。
 

@@ -18,6 +18,8 @@ use crate::accounts::{
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 
 pub const START_PHASES: [&str; 6] = ["stop", "lock", "broker", "config", "launch", "inject"];
 
@@ -185,7 +187,7 @@ $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocatio
 }
 
 pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<Child> {
-    let mut command = background_command(executable);
+    let mut command = codex_command(executable);
     command
         .arg(format!("--remote-debugging-port={debug_port}"))
         .arg(format!(
@@ -331,19 +333,39 @@ fn background_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
+fn codex_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = background_command(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    }
+    command
+}
+
 pub async fn wait_until_codex_starts() {
     let mut system = System::new();
     loop {
-        refresh_process_identity(&mut system, ProcessesToUpdate::All);
+        refresh_process_discovery(&mut system);
         if system
             .processes()
             .values()
-            .any(|process| is_openai_codex_process(process.name(), process.exe()))
+            .any(is_openai_codex_root_process)
         {
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+fn refresh_process_discovery(system: &mut System) {
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
 }
 
 pub async fn wait_until_codex_stops(
@@ -414,6 +436,18 @@ fn is_openai_codex_process(name: &OsStr, executable: Option<&Path>) -> bool {
         || path.contains("\\windowsapps\\openai.chatgpt-desktop_")
         || path.contains("\\openai\\chatgpt\\")
         || path.contains("\\openai codex\\")
+}
+
+fn is_openai_codex_root_process(process: &sysinfo::Process) -> bool {
+    is_openai_codex_process(process.name(), process.exe())
+        && !is_auxiliary_codex_command(process.cmd())
+}
+
+fn is_auxiliary_codex_command(command: &[std::ffi::OsString]) -> bool {
+    command.iter().any(|argument| {
+        let argument = argument.to_string_lossy().to_ascii_lowercase();
+        argument.starts_with("--type=") || argument == "app-server"
+    })
 }
 
 fn is_codex_plus_launcher(name: &OsStr) -> bool {
@@ -503,6 +537,22 @@ mod tests {
     }
 
     #[test]
+    fn root_process_filter_excludes_electron_children_and_app_server() {
+        assert!(is_auxiliary_codex_command(&[
+            "ChatGPT.exe".into(),
+            "--type=renderer".into(),
+        ]));
+        assert!(is_auxiliary_codex_command(&[
+            "codex.exe".into(),
+            "app-server".into(),
+        ]));
+        assert!(!is_auxiliary_codex_command(&[
+            "ChatGPT.exe".into(),
+            "--remote-debugging-port=9229".into(),
+        ]));
+    }
+
+    #[test]
     fn recognizes_previous_and_current_launcher_names() {
         assert!(is_codex_plus_launcher(OsStr::new("codex-plus.exe")));
         assert!(is_codex_plus_launcher(OsStr::new("codex-plus-plus.exe")));
@@ -557,5 +607,25 @@ if ([NativeConsole]::GetConsoleWindow() -ne [IntPtr]::Zero) { exit 1 }
             .unwrap();
 
         assert!(status.success(), "后台 PowerShell 获得了可见控制台窗口");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_child_starts_below_normal_priority() {
+        let output = codex_command("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-Process -Id $PID).PriorityClass.ToString()",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "BelowNormal"
+        );
     }
 }

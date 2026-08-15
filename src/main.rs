@@ -92,22 +92,34 @@ async fn run_attach_existing(paths: AccountPaths, debug_port: u16) -> anyhow::Re
 }
 
 async fn run_login_startup(paths: AccountPaths) -> anyhow::Result<()> {
-    let monitor_guard = match runtime::acquire_launcher_guard(&paths) {
-        Ok(guard) => guard,
-        Err(error) => {
-            runtime::append_log(
-                &paths,
-                "launcher.login_startup.skipped",
-                json!({"reason": "launcherAlreadyRunning", "message": error.to_string()}),
-            );
-            return Ok(());
-        }
-    };
-    runtime::append_log(&paths, "launcher.login_startup.waiting", json!({}));
-    runtime::wait_until_codex_starts().await;
-    runtime::append_log(&paths, "launcher.login_startup.detected", json!({}));
-    drop(monitor_guard);
-    run_managed_codex(paths, "launcher.login_startup.takeover", false).await
+    let mut first_wait = true;
+    loop {
+        let monitor_guard = match runtime::acquire_launcher_guard(&paths) {
+            Ok(guard) => guard,
+            Err(error) => {
+                runtime::append_log(
+                    &paths,
+                    "launcher.login_startup.skipped",
+                    json!({"reason": "launcherAlreadyRunning", "message": error.to_string()}),
+                );
+                return Ok(());
+            }
+        };
+        runtime::append_log(
+            &paths,
+            if first_wait {
+                "launcher.login_startup.waiting"
+            } else {
+                "launcher.login_startup.rearmed"
+            },
+            json!({}),
+        );
+        first_wait = false;
+        runtime::wait_until_codex_starts().await;
+        runtime::append_log(&paths, "launcher.login_startup.detected", json!({}));
+        drop(monitor_guard);
+        run_managed_codex(paths.clone(), "launcher.login_startup.takeover", false).await?;
+    }
 }
 
 async fn run_managed_codex(
