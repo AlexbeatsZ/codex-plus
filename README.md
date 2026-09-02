@@ -1,6 +1,6 @@
 # codex-plus
 
-`codex-plus` 是一个面向 Windows 官方 OpenAI Codex 桌面应用的账户与 OpenAI 兼容 API 启动器。它只有一个可执行文件，没有独立管理面板：正常点击 `codex-plus.exe` 后，程序会受控重启 Codex，并把管理入口注入左下角个人资料菜单。
+`codex-plus` 是一个面向 Windows 官方 OpenAI Codex 桌面应用的账户、OpenAI 兼容 API 与本地 MCP 启动器。它只有一个 Windows 自启动入口，没有独立管理面板：正常点击 `codex-plus.exe` 后，程序会确保本机 Secure MCP Tunnel 可用、受控重启 Codex，并把管理入口注入左下角个人资料菜单。
 
 ## 功能
 
@@ -12,6 +12,8 @@
 - 可同时保存多个 OpenAI 兼容 API，通过 `/models` 自动发现模型，并选择模型、设置显示别名。
 - 官方登录模型保持 `openai` provider；API 模型通过本机 `codex-plus-api` broker 按稳定 `routeId` 分发，不切换全局 provider。
 - 原生支持 Responses；Chat Completions 会在本机转换 Responses 请求、SSE、工具调用与推理字段。
+- 内置 `local-tools/` tool-only MCP，可为 ChatGPT/Codex Chat 模式提供工作区文件、搜索、补丁、命令和 Git 工具。
+- `codex-plus.exe --login-startup` 会立即幂等启动 Tunnel 与 MCP，但仍不会主动打开官方 Codex 窗口。
 
 ## 使用
 
@@ -25,6 +27,26 @@
 
 导入只保存账户，不会自动切换；切换账户会自动重启 Codex。当前有效 ChatGPT 登录会自动加入本地账户列表。
 
+### Local tools 与 Secure MCP Tunnel
+
+`local-tools/` 使用官方 `tunnel-client` 作为本机 sidecar。首次构建或换机时执行：
+
+```powershell
+npm run local-tools:install
+npm run local-tools:build
+.\local-tools\scripts\install-tunnel-client.ps1
+```
+
+把 Tunnel runtime key 保存到未提交的 `local-tools\.env.local`：
+
+```dotenv
+OPENAI_API_KEY=your-runtime-key
+```
+
+正常运行和 Windows 登录自启都会调用幂等的 managed runtime 连接；健康实例已存在时不会产生重复进程。默认 MCP workspace 是本仓库根目录。需要临时使用另一份组件时，可给当前进程设置 `CODEX_PLUS_LOCAL_TOOLS_ROOT`，其值应指向包含 `dist/cli.js`、`.env.local` 和本地 `tunnel-client.exe` 的组件目录。
+
+Tunnel key 只作为 `tunnel-client` 子进程的 `CONTROL_PLANE_API_KEY` 环境变量传递；启动 MCP 的脚本会在 Node 子进程前清除它。启动结果记录在 `%LOCALAPPDATA%\codex-plus\codex-plus.log` 的 `local_tools.runtime.*` 事件中。
+
 账户快照位于 `%LOCALAPPDATA%\codex-plus\accounts\`，API 配置位于 `%LOCALAPPDATA%\codex-plus\providers.json`，运行日志位于 `%LOCALAPPDATA%\codex-plus\codex-plus.log`。按产品约定 API Key 在 `providers.json` 中明文保存，但不会返回 renderer 或写入日志。
 
 codex-plus 只增量维护用户级 `config.toml` 的 `[model_providers.codex-plus-api]` 表，并在第一次修改前创建 `config.toml.codex-plus.bak`；顶层 `model_provider`、官方 `auth.json` 和其他配置保持不变。
@@ -33,10 +55,11 @@ codex-plus 只增量维护用户级 `config.toml` 的 `[model_providers.codex-pl
 
 ```powershell
 npm install
+npm run local-tools:install
+npm run local-tools:build
 cargo fmt --all -- --check
 cargo test
-npm run check
-npm test
+npm run verify
 cargo build --release
 ```
 
@@ -44,7 +67,7 @@ cargo build --release
 
 开发时可以使用 `codex-plus.exe --attach-existing` 附加已在 `9229` 开启 CDP 的 Codex；该模式不会执行正常入口的重启流程。
 
-若要随 Windows 登录启动，注册表启动命令应使用 `"codex-plus.exe 的完整路径" --login-startup`。这个模式不会主动打开 Codex，只会静默等待；用户之后从官方入口打开 Codex 时，它会接管并重启为可注入实例。直接双击不带参数的 `codex-plus.exe` 仍会立即重启 Codex。
+若要随 Windows 登录启动，注册表启动命令应使用 `"codex-plus.exe 的完整路径" --login-startup`。这个模式会立即确保 Tunnel 与 MCP 运行，但不会主动打开 Codex，只会静默等待；用户之后从官方入口打开 Codex 时，它会接管并重启为可注入实例。直接双击不带参数的 `codex-plus.exe` 仍会立即重启 Codex。
 
 ## 支持范围
 

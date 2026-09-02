@@ -323,7 +323,7 @@ pub async fn capture_web_login(paths: AccountPaths) {
     }
 }
 
-fn background_command(program: impl AsRef<OsStr>) -> Command {
+pub(crate) fn background_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]
     {

@@ -1,0 +1,23 @@
+{
+  "name": "codex-chat-local-tools",
+  "version": "0.1.0",
+  "description": "Workspace-scoped local coding tools for Codex ChatGPT mode.",
+  "author": {
+    "name": "Meta"
+  },
+  "interface": {
+    "displayName": "Codex Chat Local Tools",
+    "shortDescription": "Local files, shell, patches, and Git for ChatGPT mode.",
+    "longDescription": "A tool-only MCP plugin that gives Codex ChatGPT mode access to explicitly configured local workspaces without browser automation or response scraping.",
+    "developerName": "Meta",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Help me inspect and modify code in one of my configured local workspaces."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

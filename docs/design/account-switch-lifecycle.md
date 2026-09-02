@@ -7,6 +7,7 @@
 ## 登录自启
 
 - Windows 当前用户登录启动项使用 `codex-plus.exe --login-startup`，不能使用无参数入口。
+- 进入 launcher 等待循环前先幂等确保 `local-tools` managed runtime 可用；该 sidecar 启动不应打开 Codex 窗口，失败只记录日志且不阻断后续账户/注入生命周期。
 - 登录模式先获取 launcher 锁并静默等待，不启动 broker、不修改配置，也不主动打开 Codex；若已有 launcher 持锁则直接退出。
 - 用户之后从官方入口打开 Codex 时，登录模式检测到受支持的 OpenAI 进程，释放等待锁，再进入与普通启动相同的 `stop → lock → broker → config → launch → inject` 生命周期。
 - 接管的 Codex 会以 Windows `BelowNormal` priority class 启动，避免官方 Electron 主进程出现持续 CPU 忙循环时以普通或更高线程优先级阻塞桌面输入；该设置仅作用于本次 Codex 进程树，不修改系统全局调度配置。

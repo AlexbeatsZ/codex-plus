@@ -4,6 +4,7 @@ mod accounts;
 mod broker;
 mod cdp;
 mod config;
+mod local_tools;
 #[allow(dead_code)]
 mod protocol_proxy;
 mod providers;
@@ -65,8 +66,13 @@ async fn main() {
 async fn main_impl() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let paths = AccountPaths::discover()?;
+    let mode = LaunchMode::from_args(&args);
 
-    match LaunchMode::from_args(&args) {
+    if mode != LaunchMode::ApplyPendingAction {
+        local_tools::ensure_runtime(&paths).await;
+    }
+
+    match mode {
         LaunchMode::ApplyPendingAction => runtime::apply_pending_action(&paths),
         LaunchMode::WebLogin => run_managed_codex(paths, "launcher.web_login_start", true).await,
         LaunchMode::AttachExisting(debug_port) => run_attach_existing(paths, debug_port).await,

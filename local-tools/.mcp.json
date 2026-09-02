@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "codex-chat-local-tools": {
+      "url": "http://127.0.0.1:3344/mcp"
+    }
+  }
+}
