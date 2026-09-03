@@ -1,6 +1,6 @@
 # Codex Chat Local Tools
 
-A tool-only MCP component embedded in the `codex-plus` repository that gives Codex ChatGPT mode access to explicitly selected local coding workspaces.
+A tool-only MCP component embedded in the `codex-plus` repository that gives Codex ChatGPT mode access to explicitly selected local coding workspaces and the local Codex guidance used to work in them.
 
 It intentionally does **not** contain the browser automation, ChatGPT response proxy, answer scraping, model injection, or UI modifications from [`miuuyy/codex-chatgpt-web`](https://github.com/miuuyy/codex-chatgpt-web).
 
@@ -12,8 +12,23 @@ It intentionally does **not** contain the browser automation, ChatGPT response p
 - Validate and apply unified Git patches.
 - Run PowerShell on Windows or Bash on Linux/macOS.
 - Inspect Git status and diffs.
+- Load the effective global/project `AGENTS.md` instruction chain on demand.
+- Discover Codex skills by metadata, load one matching `SKILL.md`, then fetch only the referenced resources needed for the task.
 
 Path-based tools enforce configured workspace roots. `run_command` starts inside a workspace but is **not** an OS sandbox: it has the permissions and network access of the account running this server.
+
+## Codex context synchronization
+
+The context bridge follows progressive disclosure instead of placing every instruction in the MCP prompt:
+
+1. MCP metadata exposes a compact, bounded catalog of skill names and descriptions for implicit matching.
+2. `list_codex_skills` refreshes and filters the full metadata-only catalog when needed.
+3. `load_codex_skill` loads exactly one current `SKILL.md` and returns a resource inventory.
+4. `read_codex_skill_resource` reads only a referenced file or supported image needed by that skill.
+
+`codex_instructions` loads the current global and project `AGENTS` chain for a target directory, including override precedence and Codex's configured project-document size limit. Source bodies are read on every call; the compact trigger catalog is rebuilt when the MCP connection starts.
+
+Discovery includes `~/.codex/skills`, `~/.agents/skills`, applicable repository `.agents/skills`, enabled/installed Codex plugin caches, and extra roots supplied by `--skill-root` or `CODEX_CHAT_SKILL_ROOTS`. This mirrors local Codex-visible guidance only; OpenAI's platform system/developer prompts are private runtime inputs and cannot be read by this server.
 
 ## Requirements
 
@@ -42,9 +57,16 @@ For a client that launches a stdio MCP process directly:
 node .\dist\cli.js --stdio --root C:\Users\Meta\Project\Workspaces\YourProject
 ```
 
+Optional context controls:
+
+```powershell
+node .\dist\cli.js --stdio --root C:\Project\One --codex-home C:\Users\Meta\.codex --skill-root C:\Project\SharedSkills
+node .\dist\cli.js --stdio --root C:\Project\One --no-codex-context
+```
+
 ## Codex plugin descriptor
 
-The repository includes `.codex-plugin/plugin.json` and `.mcp.json`. The descriptor expects the loopback HTTP server to be running on port 3344. No skill or widget is included; the MCP tools are the product.
+The repository includes `.codex-plugin/plugin.json` and `.mcp.json`. The descriptor expects the loopback HTTP server to be running on port 3344. No widget or copied static skill bundle is included: MCP reads current local Codex sources progressively instead of creating a second stale copy.
 
 ## Connect from ChatGPT mode
 
@@ -80,7 +102,7 @@ ChatGPT cannot directly dial a private loopback endpoint. Use OpenAI's Secure MC
    .\scripts\tunnel-client.ps1 runtimes status codex-chat-local-tools --json
    ```
 
-6. In ChatGPT/Codex Chat mode, enable Developer mode under **Settings → Security and login**, add an app using **Tunnel**, and review the nine tools before enabling it.
+6. In ChatGPT/Codex Chat mode, enable Developer mode under **Settings → Security and login**, add an app using **Tunnel**, and review the thirteen tools before enabling it.
 
 The OpenAI API key used by `tunnel-client` is external to this server. Never commit `.env.local`, put the key in a script or profile, or pass it to the MCP process. The parent `codex-plus.exe` starts this managed runtime on explicit, attach, web-login, and Windows login-startup paths.
 
@@ -89,6 +111,8 @@ Official references:
 - [Build an MCP server](https://developers.openai.com/plugins/build/mcp-server)
 - [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
 - [Connect from ChatGPT](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+- [Build skills](https://developers.openai.com/codex/skills)
+- [Custom instructions with AGENTS.md](https://developers.openai.com/codex/guides/agents-md)
 
 ## Checks
 

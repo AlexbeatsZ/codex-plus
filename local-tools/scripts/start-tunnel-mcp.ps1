@@ -1,7 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string[]]$Root
+    [string[]]$Root,
+
+    [string]$CodexHome,
+
+    [string[]]$SkillRoot,
+
+    [switch]$NoCodexContext
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,5 +17,19 @@ $ErrorActionPreference = "Stop"
 [Environment]::SetEnvironmentVariable("OPENAI_API_KEY", $null, "Process")
 [Environment]::SetEnvironmentVariable("HTTPS_PROXY", $null, "Process")
 
-& (Join-Path $PSScriptRoot "start.ps1") -Root $Root -Stdio
+$startArguments = @{
+    Root = $Root
+    Stdio = $true
+}
+if ($CodexHome) {
+    $startArguments.CodexHome = $CodexHome
+}
+if ($SkillRoot) {
+    $startArguments.SkillRoot = $SkillRoot
+}
+if ($NoCodexContext) {
+    $startArguments.NoCodexContext = $true
+}
+
+& (Join-Path $PSScriptRoot "start.ps1") @startArguments
 exit $LASTEXITCODE

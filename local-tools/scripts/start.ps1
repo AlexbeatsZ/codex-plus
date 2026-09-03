@@ -8,6 +8,12 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 3344,
 
+    [string]$CodexHome,
+
+    [string[]]$SkillRoot,
+
+    [switch]$NoCodexContext,
+
     [switch]$Stdio
 )
 
@@ -22,6 +28,15 @@ if (-not (Test-Path -LiteralPath $entryPoint -PathType Leaf)) {
 $arguments = @($entryPoint)
 foreach ($workspaceRoot in $Root) {
     $arguments += @("--root", $workspaceRoot)
+}
+if ($CodexHome) {
+    $arguments += @("--codex-home", $CodexHome)
+}
+foreach ($extraSkillRoot in $SkillRoot) {
+    $arguments += @("--skill-root", $extraSkillRoot)
+}
+if ($NoCodexContext) {
+    $arguments += "--no-codex-context"
 }
 
 if ($Stdio) {

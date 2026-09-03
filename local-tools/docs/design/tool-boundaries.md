@@ -2,7 +2,7 @@
 
 ## Scope
 
-This project is intentionally a tool-only MCP server. It provides local coding operations to ChatGPT mode and has no browser controller, ChatGPT login/session handling, Responses API proxy, answer reader, widget, or custom user interface.
+This project is intentionally a tool-only MCP server. It provides local coding operations and a read-only Codex context bridge to ChatGPT mode. It has no browser controller, ChatGPT login/session handling, Responses API proxy, answer reader, widget, or custom user interface.
 
 ## Workspace model
 
@@ -23,6 +23,18 @@ Every path-based tool takes a `workspace` identifier and a relative path. Existi
 | `run_command` | Runs PowerShell or Bash from a workspace | Full current-user process authority |
 | `git_status` | Reads repository status | Read-only |
 | `git_diff` | Reads working-tree or staged differences | Read-only |
+| `codex_instructions` | Loads the applicable global/project `AGENTS` chain | Read-only, fixed Codex-home files plus root-scoped project files |
+| `list_codex_skills` | Lists current skill metadata without bodies | Read-only, approved Codex and configured skill roots |
+| `load_codex_skill` | Loads one selected `SKILL.md` and resource inventory | Read-only, approved Codex and configured skill roots |
+| `read_codex_skill_resource` | Reads one resource from a selected skill | Read-only, selected skill root scoped |
+
+## Codex context boundary
+
+The bridge mirrors only instructions that exist as local files and are visible to Codex: global/project `AGENTS` guidance plus discovered skill packages. It cannot access or reconstruct OpenAI's private platform system/developer prompts, and tool results state this boundary explicitly.
+
+Skill discovery reads metadata at connection time to produce an at-most-8,000-character implicit-trigger catalog. Full bodies are excluded. Catalog and load calls rescan the source files, while `load_codex_skill` returns only one `SKILL.md`; supporting resources remain separate until requested. Skills marked `allow_implicit_invocation: false` stay available for explicit selection but are omitted from the startup trigger catalog.
+
+Skill resource reads resolve real paths against the selected real skill root. A symlink or traversal cannot escape that root. Text reads are bounded, supported images have a separate size cap, and unrelated Codex files such as account credentials, sessions, memory stores, or `config.toml` contents are never returned.
 
 ## Important command boundary
 

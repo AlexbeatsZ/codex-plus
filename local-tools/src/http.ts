@@ -4,6 +4,7 @@ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response } from "express";
+import { CodexContextSync } from "./codex-context.js";
 import { createMcpServer } from "./mcp-server.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
@@ -17,7 +18,11 @@ export interface HttpStartOptions {
   port: number;
 }
 
-export function startHttpServer(registry: WorkspaceRegistry, options: HttpStartOptions): Promise<HttpServer> {
+export function startHttpServer(
+  registry: WorkspaceRegistry,
+  options: HttpStartOptions,
+  codexContext: CodexContextSync = new CodexContextSync(registry),
+): Promise<HttpServer> {
   const app = createMcpExpressApp({ host: options.host });
   const sessions = new Map<string, Session>();
 
@@ -39,7 +44,7 @@ export function startHttpServer(registry: WorkspaceRegistry, options: HttpStartO
             sessions.set(newSessionId, { transport, server });
           },
         });
-        const server = createMcpServer(registry);
+        const server = createMcpServer(registry, codexContext);
         session = { transport, server };
         await server.connect(transport);
       }

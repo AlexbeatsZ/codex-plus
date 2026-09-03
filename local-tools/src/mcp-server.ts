@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
+import { CodexContextSync } from "./codex-context.js";
 import { LocalOperations } from "./operations.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
@@ -20,13 +21,13 @@ function textResult<T extends object>(structuredContent: T) {
   };
 }
 
-export function createMcpServer(registry: WorkspaceRegistry): McpServer {
+export function createMcpServer(registry: WorkspaceRegistry, codexContext: CodexContextSync): McpServer {
   const operations = new LocalOperations(registry);
   const server = new McpServer(
-    { name: "codex-chat-local-tools", version: "0.1.0" },
+    { name: "codex-chat-local-tools", version: "0.2.0" },
     {
       instructions:
-        "Operate only within configured workspaces. Call workspace_info first when the workspace is unclear. Prefer read/search before edits and apply_patch for file changes. run_command executes with the current OS user's authority and is not an OS sandbox; use it only for commands needed by the user's task.",
+        "Operate only within configured workspaces. Call workspace_info first when the workspace is unclear. Before substantive coding work, call codex_instructions for the target directory and follow the returned Codex-visible AGENTS guidance. When the user names a synced skill or the task matches one of the metadata descriptions attached to load_codex_skill, load that skill before acting; read referenced resources only when needed. Prefer read/search before edits and apply_patch for file changes. run_command executes with the current OS user's authority and is not an OS sandbox; use it only for commands needed by the user's task.",
     },
   );
 
@@ -38,10 +39,150 @@ export function createMcpServer(registry: WorkspaceRegistry): McpServer {
       inputSchema: {},
       outputSchema: {
         workspaces: z.array(z.object({ id: z.string(), root: z.string() })),
+        codexContext: z.object({
+          enabled: z.boolean(),
+          codexHome: z.string(),
+          instructionSync: z.literal("on-demand"),
+          skillSync: z.literal("catalog-first"),
+          skillCount: z.number(),
+        }),
       },
       annotations: readonlyAnnotations,
     },
-    async () => textResult({ workspaces: registry.workspaces }),
+    async () => textResult({ workspaces: registry.workspaces, codexContext: codexContext.status() }),
+  );
+
+  server.registerTool(
+    "codex_instructions",
+    {
+      title: "Load synced Codex instructions",
+      description:
+        "Call before substantive work in a configured workspace. Loads the current global and project AGENTS instruction chain on demand, using Codex precedence and size limits. This mirrors local Codex-visible guidance, not OpenAI's private platform prompts.",
+      inputSchema: {
+        workspace: workspaceInput,
+        path: relativePathInput.describe("Target directory relative to the workspace; nested AGENTS guidance is resolved through this directory"),
+        maxBytes: z.number().int().min(1_024).max(262_144).optional().describe("Optional read cap; defaults to Codex project_doc_max_bytes or 32 KiB"),
+      },
+      outputSchema: {
+        boundary: z.string(),
+        workspace: z.string(),
+        path: z.string(),
+        maxBytes: z.number(),
+        sources: z.array(z.object({
+          scope: z.enum(["global", "project"]),
+          path: z.string(),
+          content: z.string(),
+          truncated: z.boolean(),
+        })),
+        combined: z.string(),
+        truncated: z.boolean(),
+      },
+      annotations: readonlyAnnotations,
+    },
+    async ({ workspace, path, maxBytes }) => textResult(codexContext.loadInstructions(workspace, path, maxBytes)),
+  );
+
+  server.registerTool(
+    "list_codex_skills",
+    {
+      title: "List synced Codex skills",
+      description:
+        "Returns only the current skill metadata index for progressive loading. Use it when the compact startup catalog is incomplete, a skill name is ambiguous, or you need to search descriptions; then call load_codex_skill for exactly one matching skill.",
+      inputSchema: {
+        workspace: z.string().optional().describe("Optional workspace identifier for repository-scoped skills"),
+        path: relativePathInput.describe("Optional target directory used for nested repository skill discovery"),
+        query: z.string().optional().describe("Optional case-insensitive filter across ID, name, description, scope, and source"),
+      },
+      outputSchema: {
+        skills: z.array(z.object({
+          id: z.string(),
+          name: z.string(),
+          description: z.string(),
+          scope: z.enum(["project", "user", "system", "plugin", "extra"]),
+          source: z.string(),
+          sourcePath: z.string(),
+          implicitInvocation: z.boolean(),
+        })),
+      },
+      annotations: readonlyAnnotations,
+    },
+    async ({ workspace, path, query }) => textResult({ skills: codexContext.listSkills(workspace, path, query) }),
+  );
+
+  server.registerTool(
+    "load_codex_skill",
+    {
+      title: "Load a synced Codex skill",
+      description: codexContext.triggerSummary(),
+      inputSchema: {
+        skill: z.string().min(1).describe("Exact skill ID from the metadata catalog, or a unique exact skill name"),
+        workspace: z.string().optional().describe("Optional workspace identifier for repository-scoped skills"),
+        path: relativePathInput.describe("Optional target directory used for nested repository skill discovery"),
+      },
+      outputSchema: {
+        id: z.string(),
+        name: z.string(),
+        description: z.string(),
+        scope: z.enum(["project", "user", "system", "plugin", "extra"]),
+        source: z.string(),
+        sourcePath: z.string(),
+        implicitInvocation: z.boolean(),
+        root: z.string(),
+        instructions: z.string(),
+        resources: z.array(z.object({
+          path: z.string(),
+          kind: z.enum(["reference", "script", "asset", "metadata", "other"]),
+          size: z.number(),
+        })),
+        resourcesTruncated: z.boolean(),
+      },
+      annotations: readonlyAnnotations,
+    },
+    async ({ skill, workspace, path }) => textResult(codexContext.loadSkill(skill, workspace, path)),
+  );
+
+  server.registerTool(
+    "read_codex_skill_resource",
+    {
+      title: "Read a synced Codex skill resource",
+      description:
+        "Reads one reference, script, template, metadata file, or supported image from a previously loaded Codex skill. Use only when SKILL.md points to that resource or it is needed for the current workflow.",
+      inputSchema: {
+        skill: z.string().min(1).describe("Exact skill ID, or a unique exact skill name"),
+        resourcePath: z.string().min(1).describe("Path relative to the loaded skill root"),
+        startLine: z.number().int().min(1).default(1),
+        lineCount: z.number().int().min(1).max(5_000).default(500),
+        workspace: z.string().optional().describe("Optional workspace identifier for repository-scoped skills"),
+        path: relativePathInput.describe("Optional target directory used for nested repository skill discovery"),
+      },
+      outputSchema: {
+        skillId: z.string(),
+        path: z.string(),
+        format: z.enum(["text", "image"]),
+        mimeType: z.string(),
+        size: z.number(),
+        startLine: z.number().optional(),
+        endLine: z.number().optional(),
+        totalLines: z.number().optional(),
+        text: z.string().optional(),
+        truncated: z.boolean().optional(),
+      },
+      annotations: readonlyAnnotations,
+    },
+    async ({ skill, resourcePath, startLine, lineCount, workspace, path }) => {
+      const resource = codexContext.readSkillResource(skill, resourcePath, startLine, lineCount, workspace, path);
+      const { data, ...structuredContent } = resource;
+      if (resource.format === "image" && data) {
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify(structuredContent, null, 2) },
+            { type: "image" as const, data, mimeType: resource.mimeType },
+          ],
+          structuredContent,
+        };
+      }
+      return textResult(structuredContent);
+    },
   );
 
   server.registerTool(

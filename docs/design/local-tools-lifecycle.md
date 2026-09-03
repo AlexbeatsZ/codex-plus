@@ -6,6 +6,8 @@
 
 OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求转交给 `local-tools` 的 stdio MCP。它需要常驻才能接收工具调用；MCP 本身不持有 Tunnel runtime key。
 
+MCP 同时提供只读 Codex 上下文桥接：在工具调用时读取当前 `AGENTS` 指令链和 skill 文件，而不是由启动器复制或缓存整份提示词。初始化只携带有界的 skill 元数据目录；完整 `SKILL.md` 与其资源分阶段按需加载。详细发现顺序、触发与路径边界见 `local-tools/docs/design/codex-context-sync.md`。
+
 ## 启动时序
 
 - 除 `--apply-pending-action` 账户事务 helper 外，每个 `codex-plus.exe` 入口都先幂等确保 managed runtime 已启动。

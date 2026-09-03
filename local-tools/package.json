@@ -1,8 +1,8 @@
 {
   "name": "codex-chat-local-tools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Workspace-scoped tool-only MCP server for Codex ChatGPT mode",
+  "description": "Workspace-scoped MCP tools with on-demand Codex instruction and skill sync",
   "type": "module",
   "bin": {
     "codex-chat-local-tools": "dist/cli.js"

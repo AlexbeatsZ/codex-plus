@@ -8,20 +8,21 @@
 
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，版本 `0.3.0`。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-02 当前安装/进程识别验证版本为 `26.831.1445.0`，实际进程名为 `ChatGPT.exe`。
-- 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`。
+- 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`；MCP 的上下文同步设计见 `local-tools/docs/design/codex-context-sync.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
-- 当前自动化基线：`cargo test` 42 项、DOM/路由测试 15 项、`local-tools` MCP 测试 6 项通过；Windows 回归测试同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。
+- 当前自动化基线：`cargo test` 42 项、DOM/路由测试 15 项、`local-tools` MCP 测试 7 项通过；Windows 回归测试同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。
 - 当前 0.3.0 自启动产物为账户脚本 v7/API 脚本 v6/路由脚本 v16：`target\release\codex-plus.exe`，6,513,664 bytes。普通接管会以 `BelowNormal` 启动 Codex 根进程；登录自启先确保 local-tools runtime 可用，在一次受管 Codex 生命周期结束后重新待命，可重新接管官方更新/自重启产生的新根进程。
 - 隔离 release 候选包含 tunnel 代理配置支持：`target\candidate-release\release\codex-plus.exe`，6,509,568 bytes；正式 `target\release` 尚未替换，以免重启当前 Codex 会话。
 - Windows 发布 EXE 通过 `build.rs` 嵌入 `assets/app-icon.ico`；图标以 Microsoft Fluent UI System Icons 的 Person Swap 为主体，蓝色圆角底用于和其他自制工具区分。
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时立即确保 local-tools runtime 可用，再等待官方 Codex 被用户打开接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
 - `local-tools/` 已纳入仓库；正常、attach、网页登录和登录自启入口都会幂等确保 alias `codex-chat-local-tools` 运行。登录自启会立即启动 MCP，但仍不会主动打开官方 Codex。Tunnel key 只从忽略的 `local-tools/.env.local` 传给 `tunnel-client`，MCP 子进程会清除相关环境变量。
 - 2026-09-03 已确认本机 Internet Settings 使用 `127.0.0.1:7897` 时，`tunnel-client` 不会自动继承该代理并会直连 OpenAI 超时；现支持从忽略的 `.env.local` 读取可选 `TUNNEL_HTTP_PROXY`，仅给 Tunnel runtime 注入 `HTTPS_PROXY`。现场 runtime 已通过该配置恢复远端元数据、唯一进程与 health/ready 200。
-- 2026-09-04 Tunnel 已在保留原工作区 `a7ff583c-c893-4be2-98ab-7173e84a3f7c` 的同时关联 Business 工作区 `Xia (b9c51c7a-e7a7-40d7-9978-aa60f76fbec0)`；该工作区的开发者模式已开启，ChatGPT 插件 `Codex Chat Local Tools` 已连接。只读验收通过插件发现与 `workspace_info` 实际返回 `codex-plus` 及仓库根路径，本机 runtime 仍为唯一 ready 进程、health/ready 200、远端 workspace 数为 2。
+- 2026-09-04 Tunnel 曾在保留原工作区 `a7ff583c-c893-4be2-98ab-7173e84a3f7c` 的同时关联 Business 工作区 `Xia (b9c51c7a-e7a7-40d7-9978-aa60f76fbec0)`；当时只读验收通过插件发现与 `workspace_info`。用户随后切换了 ChatGPT 小号，因此当前 Chat 侧插件连接可能断开；本轮按用户要求不在 Chat 模式测试，不能沿用旧连接结论。
 
 # Active Work
 
 - 0.3.0 已把 `codex-chat-local-tools` 合并为仓库内 `local-tools/` 组件，并在正常、attach、网页登录和登录自启入口幂等启动 managed runtime；旧 runtime 已热迁移到新目录，health/ready HTTP 200、doctor 通过、stdio MCP 报告 workspace `codex-plus`，当前 Codex 通过新 release 的 attach 模式保持注入，未为迁移重启用户窗口。最终验收在外部持有 launcher 锁时停止 runtime 并执行正式 release 的 `--login-startup`：日志记录 `alreadyRunning=false` 后 runtime 恢复为唯一 ready 进程，随后因锁安全退出，证明登录入口会实际拉起 MCP 且不会产生重复实例。
+- `local-tools` 0.2.0 已增加只读 Codex 上下文同步：`AGENTS` 依优先级按工作目录加载；Skills 先暴露有界元数据用于隐式/显式匹配，再加载单个完整 `SKILL.md` 和被引用资源。OpenAI 平台内部提示词不属于同步范围。本轮只完成本地构建和 MCP 协议测试，按用户要求未在 Chat 模式调用工具验收。
 
 - 2026-08-15 用户确认关闭/重启 Codex 可短暂改善、运行后鼠标再次周期性卡顿。现场官方 Codex 已更新为 `26.810.6296.0`，根进程仅运行约 5 分钟即持续约 134% 单核 CPU，其中一个 `AboveNormal` 线程约 65%，其余多个线程各约 7–10%；GPU、DPC、磁盘无饱和。此时没有运行中的 codex-plus、主进程没有 CDP 参数且 9229 不可达，确认复发不由 plus 注入引起。当前进程临时降为 `BelowNormal` 后仍消耗约 138% 单核，但不再以普通/更高调度优先级与桌面输入竞争。
 - 0.2.0 已让 launcher 用 `BELOW_NORMAL_PRIORITY_CLASS` 创建官方 Codex，并新增真实 Windows 子进程测试；登录自启从单次 takeover 改为每次受管 Codex 结束后重新静默待命，根进程发现读取最小身份/命令行并排除 `--type=` Electron 子进程与 `codex app-server`，避免官方更新重启后脱离管理或残留子进程误触发。
@@ -83,5 +84,6 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - 仓库内嵌的 `local-tools/scripts/tunnel-client.ps1` 必须先切换到组件根目录再执行客户端；managed runtime 元数据保存相对 `profile-dir`，若沿用调用者工作目录，运行实例虽健康但 `status` 会误报 profile missing。
 - release 主程序使用 Windows GUI 子系统并不意味着其后代控制台进程也会自动隐藏；无父控制台时，未设置创建标志的 `powershell.exe` 仍会自行创建可见窗口。所有内部 `Command` 都应走统一后台构造器，并在 Windows 设置 `CREATE_NO_WINDOW`。
 - Windows Internet Settings 中启用本地代理不代表 Go `tunnel-client` 会自动使用它；若 control-plane 日志显示直连解析地址超时而浏览器可访问 OpenAI，应通过忽略的 `.env.local` 设置 `TUNNEL_HTTP_PROXY`。启动器和维护 wrapper 都只在子进程范围映射为 `HTTPS_PROXY`，MCP 启动脚本必须在运行 Node 前清除该变量，避免 `run_command` 意外继承。
+- 本机 Codex Skills 不能作为整包提示词常驻 Chat 上下文；应只在 MCP 元数据中给出有界的 `name`/`description` 触发目录，命中后读取一个 `SKILL.md`，再按引用读取资源。`allow_implicit_invocation: false` 的 skill 必须保留显式可用性但不能进入自动触发目录。
 - `System::new_all()` 会采集所有进程的 CPU、内存、磁盘和路径，不能放在常驻秒级轮询中；由 launcher 自己启动的 Codex 应保留根 `Child` 句柄并用 `try_wait()`，登录前不得不发现外部 Codex 时则复用单个 `System`，用 `ProcessRefreshKind::nothing().with_exe(OnlyIfNotSet)` 只刷新身份字段。全页面 MutationObserver 同样必须先按新增/变化的菜单节点过滤，避免聊天流和终端输出把一次菜单查找放大成持续扫描。
 - Codex `26.810.6296.0` 可在没有 plus 进程、没有 CDP 参数且 GPU/DPC 均空闲时，由 Electron 根 `ChatGPT.exe` 自身持续消耗约 1.3 个核心；其中热线程可为 `AboveNormal`，足以造成系统级鼠标顿挫。plus 无法修复闭源忙循环，但可用 `BELOW_NORMAL_PRIORITY_CLASS` 隔离其桌面调度影响。官方更新可能先启动无 CDP 的新根进程再结束旧受管实例，因此登录 launcher 必须在生命周期结束后重新待命，并用命令行排除 renderer/GPU/crashpad/app-server 后再次接管。
