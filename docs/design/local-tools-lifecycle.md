@@ -31,9 +31,10 @@ OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求
 ## 密钥边界
 
 - `codex-plus` 只读取 `.env.local` 以便给 `tunnel-client runtimes connect` 的进程级 `CONTROL_PLANE_API_KEY` 赋值。
+- 直连 `api.openai.com:443` 不可用时，`.env.local` 可设置 `TUNNEL_HTTP_PROXY`；启动器和 tunnel wrapper 仅将其映射为 tunnel-client 进程级 `HTTPS_PROXY`，不修改用户或系统环境变量。
 - 启动器不记录密钥，不把密钥写入命令行，也不修改用户/系统环境变量。
 - Tunnel profile 只保存 `env:CONTROL_PLANE_API_KEY` 引用。
-- `scripts/start-tunnel-mcp.ps1` 在启动 Node MCP 前清除 `CONTROL_PLANE_API_KEY` 与 `OPENAI_API_KEY`，防止 MCP 子进程继承凭据。
+- `scripts/start-tunnel-mcp.ps1` 在启动 Node MCP 前清除 `CONTROL_PLANE_API_KEY`、`OPENAI_API_KEY` 与 tunnel 专用 `HTTPS_PROXY`，防止 MCP 子进程继承凭据或改变用户命令的网络行为。
 
 ## 工作区边界
 
@@ -46,3 +47,5 @@ OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求
 迁移现有 runtime 时，先停止旧 alias，再从新目录执行一次幂等启动。旧 MCP 仓库在新 runtime 完成 health、ready 和真实工具调用验收前保留，作为回退入口。
 
 Windows `canonicalize()` 可能返回 extended-length 路径；写入 profile 的命令必须去除 `\\?\` 前缀并统一为正斜杠。Tunnel wrapper 也必须把当前目录切到组件根目录，使相对 `.tunnel-client` 在启动、doctor 和 status 中指向同一位置。
+
+`tunnel-client` 在 Windows 上不会自动采用 Internet Settings 中的本地代理。若日志中的 control-plane 请求直接连接解析地址并超时，而浏览器或 `curl` 可访问 OpenAI，应优先配置 `TUNNEL_HTTP_PROXY`，无需依赖 Proxifier 的进程规则。

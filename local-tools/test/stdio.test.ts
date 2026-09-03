@@ -30,7 +30,7 @@ test("compiled CLI performs an MCP handshake over stdio", async () => {
 });
 
 test(
-  "Windows tunnel wrapper strips API keys before starting the MCP child",
+  "Windows tunnel wrapper strips tunnel-only environment before starting the MCP child",
   { skip: process.platform !== "win32" },
   async () => {
     const temporary = await makeAgentTemp("codex-chat-tunnel-stdio");
@@ -50,6 +50,7 @@ test(
         ...process.env,
         CONTROL_PLANE_API_KEY: "test-control-plane-secret",
         OPENAI_API_KEY: "test-openai-secret",
+        HTTPS_PROXY: "http://127.0.0.1:7897",
       },
       stderr: "pipe",
     });
@@ -65,11 +66,11 @@ test(
           workspace,
           cwd: ".",
           command:
-            "if ($env:CONTROL_PLANE_API_KEY -or $env:OPENAI_API_KEY) { exit 9 }; Write-Output 'keys-stripped'",
+            "if ($env:CONTROL_PLANE_API_KEY -or $env:OPENAI_API_KEY -or $env:HTTPS_PROXY) { exit 9 }; Write-Output 'tunnel-environment-stripped'",
         },
       });
       assert.notEqual(result.isError, true, JSON.stringify(result));
-      assert.match(JSON.stringify(result.content), /keys-stripped/);
+      assert.match(JSON.stringify(result.content), /tunnel-environment-stripped/);
     } finally {
       await transport.close().catch(() => undefined);
       await temporary.cleanup();

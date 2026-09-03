@@ -57,7 +57,9 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
     let workspace_root = component_root
         .parent()
         .context("local-tools 没有可用的父工作区")?;
-    let runtime_key = read_runtime_key(&component_root.join(".env.local"))?;
+    let env_file = component_root.join(".env.local");
+    let runtime_key = read_runtime_key(&env_file)?;
+    let tunnel_http_proxy = read_optional_env_value(&env_file, "TUNNEL_HTTP_PROXY")?;
     let mcp_command = format!(
         "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {} -Root {}",
         command_path(&start_script),
@@ -65,7 +67,7 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
     );
 
     let mut command = crate::runtime::background_command(&tunnel_client);
-    let output = command
+    command
         .current_dir(&component_root)
         .args([
             "runtimes",
@@ -86,7 +88,11 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
         .args(["--runtime-api-key", "env:CONTROL_PLANE_API_KEY", "--json"])
         .env_remove("OPENAI_API_KEY")
         .env("CONTROL_PLANE_API_KEY", runtime_key)
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    if let Some(proxy) = tunnel_http_proxy {
+        command.env("HTTPS_PROXY", proxy);
+    }
+    let output = command
         .output()
         .with_context(|| format!("无法启动 {}", tunnel_client.display()))?;
 
@@ -175,17 +181,22 @@ fn component_is_runnable(root: &Path) -> bool {
 }
 
 fn read_runtime_key(path: &Path) -> anyhow::Result<OsString> {
+    Ok(OsString::from(
+        read_optional_env_value(path, "OPENAI_API_KEY")?
+            .context("local-tools/.env.local 缺少非空 OPENAI_API_KEY")?,
+    ))
+}
+
+fn read_optional_env_value(path: &Path, name: &str) -> anyhow::Result<Option<String>> {
     let contents = fs::read_to_string(path)
-        .with_context(|| format!("无法读取 local-tools runtime key 文件 {}", path.display()))?;
-    let value = contents
+        .with_context(|| format!("无法读取 local-tools 配置文件 {}", path.display()))?;
+    Ok(contents
         .lines()
         .filter_map(|line| line.split_once('='))
-        .filter(|(name, _)| name.trim() == "OPENAI_API_KEY")
-        .map(|(_, value)| unquote(value.trim()))
+        .filter(|(candidate, _)| candidate.trim() == name)
+        .map(|(_, value)| unquote(value.trim()).to_string())
         .next_back()
-        .filter(|value| !value.trim().is_empty())
-        .context("local-tools/.env.local 缺少非空 OPENAI_API_KEY")?;
-    Ok(OsString::from(value))
+        .filter(|value| !value.trim().is_empty()))
 }
 
 fn unquote(value: &str) -> &str {
@@ -230,6 +241,23 @@ mod tests {
         fs::write(&env_file, "OPENAI_API_KEY=\n").unwrap();
 
         assert!(read_runtime_key(&env_file).is_err());
+    }
+
+    #[test]
+    fn optional_env_parser_uses_last_non_empty_assignment() {
+        let directory = tempfile::tempdir().unwrap();
+        let env_file = directory.path().join(".env.local");
+        fs::write(
+            &env_file,
+            "TUNNEL_HTTP_PROXY=http://old\nTUNNEL_HTTP_PROXY='http://127.0.0.1:7897'\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_optional_env_value(&env_file, "TUNNEL_HTTP_PROXY").unwrap(),
+            Some("http://127.0.0.1:7897".to_string())
+        );
+        assert_eq!(read_optional_env_value(&env_file, "MISSING").unwrap(), None);
     }
 
     #[test]
