@@ -27,8 +27,8 @@ pub const START_PHASES: [&str; 6] = ["stop", "lock", "broker", "config", "launch
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PendingAction {
     SwitchAccount {
-        #[serde(rename = "accountId")]
-        account_id: String,
+        #[serde(rename = "recordId")]
+        record_id: String,
     },
     WebLogin,
 }
@@ -199,11 +199,11 @@ pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<Child>
     Ok(child)
 }
 
-pub fn queue_switch(paths: &AccountPaths, account_id: &str) -> anyhow::Result<()> {
+pub fn queue_switch(paths: &AccountPaths, record_id: &str) -> anyhow::Result<()> {
     queue_pending_action(
         paths,
         PendingAction::SwitchAccount {
-            account_id: account_id.to_string(),
+            record_id: record_id.to_string(),
         },
     )
 }
@@ -229,7 +229,7 @@ pub fn apply_pending_action(paths: &AccountPaths) -> anyhow::Result<()> {
     let action: PendingAction = serde_json::from_slice(&bytes).context("账户切换动作无效")?;
     let vault = AccountVault::new(paths.clone());
     match &action {
-        PendingAction::SwitchAccount { account_id } => vault.validate_switch(account_id)?,
+        PendingAction::SwitchAccount { record_id } => vault.validate_switch(record_id)?,
         PendingAction::WebLogin => vault.validate_web_login()?,
     }
 
@@ -237,8 +237,8 @@ pub fn apply_pending_action(paths: &AccountPaths) -> anyhow::Result<()> {
     let previous = read_optional_file(&paths.live_auth())?;
     stop_existing_runtime(paths)?;
     let action_result = match &action {
-        PendingAction::SwitchAccount { account_id } => {
-            vault.switch_after_shutdown(account_id).map(|_| ())
+        PendingAction::SwitchAccount { record_id } => {
+            vault.switch_after_shutdown(record_id).map(|_| ())
         }
         PendingAction::WebLogin => vault.begin_web_login_after_shutdown(),
     };
@@ -580,12 +580,15 @@ mod tests {
     #[test]
     fn pending_action_contains_no_auth_material() {
         let action = PendingAction::SwitchAccount {
-            account_id: "account-1".to_string(),
+            record_id: "a".repeat(64),
         };
         let encoded = serde_json::to_string(&action).unwrap();
         assert_eq!(
             encoded,
-            r#"{"kind":"switchAccount","accountId":"account-1"}"#
+            format!(
+                r#"{{"kind":"switchAccount","recordId":"{}"}}"#,
+                "a".repeat(64)
+            )
         );
         assert!(!encoded.contains("token"));
 

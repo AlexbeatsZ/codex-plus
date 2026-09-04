@@ -65,11 +65,11 @@ impl AccountService {
     }
 
     async fn usage(&self, payload: Value) -> anyhow::Result<Value> {
-        let account_id = required_id(&payload)?;
+        let record_id = required_record_id(&payload)?;
         let usage = AccountVault::new(self.paths.as_ref().clone())
-            .fetch_usage(&account_id)
+            .fetch_usage(&record_id)
             .await?;
-        Ok(json!({"status": "ok", "accountId": account_id, "usage": usage}))
+        Ok(json!({"status": "ok", "recordId": record_id, "usage": usage}))
     }
 
     async fn import(&self, payload: Value) -> anyhow::Result<Value> {
@@ -92,9 +92,9 @@ impl AccountService {
     }
 
     async fn switch(&self, payload: Value) -> anyhow::Result<Value> {
-        let account_id = required_id(&payload)?;
+        let record_id = required_record_id(&payload)?;
         let paths = self.paths.as_ref().clone();
-        let validate_id = account_id.clone();
+        let validate_id = record_id.clone();
         tokio::task::spawn_blocking(move || {
             AccountVault::new(paths)
                 .validate_switch(&validate_id)
@@ -102,18 +102,18 @@ impl AccountService {
         })
         .await
         .context("账户切换验证任务失败")??;
-        crate::runtime::queue_switch(self.paths(), &account_id)?;
+        crate::runtime::queue_switch(self.paths(), &record_id)?;
         Ok(json!({
             "status": "accepted",
-            "accountId": account_id,
+            "recordId": record_id,
             "message": "正在切换账户并重新启动 Codex…"
         }))
     }
 
     async fn delete(&self, payload: Value) -> anyhow::Result<Value> {
-        let account_id = required_id(&payload)?;
+        let record_id = required_record_id(&payload)?;
         let paths = self.paths.as_ref().clone();
-        let delete_id = account_id.clone();
+        let delete_id = record_id.clone();
         tokio::task::spawn_blocking(move || {
             AccountVault::new(paths)
                 .delete_account(&delete_id)
@@ -121,7 +121,7 @@ impl AccountService {
         })
         .await
         .context("账户删除任务失败")??;
-        Ok(json!({"status": "ok", "accountId": account_id}))
+        Ok(json!({"status": "ok", "recordId": record_id}))
     }
 
     async fn web_login(&self) -> anyhow::Result<Value> {
@@ -185,15 +185,15 @@ impl AccountService {
     }
 }
 
-fn required_id(payload: &Value) -> anyhow::Result<String> {
+fn required_record_id(payload: &Value) -> anyhow::Result<String> {
     let value = payload
-        .get("accountId")
+        .get("recordId")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("缺少账户 ID"))?;
-    if value.len() > 512 || value.chars().any(char::is_control) {
-        anyhow::bail!("账户 ID 无效");
+        .ok_or_else(|| anyhow::anyhow!("缺少账户记录 ID"))?;
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("账户记录 ID 无效");
     }
     Ok(value.to_string())
 }
@@ -217,8 +217,8 @@ mod tests {
 
     #[test]
     fn ids_are_strictly_validated() {
-        assert!(required_id(&json!({"accountId": "account"})).is_ok());
-        assert!(required_id(&json!({"accountId": ""})).is_err());
-        assert!(required_id(&json!({"accountId": "bad\nvalue"})).is_err());
+        assert!(required_record_id(&json!({"recordId": "a".repeat(64)})).is_ok());
+        assert!(required_record_id(&json!({"recordId": ""})).is_err());
+        assert!(required_record_id(&json!({"recordId": "bad\nvalue"})).is_err());
     }
 }

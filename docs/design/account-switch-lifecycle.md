@@ -30,14 +30,15 @@
 ## 账户数据
 
 - 实时凭据：`CODEX_HOME\auth.json`，未设置 `CODEX_HOME` 时为 `%USERPROFILE%\.codex\auth.json`。
-- 账户快照：`%LOCALAPPDATA%\codex-plus\accounts\<sha256(account_id)>.json`。
-- 渲染器只获得 `accountId`、name、email、plan、active 等摘要。令牌只由 Rust 读取。
+- 账户快照：`%LOCALAPPDATA%\codex-plus\accounts\<record_id>.json`。`record_id` 是不可逆本地散列，优先由 Business 工作区 `account_id` 与席位级 `chatgpt_account_user_id` 共同派生；旧 token 缺少该 claim 时依次回退 `chatgpt_user_id`、`user_id`、`sub`，再回退旧的工作区散列。这样同一 Business 工作区的不同席位不会互相覆盖。
+- 旧 `<sha256(account_id)>.json` 快照在首次列出账户时原子迁移到席位级文件名。迁移只改变 vault 文件名，不修改凭据内容。
+- 渲染器只获得 `recordId`、`accountId`、name、email、plan、active 等摘要。令牌与席位 claim 只由 Rust 读取。
 - 当前有效 ChatGPT auth 在列出账户前保存到 vault，因此当前账户永远可见且可在之后恢复。
 
 ## 切换事务
 
-1. bridge 验证目标存在，且 `cli_auth_credentials_store` 未设置或为 `file`。
-2. 将仅含 account ID 的动作原子写入 `pending-action.json`，启动同一 EXE 的内部 helper。
+1. bridge 以 `recordId` 验证目标席位存在，且 `cli_auth_credentials_store` 未设置或为 `file`。
+2. 将仅含不可逆 `recordId` 的动作原子写入 `pending-action.json`，启动同一 EXE 的内部 helper。
 3. helper 给渲染器短暂响应时间，然后停止父 launcher 与 Codex。
 4. 再次验证目标，保存当前实时账户，备份实时 `auth.json`，原子写入目标快照。
 5. 清理 pending action 并重新启动普通 `codex-plus.exe`。写入失败时先恢复备份，再启动原账户。
@@ -47,7 +48,7 @@
 ## 删除与网页登录
 
 - 删除只作用于 `%LOCALAPPDATA%\codex-plus\accounts` 中的已保存快照，不调用 ChatGPT 服务，也不删除远端账户。
-- 当前正在使用的账户不能直接删除，因为实时 `auth.json` 仍会继续代表该账户；用户必须先切换到其他账户。Rust 层必须再次检查实时 account ID，不能只依赖渲染器禁用按钮。
+- 当前正在使用的席位不能直接删除，因为实时 `auth.json` 仍会继续代表该席位；用户必须先切换到其他账户。Rust 层必须以席位级 `recordId` 再次检查，不能只依赖渲染器禁用按钮，也不能只比较 Business 工作区 ID。
 - “网页登录新账户”同样使用不含 token 的 pending action 和同一 EXE helper。helper 先验证 file credential store、停止旧运行时，再在 vault 锁内保存当前实时账户并移走 `auth.json`；随后以内部 `--web-login` 模式重新启动官方 Codex，使其显示原生登录页面。
 - 网页登录 launcher 轮询新生成的 ChatGPT `auth.json`，解析成功后立即保存到 vault 并结束捕获任务。用户取消登录或关闭 Codex 不会丢失旧账户，其快照已经在移走实时凭据前保存。
 - 若移走实时凭据或启动网页登录 launcher 失败，必须恢复操作前的 `auth.json`，并尝试按原账户恢复普通 launcher。

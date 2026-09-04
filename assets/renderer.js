@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 7;
+  const VERSION = 8;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -265,12 +265,12 @@
   }
 
   function accountMarkup(account) {
-    const id = String(account?.accountId || "");
+    const id = String(account?.recordId || "");
     const active = account?.active === true;
     const displayName = account?.name || account?.email || "ChatGPT 账户";
     const secondary = account?.name && account?.email && account.name !== account.email ? account.email : "";
     const usageState = state.usage.get(id);
-    return `<div class="cp-account-row" data-account-id="${escapeHtml(id)}" data-active="${active}">
+    return `<div class="cp-account-row" data-record-id="${escapeHtml(id)}" data-active="${active}">
       <div class="cp-account-main">
         <div class="cp-account-name-line"><span class="cp-account-name">${escapeHtml(displayName)}</span>${active ? '<span class="cp-account-badge">当前</span>' : ""}</div>
         <div class="cp-account-meta">${secondary ? `<span>${escapeHtml(secondary)}</span>` : ""}${account?.plan ? `<span>${escapeHtml(account.plan)}</span>` : ""}</div>
@@ -308,7 +308,7 @@
       const result = await invoke("/accounts/list", {});
       state.accounts = Array.isArray(result?.accounts) ? result.accounts : [];
       for (const account of state.accounts) {
-        const id = String(account?.accountId || "");
+        const id = String(account?.recordId || "");
         if (id) state.usage.set(id, { status: "loading" });
       }
     } catch (error) {
@@ -318,29 +318,29 @@
       renderAccounts();
     }
     for (const account of state.accounts) {
-      const id = String(account?.accountId || "");
+      const id = String(account?.recordId || "");
       if (id) void loadUsage(id);
     }
   }
 
-  async function loadUsage(accountId) {
+  async function loadUsage(recordId) {
     try {
-      const result = await invoke("/accounts/usage", { accountId });
-      state.usage.set(accountId, { status: "ok", usage: result?.usage || {} });
+      const result = await invoke("/accounts/usage", { recordId });
+      state.usage.set(recordId, { status: "ok", usage: result?.usage || {} });
     } catch (error) {
-      state.usage.set(accountId, { status: "error", message: error?.message || "额度暂不可用" });
+      state.usage.set(recordId, { status: "error", message: error?.message || "额度暂不可用" });
     }
     if (state.view === "accounts") renderAccounts();
   }
 
-  async function switchAccount(accountId, button) {
-    if (!accountId || state.switching || state.deleting || state.webLoginStarting) return;
-    state.switching = accountId;
+  async function switchAccount(recordId, button) {
+    if (!recordId || state.switching || state.deleting || state.webLoginStarting) return;
+    state.switching = recordId;
     setMessage("");
     button.disabled = true;
     renderAccounts();
     try {
-      const result = await invoke("/accounts/switch", { accountId });
+      const result = await invoke("/accounts/switch", { recordId });
       setMessage(result?.message || "正在切换账户并重新启动 Codex…", "success");
     } catch (error) {
       state.switching = "";
@@ -349,18 +349,18 @@
     renderAccounts();
   }
 
-  async function deleteAccount(accountId) {
-    if (!accountId || state.switching || state.deleting || state.webLoginStarting) return;
-    const account = state.accounts.find((value) => String(value?.accountId || "") === accountId);
+  async function deleteAccount(recordId) {
+    if (!recordId || state.switching || state.deleting || state.webLoginStarting) return;
+    const account = state.accounts.find((value) => String(value?.recordId || "") === recordId);
     const label = account?.email || account?.name || "这个账户";
     if (!window.confirm(`确定删除已保存账户“${label}”吗？\n\n这不会删除 ChatGPT 账户本身。`)) return;
-    state.deleting = accountId;
+    state.deleting = recordId;
     setMessage("");
     renderAccounts();
     try {
-      await invoke("/accounts/delete", { accountId });
-      state.accounts = state.accounts.filter((value) => String(value?.accountId || "") !== accountId);
-      state.usage.delete(accountId);
+      await invoke("/accounts/delete", { recordId });
+      state.accounts = state.accounts.filter((value) => String(value?.recordId || "") !== recordId);
+      state.usage.delete(recordId);
       setMessage("已删除保存的账户。", "success");
     } catch (error) {
       setMessage(error?.message || String(error), "error");

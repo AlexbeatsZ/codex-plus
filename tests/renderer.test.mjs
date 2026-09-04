@@ -367,12 +367,12 @@ test("renders account buttons before independent usage requests finish", async (
       return {
         status: "ok",
         accounts: [
-          { accountId: "one", email: "one@example.com", active: true },
-          { accountId: "two", email: "two@example.com", active: false },
+          { recordId: "one", accountId: "workspace", email: "one@example.com", active: true },
+          { recordId: "two", accountId: "workspace", email: "two@example.com", active: false },
         ],
       };
     }
-    if (path === "/accounts/usage") return payload.accountId === "one" ? usageOne.promise : usageTwo.promise;
+    if (path === "/accounts/usage") return payload.recordId === "one" ? usageOne.promise : usageTwo.promise;
     throw new Error(`unexpected ${path}`);
   });
   await flush();
@@ -392,8 +392,8 @@ test("renders account buttons before independent usage requests finish", async (
     usage: { rate_limit: { primary_window: { used_percent: 25, limit_window_seconds: 18000, reset_at: 2000000000 } } },
   });
   await flush();
-  assert.match(dom.window.document.querySelector('[data-account-id="one"] .cp-account-usage').textContent, /剩余 75%/);
-  assert.match(dom.window.document.querySelector('[data-account-id="two"] .cp-account-usage').textContent, /读取中/);
+  assert.match(dom.window.document.querySelector('[data-record-id="one"] .cp-account-usage').textContent, /剩余 75%/);
+  assert.match(dom.window.document.querySelector('[data-record-id="two"] .cp-account-usage').textContent, /读取中/);
   usageTwo.resolve({ status: "failed", message: "额度暂不可用" });
   await flush();
 });
@@ -404,7 +404,7 @@ test("file selection only fills the textarea and import requires the second butt
   const dom = setup(async (path, payload) => {
     calls.push({ path, payload });
     if (path === "/accounts/list") return { status: "ok", accounts: [] };
-    if (path === "/accounts/import") return { status: "ok", account: { accountId: "a" } };
+    if (path === "/accounts/import") return { status: "ok", account: { recordId: "a", accountId: "workspace" } };
     throw new Error(`unexpected ${path}`);
   });
   await flush();
@@ -444,12 +444,12 @@ test("deletes only an inactive saved account after explicit confirmation", async
     if (path === "/accounts/list") return {
       status: "ok",
       accounts: [
-        { accountId: "one", email: "one@example.com", active: true },
-        { accountId: "two", email: "two@example.com", active: false },
+        { recordId: "one", accountId: "workspace", email: "one@example.com", active: true },
+        { recordId: "two", accountId: "workspace", email: "two@example.com", active: false },
       ],
     };
     if (path === "/accounts/usage") return { status: "ok", usage: {} };
-    if (path === "/accounts/delete") return { status: "ok", accountId: payload.accountId };
+    if (path === "/accounts/delete") return { status: "ok", recordId: payload.recordId };
     throw new Error(`unexpected ${path}`);
   });
   dom.window.confirm = () => true;
@@ -462,8 +462,8 @@ test("deletes only an inactive saved account after explicit confirmation", async
   await flush();
 
   const deletes = calls.filter((call) => call.path === "/accounts/delete");
-  assert.deepEqual(deletes.map((call) => call.payload.accountId), ["two"]);
-  assert.equal(dom.window.document.querySelector('[data-account-id="two"]'), null);
+  assert.deepEqual(deletes.map((call) => call.payload.recordId), ["two"]);
+  assert.equal(dom.window.document.querySelector('[data-record-id="two"]'), null);
   assert.match(dom.window.document.querySelector(".cp-account-status").textContent, /已删除/);
 });
 

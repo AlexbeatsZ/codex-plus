@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -109,6 +110,7 @@ impl AccountPaths {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSummary {
+    pub record_id: String,
     pub account_id: String,
     pub email: Option<String>,
     pub name: Option<String>,
@@ -164,6 +166,7 @@ pub struct Credits {
 #[derive(Debug, Clone)]
 struct AuthDocument {
     raw: Vec<u8>,
+    record_id: String,
     account_id: String,
     access_token: String,
     email: Option<String>,
@@ -175,6 +178,7 @@ struct AuthDocument {
 impl AuthDocument {
     fn summary(&self, active: bool) -> AccountSummary {
         AccountSummary {
+            record_id: self.record_id.clone(),
             account_id: self.account_id.clone(),
             email: self.email.clone(),
             name: self.name.clone(),
@@ -209,39 +213,39 @@ impl AccountVault {
         let auth = parse_auth(contents)?;
         let _guard = self.lock_vault()?;
         let active = read_live_chatgpt(&self.paths.live_auth())?
-            .is_some_and(|current| current.account_id == auth.account_id);
+            .is_some_and(|current| current.record_id == auth.record_id);
         self.store_unlocked(&auth)?;
         Ok(auth.summary(active))
     }
 
-    pub fn delete_account(&self, account_id: &str) -> Result<()> {
-        validate_identifier(account_id)?;
+    pub fn delete_account(&self, record_id: &str) -> Result<()> {
+        validate_record_id(record_id)?;
         let _guard = self.lock_vault()?;
-        self.load_unlocked(account_id)?;
+        self.load_unlocked(record_id)?;
         if read_live_chatgpt(&self.paths.live_auth())?
-            .is_some_and(|current| current.account_id == account_id)
+            .is_some_and(|current| current.record_id == record_id)
         {
             return Err(AccountError::ActiveAccount);
         }
-        match fs::remove_file(self.paths.accounts_dir().join(account_filename(account_id))) {
+        match fs::remove_file(self.paths.accounts_dir().join(account_filename(record_id))) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Err(AccountError::NotFound),
             Err(error) => Err(error.into()),
         }
     }
 
-    pub fn validate_switch(&self, account_id: &str) -> Result<()> {
-        validate_identifier(account_id)?;
+    pub fn validate_switch(&self, record_id: &str) -> Result<()> {
+        validate_record_id(record_id)?;
         validate_credential_storage(&self.paths.codex_config())?;
         let _guard = self.lock_vault()?;
-        self.load_unlocked(account_id).map(|_| ())
+        self.load_unlocked(record_id).map(|_| ())
     }
 
-    pub fn switch_after_shutdown(&self, account_id: &str) -> Result<AccountSummary> {
-        validate_identifier(account_id)?;
+    pub fn switch_after_shutdown(&self, record_id: &str) -> Result<AccountSummary> {
+        validate_record_id(record_id)?;
         validate_credential_storage(&self.paths.codex_config())?;
         let _guard = self.lock_vault()?;
-        let target = self.load_unlocked(account_id)?;
+        let target = self.load_unlocked(record_id)?;
         self.snapshot_live_unlocked()?;
         atomic_write(&self.paths.live_auth(), &target.raw)?;
         Ok(target.summary(true))
@@ -267,11 +271,11 @@ impl AccountVault {
         Ok(Some(current.summary(true)))
     }
 
-    pub async fn fetch_usage(&self, account_id: &str) -> Result<Usage> {
-        validate_identifier(account_id)?;
+    pub async fn fetch_usage(&self, record_id: &str) -> Result<Usage> {
+        validate_record_id(record_id)?;
         let auth = {
             let _guard = self.lock_vault()?;
-            self.load_unlocked(account_id)?
+            self.load_unlocked(record_id)?
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -311,29 +315,49 @@ impl AccountVault {
     }
 
     fn list_unlocked(&self) -> Result<Vec<AccountSummary>> {
-        let active = read_live_chatgpt(&self.paths.live_auth())?.map(|auth| auth.account_id);
+        let active = read_live_chatgpt(&self.paths.live_auth())?.map(|auth| auth.record_id);
         let dir = self.paths.accounts_dir();
         ensure_vault_dir(&dir)?;
         let mut accounts = Vec::new();
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
+        let entries = fs::read_dir(&dir)?.collect::<io::Result<Vec<_>>>()?;
+        let mut seen = HashSet::new();
+        for entry in entries {
             if !entry.file_type()?.is_file()
                 || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
             {
                 continue;
             }
-            let auth = parse_auth(&fs::read(entry.path())?)?;
-            if entry.file_name().to_string_lossy() != account_filename(&auth.account_id) {
+            let raw = fs::read(entry.path())?;
+            let auth = parse_auth(&raw)?;
+            let filename = entry.file_name().to_string_lossy().to_string();
+            let expected_filename = account_filename(&auth.record_id);
+            if filename != expected_filename {
+                if filename != legacy_account_filename(&auth.account_id) {
+                    return Err(AccountError::UnsafeVault);
+                }
+                let target = dir.join(&expected_filename);
+                if target.exists() {
+                    let existing = parse_auth(&fs::read(&target)?)?;
+                    if existing.record_id != auth.record_id {
+                        return Err(AccountError::UnsafeVault);
+                    }
+                    fs::remove_file(entry.path())?;
+                    continue;
+                }
+                atomic_write(&target, &raw)?;
+                fs::remove_file(entry.path())?;
+            }
+            if !seen.insert(auth.record_id.clone()) {
                 return Err(AccountError::UnsafeVault);
             }
-            accounts.push(auth.summary(active.as_deref() == Some(&auth.account_id)));
+            accounts.push(auth.summary(active.as_deref() == Some(&auth.record_id)));
         }
         accounts.sort_by(|left, right| {
             right.active.cmp(&left.active).then_with(|| {
                 left.email
                     .as_deref()
-                    .unwrap_or(&left.account_id)
-                    .cmp(right.email.as_deref().unwrap_or(&right.account_id))
+                    .unwrap_or(&left.record_id)
+                    .cmp(right.email.as_deref().unwrap_or(&right.record_id))
             })
         });
         Ok(accounts)
@@ -342,11 +366,11 @@ impl AccountVault {
     fn store_unlocked(&self, auth: &AuthDocument) -> Result<()> {
         let dir = self.paths.accounts_dir();
         ensure_vault_dir(&dir)?;
-        atomic_write(&dir.join(account_filename(&auth.account_id)), &auth.raw)
+        atomic_write(&dir.join(account_filename(&auth.record_id)), &auth.raw)
     }
 
-    fn load_unlocked(&self, account_id: &str) -> Result<AuthDocument> {
-        let path = self.paths.accounts_dir().join(account_filename(account_id));
+    fn load_unlocked(&self, record_id: &str) -> Result<AuthDocument> {
+        let path = self.paths.accounts_dir().join(account_filename(record_id));
         let raw = match fs::read(path) {
             Ok(raw) => raw,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -355,7 +379,7 @@ impl AccountVault {
             Err(error) => return Err(error.into()),
         };
         let auth = parse_auth(&raw)?;
-        if auth.account_id != account_id {
+        if auth.record_id != record_id {
             return Err(AccountError::UnsafeVault);
         }
         Ok(auth)
@@ -463,20 +487,44 @@ fn parse_auth(raw: &[u8]) -> Result<AuthDocument> {
     required_string(tokens.get("refresh_token"), "tokens.refresh_token")?;
     let account_id = required_string(tokens.get("account_id"), "tokens.account_id")?;
     validate_identifier(account_id)?;
-    let claims = parse_jwt_claims(id_token);
-    let auth_claims = claims
+    let id_claims = parse_jwt_claims(id_token);
+    let access_claims = parse_jwt_claims(access_token);
+    let auth_claims = id_claims
         .as_ref()
         .and_then(|claims| claims.get("https://api.openai.com/auth"));
+    let seat_identity = [access_claims.as_ref(), id_claims.as_ref()]
+        .into_iter()
+        .flatten()
+        .find_map(|claims| auth_claim(claims, "chatgpt_account_user_id"))
+        .or_else(|| {
+            [access_claims.as_ref(), id_claims.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|claims| auth_claim(claims, "chatgpt_user_id"))
+        })
+        .or_else(|| {
+            [access_claims.as_ref(), id_claims.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|claims| auth_claim(claims, "user_id"))
+        })
+        .or_else(|| {
+            [access_claims.as_ref(), id_claims.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|claims| claims.get("sub").and_then(Value::as_str))
+        });
     Ok(AuthDocument {
         raw: raw.to_vec(),
+        record_id: account_record_id(account_id, seat_identity),
         account_id: account_id.to_string(),
         access_token: access_token.to_string(),
-        email: claims
+        email: id_claims
             .as_ref()
             .and_then(|claims| claims.get("email"))
             .and_then(Value::as_str)
             .map(str::to_string),
-        name: claims
+        name: id_claims
             .as_ref()
             .and_then(|claims| claims.get("name"))
             .and_then(Value::as_str)
@@ -519,6 +567,21 @@ fn validate_identifier(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_record_id(value: &str) -> Result<()> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AccountError::NotFound);
+    }
+    Ok(())
+}
+
+fn auth_claim<'a>(claims: &'a Value, key: &str) -> Option<&'a str> {
+    claims
+        .get("https://api.openai.com/auth")?
+        .get(key)?
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+}
+
 fn parse_jwt_claims(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -532,7 +595,23 @@ fn parse_jwt_claims(token: &str) -> Option<Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
-fn account_filename(account_id: &str) -> String {
+fn account_record_id(account_id: &str, seat_identity: Option<&str>) -> String {
+    let Some(seat_identity) = seat_identity else {
+        return format!("{:x}", Sha256::digest(account_id.as_bytes()));
+    };
+    let mut digest = Sha256::new();
+    digest.update(b"codex-plus-account-v2\0");
+    digest.update(account_id.as_bytes());
+    digest.update(b"\0");
+    digest.update(seat_identity.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+fn account_filename(record_id: &str) -> String {
+    format!("{record_id}.json")
+}
+
+fn legacy_account_filename(account_id: &str) -> String {
     format!("{:x}.json", Sha256::digest(account_id.as_bytes()))
 }
 
@@ -604,6 +683,33 @@ mod tests {
         .unwrap()
     }
 
+    fn auth_for_seat(account_id: &str, seat_id: &str, email: &str) -> Vec<u8> {
+        let claims = json!({
+            "sub": format!("subject-{seat_id}"),
+            "email": email,
+            "name": "Tester",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_user_id": seat_id,
+                "chatgpt_user_id": format!("user-{seat_id}"),
+                "chatgpt_plan_type": "team"
+            }
+        });
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).unwrap());
+        let token = format!("header.{payload}.signature");
+        serde_json::to_vec(&json!({
+            "auth_mode": "chatgpt",
+            "last_refresh": "2026-09-05T00:00:00Z",
+            "tokens": {
+                "id_token": token,
+                "access_token": format!("header.{payload}.signature"),
+                "refresh_token": format!("refresh-{seat_id}"),
+                "account_id": account_id
+            }
+        }))
+        .unwrap()
+    }
+
     fn fixture() -> (TempDir, AccountVault) {
         let temp = tempfile::tempdir().unwrap();
         let paths = AccountPaths {
@@ -638,6 +744,60 @@ mod tests {
     }
 
     #[test]
+    fn import_keeps_distinct_seats_in_the_same_business_workspace() {
+        let (_temp, vault) = fixture();
+        atomic_write(
+            &vault.paths().live_auth(),
+            &auth_for_seat("shared-workspace", "seat-a", "a@example.com"),
+        )
+        .unwrap();
+        vault
+            .import_auth(&auth_for_seat(
+                "shared-workspace",
+                "seat-b",
+                "b@example.com",
+            ))
+            .unwrap();
+
+        let accounts = vault.list_accounts().unwrap();
+
+        assert_eq!(accounts.len(), 2);
+        assert_ne!(accounts[0].record_id, accounts[1].record_id);
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|account| account.active)
+                .unwrap()
+                .email
+                .as_deref(),
+            Some("a@example.com")
+        );
+        assert!(
+            accounts
+                .iter()
+                .any(|account| account.email.as_deref() == Some("b@example.com"))
+        );
+    }
+
+    #[test]
+    fn listing_migrates_a_legacy_workspace_filename_to_the_seat_record_id() {
+        let (_temp, vault) = fixture();
+        let raw = auth_for_seat("shared-workspace", "seat-a", "a@example.com");
+        let auth = parse_auth(&raw).unwrap();
+        let dir = vault.paths().accounts_dir();
+        ensure_vault_dir(&dir).unwrap();
+        let legacy = dir.join(legacy_account_filename(&auth.account_id));
+        fs::write(&legacy, &raw).unwrap();
+
+        let accounts = vault.list_accounts().unwrap();
+
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].record_id, auth.record_id);
+        assert!(!legacy.exists());
+        assert!(dir.join(account_filename(&auth.record_id)).exists());
+    }
+
+    #[test]
     fn listing_snapshots_and_marks_the_live_account() {
         let (_temp, vault) = fixture();
         atomic_write(
@@ -667,10 +827,10 @@ mod tests {
             &auth("current", "current-token", "current@example.com"),
         )
         .unwrap();
-        vault
+        let target = vault
             .import_auth(&auth("target", "target-token", "target@example.com"))
             .unwrap();
-        vault.switch_after_shutdown("target").unwrap();
+        vault.switch_after_shutdown(&target.record_id).unwrap();
         let accounts = vault.list_accounts().unwrap();
         assert_eq!(accounts.len(), 2);
         assert_eq!(
@@ -688,17 +848,17 @@ mod tests {
         )
         .unwrap();
         vault.list_accounts().unwrap();
-        vault
+        let saved = vault
             .import_auth(&auth("saved", "saved-token", "saved@example.com"))
             .unwrap();
 
-        vault.delete_account("saved").unwrap();
+        vault.delete_account(&saved.record_id).unwrap();
 
         let accounts = vault.list_accounts().unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].account_id, "current");
         assert!(matches!(
-            vault.delete_account("missing"),
+            vault.delete_account(&"0".repeat(64)),
             Err(AccountError::NotFound)
         ));
     }
@@ -713,8 +873,9 @@ mod tests {
         .unwrap();
         vault.list_accounts().unwrap();
 
+        let current = vault.list_accounts().unwrap().remove(0);
         assert!(matches!(
-            vault.delete_account("current"),
+            vault.delete_account(&current.record_id),
             Err(AccountError::ActiveAccount)
         ));
         assert_eq!(vault.list_accounts().unwrap().len(), 1);
@@ -758,7 +919,7 @@ mod tests {
     #[test]
     fn non_file_credential_storage_blocks_switching() {
         let (_temp, vault) = fixture();
-        vault
+        let target = vault
             .import_auth(&auth("target", "target-token", "target@example.com"))
             .unwrap();
         fs::write(
@@ -767,7 +928,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            vault.validate_switch("target"),
+            vault.validate_switch(&target.record_id),
             Err(AccountError::UnsupportedCredentialStore(_))
         ));
     }
@@ -777,7 +938,7 @@ mod tests {
         let server = MockServer::start().await;
         let (_temp, mut vault) = fixture();
         vault.paths.usage_endpoint = format!("{}/backend-api/wham/usage", server.uri());
-        vault
+        let account = vault
             .import_auth(&auth("usage-account", "usage-secret", "u@example.com"))
             .unwrap();
         Mock::given(method("GET"))
@@ -796,7 +957,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let usage = vault.fetch_usage("usage-account").await.unwrap();
+        let usage = vault.fetch_usage(&account.record_id).await.unwrap();
         assert_eq!(usage.plan_type.as_deref(), Some("plus"));
         assert_eq!(
             usage.credits.as_ref().unwrap().balance.as_ref(),
