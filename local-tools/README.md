@@ -15,7 +15,7 @@ It intentionally does **not** contain the browser automation, ChatGPT response p
 - Load the effective global/project `AGENTS.md` instruction chain on demand.
 - Discover Codex skills by metadata, load one matching `SKILL.md`, then fetch only the referenced resources needed for the task.
 
-Path-based tools enforce configured workspace roots. `run_command` starts inside a workspace but is **not** an OS sandbox: it has the permissions and network access of the account running this server.
+Path-based tools enforce configured workspace roots. `run_command` starts inside a workspace but is **not** an OS sandbox: it has the permissions and network access of the account running this server. Foreground commands default to 30 seconds and are capped at 45 seconds so one long process cannot block the shared Tunnel stdio channel; split or background longer work and inspect it in later calls.
 
 ## Codex context synchronization
 

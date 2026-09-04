@@ -13,6 +13,8 @@ const readonlyAnnotations = {
 
 const workspaceInput = z.string().min(1).describe("Workspace identifier returned by workspace_info");
 const relativePathInput = z.string().default(".").describe("Path relative to the selected workspace root");
+const RUN_COMMAND_DEFAULT_TIMEOUT_SECONDS = 30;
+const RUN_COMMAND_MAX_TIMEOUT_SECONDS = 45;
 
 function textResult<T extends object>(structuredContent: T) {
   return {
@@ -310,12 +312,12 @@ export function createMcpServer(registry: WorkspaceRegistry, codexContext: Codex
     {
       title: "Run a local command",
       description:
-        "Use this for builds, tests, Git operations not covered by read-only tools, or other commands requested by the user. The shell starts in a configured workspace but has full current-user authority and network access.",
+        "Use this for bounded builds, tests, Git operations not covered by read-only tools, or other commands requested by the user. The shell starts in a configured workspace but has full current-user authority and network access. Split or background work that cannot finish within 45 seconds so it cannot block the shared Tunnel stdio channel.",
       inputSchema: {
         workspace: workspaceInput,
         cwd: relativePathInput.describe("Working directory relative to the workspace root"),
         command: z.string().min(1).describe("PowerShell command on Windows, Bash command elsewhere"),
-        timeoutSeconds: z.number().int().min(1).max(300).default(90),
+        timeoutSeconds: z.number().int().min(1).max(RUN_COMMAND_MAX_TIMEOUT_SECONDS).default(RUN_COMMAND_DEFAULT_TIMEOUT_SECONDS),
       },
       outputSchema: {
         exitCode: z.number().nullable(),

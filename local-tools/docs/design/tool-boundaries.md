@@ -40,6 +40,8 @@ Skill resource reads resolve real paths against the selected real skill root. A 
 
 `run_command` is deliberately transparent instead of pretending to be a sandbox. Its working directory is constrained to a configured workspace, but the spawned shell has the permissions of the user running the server and a shell command can address paths outside that workspace or access the network. Tool metadata marks it as destructive and open-world. Users who need stronger isolation should run this MCP server inside a dedicated container or virtual machine.
 
+The stdio Tunnel channel is shared and serializes MCP calls behind an active command. Synchronous commands therefore default to 30 seconds and are capped at 45 seconds, leaving room inside the hosted request deadline for a response and a retry. Longer work must be split into bounded phases or started as a project-owned background job with later status checks; a single foreground command must not monopolize the Tunnel transport.
+
 ## Transport and secrets
 
 The HTTP server binds to `127.0.0.1` by default. ChatGPT reaches it through an outbound Secure MCP Tunnel. Tunnel credentials belong to the tunnel client configuration and are never accepted, logged, or persisted by this MCP server.

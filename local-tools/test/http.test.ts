@@ -52,6 +52,10 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
         "workspace_info",
       ],
     );
+    const runCommand = tools.tools.find((tool) => tool.name === "run_command");
+    const timeoutSchema = (runCommand?.inputSchema.properties as Record<string, Record<string, unknown>> | undefined)?.timeoutSeconds;
+    assert.equal(timeoutSchema?.default, 30);
+    assert.equal(timeoutSchema?.maximum, 45);
 
     const result = await client.callTool({
       name: "read_file",

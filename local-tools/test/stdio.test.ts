@@ -20,9 +20,22 @@ test("compiled CLI performs an MCP handshake over stdio", async () => {
   try {
     await client.connect(transport);
     const result = await client.callTool({ name: "workspace_info", arguments: {} });
-    const workspaces = (result.structuredContent as { workspaces: Array<{ root: string }> }).workspaces;
+    const workspaces = (result.structuredContent as { workspaces: Array<{ id: string; root: string }> }).workspaces;
     assert.equal(workspaces.length, 1);
     assert.equal(path.normalize(workspaces[0].root), path.normalize(temporary.directory));
+
+    const timedOut = await client.callTool({
+      name: "run_command",
+      arguments: {
+        workspace: workspaces[0].id,
+        cwd: ".",
+        command: process.platform === "win32" ? "Start-Sleep -Seconds 2" : "sleep 2",
+        timeoutSeconds: 1,
+      },
+    });
+    assert.equal((timedOut.structuredContent as { timedOut: boolean }).timedOut, true);
+    const retry = await client.callTool({ name: "workspace_info", arguments: {} });
+    assert.notEqual(retry.isError, true, JSON.stringify(retry));
   } finally {
     await transport.close().catch(() => undefined);
     await temporary.cleanup();
