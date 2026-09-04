@@ -11,12 +11,11 @@
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`；MCP 的上下文同步设计见 `local-tools/docs/design/codex-context-sync.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
 - 当前自动化基线：`cargo test` 42 项、DOM/路由测试 15 项、`local-tools` MCP 测试 7 项通过；Windows 回归测试同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。
-- 当前 0.3.0 自启动产物为账户脚本 v7/API 脚本 v6/路由脚本 v16：`target\release\codex-plus.exe`，6,513,664 bytes。普通接管会以 `BelowNormal` 启动 Codex 根进程；登录自启先确保 local-tools runtime 可用，在一次受管 Codex 生命周期结束后重新待命，可重新接管官方更新/自重启产生的新根进程。
-- 隔离 release 候选包含 tunnel 代理配置支持：`target\candidate-release\release\codex-plus.exe`，6,509,568 bytes；正式 `target\release` 尚未替换，以免重启当前 Codex 会话。
+- 当前 0.3.0 自启动产物为账户脚本 v7/API 脚本 v6/路由脚本 v16：`target\release\codex-plus.exe`，6,509,568 bytes。2026-09-04 21:30 已从 `main` 的 `9fdc0df` 重新构建并正式部署，包含 tunnel 代理配置支持；普通接管会以 `BelowNormal` 启动 Codex 根进程，登录自启先确保 local-tools runtime 可用，在一次受管 Codex 生命周期结束后重新待命，可重新接管官方更新/自重启产生的新根进程。
 - Windows 发布 EXE 通过 `build.rs` 嵌入 `assets/app-icon.ico`；图标以 Microsoft Fluent UI System Icons 的 Person Swap 为主体，蓝色圆角底用于和其他自制工具区分。
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时立即确保 local-tools runtime 可用，再等待官方 Codex 被用户打开接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
 - `local-tools/` 已纳入仓库；正常、attach、网页登录和登录自启入口都会幂等确保 alias `codex-chat-local-tools` 运行。登录自启会立即启动 MCP，但仍不会主动打开官方 Codex。Tunnel key 只从忽略的 `local-tools/.env.local` 传给 `tunnel-client`，MCP 子进程会清除相关环境变量。
-- 2026-09-03 已确认本机 Internet Settings 使用 `127.0.0.1:7897` 时，`tunnel-client` 不会自动继承该代理并会直连 OpenAI 超时；现支持从忽略的 `.env.local` 读取可选 `TUNNEL_HTTP_PROXY`，仅给 Tunnel runtime 注入 `HTTPS_PROXY`。现场 runtime 已通过该配置恢复远端元数据、唯一进程与 health/ready 200。
+- 2026-09-03 已确认本机 Internet Settings 使用 `127.0.0.1:7897` 时，`tunnel-client` 不会自动继承该代理并会直连 OpenAI 超时；现支持从忽略的 `.env.local` 读取可选 `TUNNEL_HTTP_PROXY`，仅给 Tunnel runtime 注入 `HTTPS_PROXY`。2026-09-04 21:30 修复旧正式 EXE 重新拉起无代理 runtime 的部署漂移：保留当前 Codex 窗口，以最新正式 EXE 的 `--attach-existing` 重启 launcher 和 Tunnel；远端 metadata、完整长轮询周期无 WARN/ERROR、唯一进程及 health/ready 200 均已验证。
 - 2026-09-04 15:20 已重新构建 `local-tools` 0.2.0，并把 managed runtime 的活动 profile 迁入仓库内 `local-tools/.tunnel-client` 后重载；Tunnel 已经通过配置的本机代理取得远端 metadata，唯一 Node 子进程来自 `local-tools/dist/cli.js`，本机 health/ready 均为 200。按用户要求未在 Chat 模式发起工具调用。
 - 2026-09-04 Tunnel 曾在保留原工作区 `a7ff583c-c893-4be2-98ab-7173e84a3f7c` 的同时关联 Business 工作区 `Xia (b9c51c7a-e7a7-40d7-9978-aa60f76fbec0)`；当时只读验收通过插件发现与 `workspace_info`。用户随后切换了 ChatGPT 小号，因此当前 Chat 侧插件连接可能断开；本轮按用户要求不在 Chat 模式测试，不能沿用旧连接结论。
 
