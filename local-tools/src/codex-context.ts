@@ -115,10 +115,62 @@ export class CodexContextSync {
     return {
       enabled: this.enabled,
       codexHome: this.codexHome,
-      instructionSync: "on-demand" as const,
+      instructionSync: "initialization-and-on-demand" as const,
       skillSync: "catalog-first" as const,
       skillCount: skills.length,
     };
+  }
+
+  initializationInstructions(): string {
+    if (!this.enabled) return "Codex-visible local instruction synchronization is disabled for this server.";
+
+    const config = readCodexConfig(this.codexHome);
+    const candidates: InstructionSource[] = [];
+    const seen = new Set<string>();
+    for (const workspace of this.registry.workspaces) {
+      const instructionSet = this.loadInstructions(workspace.id, ".", MAX_PROJECT_DOC_BYTES);
+      for (const source of instructionSet.sources) {
+        const key = comparisonPath(source.path);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(source);
+      }
+    }
+
+    const selected: InstructionSource[] = [];
+    let usedBytes = 0;
+    let truncated = false;
+    for (const candidate of candidates) {
+      const remaining = config.projectDocMaxBytes - usedBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      const content = truncateUtf8(candidate.content, remaining);
+      const sourceTruncated = candidate.truncated || content !== candidate.content;
+      selected.push({ ...candidate, content, truncated: sourceTruncated });
+      usedBytes += Buffer.byteLength(content, "utf8");
+      if (sourceTruncated) {
+        truncated = true;
+        break;
+      }
+    }
+
+    const header = [
+      "The following are Codex-visible local AGENTS instructions for the configured workspaces.",
+      "They are mandatory operating instructions for every use of this MCP server.",
+      "OpenAI platform system and developer prompts are private runtime inputs and are not included.",
+    ].join("\n");
+    if (selected.length === 0) return `${header}\n\nNo local AGENTS instruction file was found.`;
+
+    const bodies = selected.map((source) => [
+      `--- ${source.scope} AGENTS: ${source.path}${source.truncated ? " (truncated)" : ""} ---`,
+      source.content,
+    ].join("\n"));
+    const footer = truncated
+      ? "The startup AGENTS payload was truncated at the configured Codex project document limit. Call codex_instructions for the current complete bounded chain before substantive work."
+      : "For nested workspace directories or instructions changed after this MCP process started, call codex_instructions before substantive work.";
+    return `${header}\n\n${bodies.join("\n\n")}\n\n${footer}`;
   }
 
   triggerSummary(): string {

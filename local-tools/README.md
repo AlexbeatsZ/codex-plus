@@ -12,21 +12,23 @@ It intentionally does **not** contain the browser automation, ChatGPT response p
 - Validate and apply unified Git patches.
 - Run PowerShell on Windows or Bash on Linux/macOS.
 - Inspect Git status and diffs.
-- Load the effective global/project `AGENTS.md` instruction chain on demand.
+- Inject the effective global and configured workspace-root `AGENTS.md` instruction chain into MCP initialization, then reload nested/current chains on demand.
 - Discover Codex skills by metadata, load one matching `SKILL.md`, then fetch only the referenced resources needed for the task.
 
-Path-based tools enforce configured workspace roots. `run_command` starts inside a workspace but is **not** an OS sandbox: it has the permissions and network access of the account running this server. Foreground commands default to 30 seconds and are capped at 45 seconds so one long process cannot block the shared Tunnel stdio channel; split or background longer work and inspect it in later calls.
+Path-based tools enforce configured workspace roots. `run_command` starts inside a workspace but is **not** an OS sandbox: it has the permissions and network access of the account running this server. Foreground commands default to 30 seconds and are capped at 45 seconds; a timeout terminates the spawned process tree and force-closes inherited pipes so one descendant cannot block the shared Tunnel stdio channel. Split or background longer work and inspect it in later calls.
 
 ## Codex context synchronization
 
-The context bridge follows progressive disclosure instead of placing every instruction in the MCP prompt:
+The context bridge injects the global and configured workspace-root `AGENTS` chain into the MCP `initialize` response. The payload follows Codex precedence, is deduplicated across workspaces, and is bounded by `project_doc_max_bytes` (32 KiB by default), so the connected AI sees those instructions before choosing or calling a tool.
+
+Skills continue to use progressive disclosure instead of placing every skill body in the MCP prompt:
 
 1. MCP metadata exposes a compact, bounded catalog of skill names and descriptions for implicit matching.
 2. `list_codex_skills` refreshes and filters the full metadata-only catalog when needed.
 3. `load_codex_skill` loads exactly one current `SKILL.md` and returns a resource inventory.
 4. `read_codex_skill_resource` reads only a referenced file or supported image needed by that skill.
 
-`codex_instructions` loads the current global and project `AGENTS` chain for a target directory, including override precedence and Codex's configured project-document size limit. Source bodies are read on every call; the compact trigger catalog is rebuilt when the MCP connection starts.
+`codex_instructions` loads the current global and project `AGENTS` chain for a target directory, including override precedence and Codex's configured project-document size limit. Use it for nested instructions or changes made after the long-running MCP process started; source bodies are read on every call. The startup AGENTS payload and compact trigger catalog are rebuilt when the MCP process starts.
 
 Discovery includes `~/.codex/skills`, `~/.agents/skills`, applicable repository `.agents/skills`, enabled/installed Codex plugin caches, and extra roots supplied by `--skill-root` or `CODEX_CHAT_SKILL_ROOTS`. This mirrors local Codex-visible guidance only; OpenAI's platform system/developer prompts are private runtime inputs and cannot be read by this server.
 
@@ -66,7 +68,7 @@ node .\dist\cli.js --stdio --root C:\Project\One --no-codex-context
 
 ## Codex plugin descriptor
 
-The repository includes `.codex-plugin/plugin.json` and `.mcp.json`. The descriptor expects the loopback HTTP server to be running on port 3344. No widget or copied static skill bundle is included: MCP reads current local Codex sources progressively instead of creating a second stale copy.
+The repository includes `.codex-plugin/plugin.json` and `.mcp.json`. The descriptor expects the loopback HTTP server to be running on port 3344. No widget or copied static skill bundle is included: MCP injects the bounded AGENTS chain at startup and reads nested instructions and skill bodies from their current local sources when requested.
 
 ## Connect from ChatGPT mode
 

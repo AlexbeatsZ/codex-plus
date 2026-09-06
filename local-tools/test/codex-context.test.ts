@@ -67,6 +67,12 @@ test("Codex context sync layers AGENTS files and progressively loads skill resou
     assert.doesNotMatch(instructions.combined, /ignored nested guidance/);
     assert.match(instructions.boundary, /private runtime inputs/);
 
+    const initializationInstructions = context.initializationInstructions();
+    assert.match(initializationInstructions, /global guidance/);
+    assert.match(initializationInstructions, /root guidance/);
+    assert.doesNotMatch(initializationInstructions, /nested override/);
+    assert.match(initializationInstructions, /mandatory operating instructions/);
+
     const skills = context.listSkills(workspace, "src");
     assert.deepEqual(skills.map((skill) => skill.name).sort(), ["explicit-skill", "linked-skill", "project-skill", "sample-skill"]);
     assert.equal(skills.find((skill) => skill.name === "explicit-skill")?.implicitInvocation, false);

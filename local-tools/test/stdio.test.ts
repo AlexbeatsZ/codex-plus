@@ -24,16 +24,20 @@ test("compiled CLI performs an MCP handshake over stdio", async () => {
     assert.equal(workspaces.length, 1);
     assert.equal(path.normalize(workspaces[0].root), path.normalize(temporary.directory));
 
+    const timeoutStartedAt = Date.now();
     const timedOut = await client.callTool({
       name: "run_command",
       arguments: {
         workspace: workspaces[0].id,
         cwd: ".",
-        command: process.platform === "win32" ? "Start-Sleep -Seconds 2" : "sleep 2",
+        command: process.platform === "win32"
+          ? "Start-Process powershell.exe -NoNewWindow -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 8'; Start-Sleep -Seconds 8"
+          : "(sleep 8) & sleep 8",
         timeoutSeconds: 1,
       },
     });
     assert.equal((timedOut.structuredContent as { timedOut: boolean }).timedOut, true);
+    assert.ok(Date.now() - timeoutStartedAt < 3_000, "stdio command timeout was held open by a descendant");
     const retry = await client.callTool({ name: "workspace_info", arguments: {} });
     assert.notEqual(retry.isError, true, JSON.stringify(retry));
   } finally {

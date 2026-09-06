@@ -70,6 +70,27 @@ test("path-based operations reject lexical workspace escape", async () => {
   }
 });
 
+test("runProcess timeout is not held open by a descendant that inherited stdio", async () => {
+  const temporary = await makeAgentTemp("codex-chat-process-timeout");
+  try {
+    const command = process.platform === "win32"
+      ? "Start-Process powershell.exe -NoNewWindow -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 8'; Start-Sleep -Seconds 8"
+      : "(sleep 8) & sleep 8";
+    const executable = process.platform === "win32" ? "powershell.exe" : "bash";
+    const args = process.platform === "win32"
+      ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
+      : ["-lc", command];
+    const startedAt = Date.now();
+    const result = await runProcess(executable, args, { cwd: temporary.directory, timeoutMs: 250 });
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(result.timedOut, true);
+    assert.ok(elapsedMs < 3_000, `timeout result took ${elapsedMs}ms`);
+  } finally {
+    await temporary.cleanup();
+  }
+});
+
 test("existing paths cannot escape through a directory link", async () => {
   const temporary = await makeAgentTemp("codex-chat-links");
   try {

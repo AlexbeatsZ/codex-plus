@@ -25,11 +25,14 @@ function textResult<T extends object>(structuredContent: T) {
 
 export function createMcpServer(registry: WorkspaceRegistry, codexContext: CodexContextSync): McpServer {
   const operations = new LocalOperations(registry);
+  const initializationInstructions = [
+    "Operate only within configured workspaces. Call workspace_info first when the workspace is unclear. The synced AGENTS instructions below already apply; call codex_instructions again for nested directories or instructions changed after this MCP process started. When the user names a synced skill or the task matches one of the metadata descriptions attached to load_codex_skill, load that skill before acting; read referenced resources only when needed. Prefer read/search before edits and apply_patch for file changes. run_command executes with the current OS user's authority and is not an OS sandbox; use it only for commands needed by the user's task.",
+    codexContext.initializationInstructions(),
+  ].join("\n\n");
   const server = new McpServer(
-    { name: "codex-chat-local-tools", version: "0.2.0" },
+    { name: "codex-chat-local-tools", version: "0.2.1" },
     {
-      instructions:
-        "Operate only within configured workspaces. Call workspace_info first when the workspace is unclear. Before substantive coding work, call codex_instructions for the target directory and follow the returned Codex-visible AGENTS guidance. When the user names a synced skill or the task matches one of the metadata descriptions attached to load_codex_skill, load that skill before acting; read referenced resources only when needed. Prefer read/search before edits and apply_patch for file changes. run_command executes with the current OS user's authority and is not an OS sandbox; use it only for commands needed by the user's task.",
+      instructions: initializationInstructions,
     },
   );
 
@@ -44,7 +47,7 @@ export function createMcpServer(registry: WorkspaceRegistry, codexContext: Codex
         codexContext: z.object({
           enabled: z.boolean(),
           codexHome: z.string(),
-          instructionSync: z.literal("on-demand"),
+          instructionSync: z.literal("initialization-and-on-demand"),
           skillSync: z.literal("catalog-first"),
           skillCount: z.number(),
         }),

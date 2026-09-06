@@ -18,6 +18,7 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
   await mkdir(skillRoot, { recursive: true });
   await writeFile(path.join(temporary.directory, "sample.txt"), "transport works\n", "utf8");
   await writeFile(path.join(codexHome, "AGENTS.md"), "transport guidance\n", "utf8");
+  await writeFile(path.join(temporary.directory, "AGENTS.md"), "workspace transport guidance\n", "utf8");
   await writeFile(
     path.join(skillRoot, "SKILL.md"),
     "---\nname: transport-skill\ndescription: Verify MCP skill loading.\n---\n\nTransport skill body.\n",
@@ -33,6 +34,9 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
 
   try {
     await client.connect(transport);
+    assert.match(client.getInstructions() ?? "", /transport guidance/);
+    assert.match(client.getInstructions() ?? "", /workspace transport guidance/);
+    assert.match(client.getInstructions() ?? "", /mandatory operating instructions/);
     const tools = await client.listTools();
     assert.deepEqual(
       tools.tools.map((tool) => tool.name).sort(),

@@ -12,7 +12,7 @@
 - 可同时保存多个 OpenAI 兼容 API，通过 `/models` 自动发现模型，并选择模型、设置显示别名。
 - 官方登录模型保持 `openai` provider；API 模型通过本机 `codex-plus-api` broker 按稳定 `routeId` 分发，不切换全局 provider。
 - 原生支持 Responses；Chat Completions 会在本机转换 Responses 请求、SSE、工具调用与推理字段。
-- 内置 `local-tools/` tool-only MCP，可为 ChatGPT/Codex Chat 模式提供工作区文件、搜索、补丁、命令和 Git 工具，并按需同步本机 Codex 可见的 `AGENTS` 指令链与 Skills。
+- 内置 `local-tools/` tool-only MCP，可为 ChatGPT/Codex Chat 模式提供工作区文件、搜索、补丁、命令和 Git 工具；MCP 初始化时直接注入本机 Codex 可见的全局与工作区根 `AGENTS` 指令链，Skills 继续渐进加载。
 - `codex-plus.exe --login-startup` 会立即幂等启动 Tunnel 与 MCP，但仍不会主动打开官方 Codex 窗口。
 
 ## 使用
@@ -45,7 +45,7 @@ OPENAI_API_KEY=your-runtime-key
 
 正常运行和 Windows 登录自启都会调用幂等的 managed runtime 连接；健康实例已存在时不会产生重复进程。默认 MCP workspace 是本仓库根目录。需要临时使用另一份组件时，可给当前进程设置 `CODEX_PLUS_LOCAL_TOOLS_ROOT`，其值应指向包含 `dist/cli.js`、`.env.local` 和本地 `tunnel-client.exe` 的组件目录。
 
-Codex 上下文同步采用渐进加载：初始化只公开有界的 skill 名称/描述目录，匹配后才读取单个 `SKILL.md`，其 references/scripts/assets 继续按需读取；`AGENTS` 指令链也只在进入具体工作区任务时加载。同步范围和安全边界见 `local-tools/docs/design/codex-context-sync.md`。OpenAI 平台内部 system/developer prompt 不属于本机可读数据，工具会明确说明这一边界。
+MCP `initialize` 响应会按 Codex 优先级直接携带本机全局与已配置工作区根的 `AGENTS` 指令链，并受 `project_doc_max_bytes` 限制；进入嵌套目录或运行中修改指令后，再通过 `codex_instructions` 读取当前链。Skills 仍采用渐进加载：初始化只公开有界的名称/描述目录，匹配后才读取单个 `SKILL.md`，其 references/scripts/assets 继续按需读取。同步范围和安全边界见 `local-tools/docs/design/codex-context-sync.md`。OpenAI 平台内部 system/developer prompt 不属于本机可读数据。
 
 Tunnel key 只作为 `tunnel-client` 子进程的 `CONTROL_PLANE_API_KEY` 环境变量传递；启动 MCP 的脚本会在 Node 子进程前清除它。启动结果记录在 `%LOCALAPPDATA%\codex-plus\codex-plus.log` 的 `local_tools.runtime.*` 事件中。
 

@@ -1,8 +1,8 @@
 {
   "name": "codex-chat-local-tools",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
-  "description": "Workspace-scoped MCP tools with on-demand Codex instruction and skill sync",
+  "description": "Workspace-scoped MCP tools with startup Codex AGENTS injection and progressive skill sync",
   "type": "module",
   "bin": {
     "codex-chat-local-tools": "dist/cli.js"

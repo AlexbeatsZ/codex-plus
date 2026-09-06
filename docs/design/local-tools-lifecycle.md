@@ -6,7 +6,7 @@
 
 OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求转交给 `local-tools` 的 stdio MCP。它需要常驻才能接收工具调用；MCP 本身不持有 Tunnel runtime key。
 
-MCP 同时提供只读 Codex 上下文桥接：在工具调用时读取当前 `AGENTS` 指令链和 skill 文件，而不是由启动器复制或缓存整份提示词。初始化只携带有界的 skill 元数据目录；完整 `SKILL.md` 与其资源分阶段按需加载。详细发现顺序、触发与路径边界见 `local-tools/docs/design/codex-context-sync.md`。
+MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本机全局与已配置工作区根的 `AGENTS` 指令链，并直接放入 MCP `initialize` 指令；嵌套目录或进程启动后变化的指令仍由工具按需刷新。初始化另外携带有界的 skill 元数据目录；完整 `SKILL.md` 与其资源分阶段按需加载。详细发现顺序、触发与路径边界见 `local-tools/docs/design/codex-context-sync.md`。
 
 ## 启动时序
 
@@ -14,6 +14,7 @@ MCP 同时提供只读 Codex 上下文桥接：在工具调用时读取当前 `A
 - `--login-startup` 在进入“等待用户打开 Codex”的循环前启动 runtime，因此登录后 MCP 可用，但官方 Codex 窗口仍不会被主动打开。
 - 普通点击、网页登录和 attach 模式也执行同一幂等检查；已有健康 runtime 时不得创建重复进程。
 - MCP 启动失败只写入 `%LOCALAPPDATA%\codex-plus\codex-plus.log`，不阻止账户、broker 或 Codex 注入功能继续运行。
+- `run_command` 超时必须终止整个子进程树并在短暂宽限期后强制关闭继承管道；不能只杀 shell 父进程后继续等待 `close`，否则 Tunnel health/ready 仍为 200 时 stdio 也可能永久阻塞。
 
 ## 组件发现
 

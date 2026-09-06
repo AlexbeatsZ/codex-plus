@@ -1,14 +1,14 @@
 {
   "name": "codex-chat-local-tools",
-  "version": "0.2.0",
-  "description": "Workspace-scoped local coding tools with progressive Codex instruction and skill sync.",
+  "version": "0.2.1",
+  "description": "Workspace-scoped local coding tools with startup Codex AGENTS injection and progressive skill sync.",
   "author": {
     "name": "Meta"
   },
   "interface": {
     "displayName": "Codex Chat Local Tools",
-    "shortDescription": "Local coding tools plus on-demand Codex context sync.",
-    "longDescription": "A tool-only MCP plugin that gives Codex ChatGPT mode access to explicitly configured local workspaces and progressively loads local Codex-visible AGENTS guidance and skills without browser automation or response scraping.",
+    "shortDescription": "Local tools with Codex AGENTS context injection.",
+    "longDescription": "A tool-only MCP plugin that gives Codex ChatGPT mode access to explicitly configured local workspaces, injects local Codex-visible AGENTS guidance during MCP initialization, and progressively loads skills without browser automation or response scraping.",
     "developerName": "Meta",
     "category": "Developer Tools",
     "capabilities": [
