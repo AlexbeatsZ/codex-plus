@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -22,7 +22,7 @@ test("compiled CLI performs an MCP handshake over stdio", async () => {
     const result = await client.callTool({ name: "workspace_info", arguments: {} });
     const workspaces = (result.structuredContent as { workspaces: Array<{ id: string; root: string }> }).workspaces;
     assert.equal(workspaces.length, 1);
-    assert.equal(path.normalize(workspaces[0].root), path.normalize(temporary.directory));
+    assert.equal(path.normalize(await realpath(workspaces[0].root)), path.normalize(await realpath(temporary.directory)));
 
     const timeoutStartedAt = Date.now();
     const timedOut = await client.callTool({

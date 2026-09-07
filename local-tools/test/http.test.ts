@@ -48,11 +48,30 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
         "list_codex_skills",
         "list_files",
         "load_codex_skill",
+        "mac_apply_patch",
+        "mac_git_diff",
+        "mac_git_status",
+        "mac_list_files",
+        "mac_read_file",
+        "mac_read_image",
+        "mac_run_command",
+        "mac_search_text",
+        "mac_workspace_info",
+        "machine_info",
         "read_codex_skill_resource",
         "read_file",
         "read_image",
         "run_command",
         "search_text",
+        "windows_apply_patch",
+        "windows_git_diff",
+        "windows_git_status",
+        "windows_list_files",
+        "windows_read_file",
+        "windows_read_image",
+        "windows_run_command",
+        "windows_search_text",
+        "windows_workspace_info",
         "workspace_info",
       ],
     );
@@ -60,6 +79,25 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
     const timeoutSchema = (runCommand?.inputSchema.properties as Record<string, Record<string, unknown>> | undefined)?.timeoutSeconds;
     assert.equal(timeoutSchema?.default, 30);
     assert.equal(timeoutSchema?.maximum, 45);
+
+    const machineInfo = await client.callTool({ name: "machine_info", arguments: {} });
+    const localMachine = process.platform === "win32" ? "windows" : "mac";
+    assert.equal((machineInfo.structuredContent as { localMachine: string }).localMachine, localMachine);
+    const routedMachines = (machineInfo.structuredContent as {
+      machines: Array<{ id: string; sshTarget: string; sshFallbackTarget: string }>;
+    }).machines;
+    assert.deepEqual(
+      routedMachines.map(({ id, sshTarget, sshFallbackTarget }) => ({ id, sshTarget, sshFallbackTarget })),
+      [
+        { id: "windows", sshTarget: "meta@192.168.31.214", sshFallbackTarget: "meta@100.113.70.121" },
+        { id: "mac", sshTarget: "meta@192.168.31.174", sshFallbackTarget: "meta@100.64.2.94" },
+      ],
+    );
+    const routedRead = await client.callTool({
+      name: `${localMachine}_read_file`,
+      arguments: { workspace: registry.workspaces[0].id, path: "sample.txt", startLine: 1, lineCount: 10 },
+    });
+    assert.equal((routedRead.structuredContent as { text: string }).text, "transport works\n");
 
     const result = await client.callTool({
       name: "read_file",

@@ -3,7 +3,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+#[cfg(windows)]
+use std::process::Stdio;
+use std::process::{Child, Command};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
@@ -147,42 +149,68 @@ pub fn resolve_codex_executable() -> anyhow::Result<PathBuf> {
             .ok_or_else(|| anyhow::anyhow!("CODEX_PLUS_APP_PATH 中未找到 ChatGPT.exe/Codex.exe"));
     }
 
-    let script = r#"
+    #[cfg(windows)]
+    {
+        let script = r#"
 $names = @('OpenAI.Codex','OpenAI.CodexBeta','OpenAI.ChatGPT-Desktop')
 $packages = foreach ($name in $names) { Get-AppxPackage -Name $name -ErrorAction SilentlyContinue }
 $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocation }
 "#;
-    let mut command = background_command("powershell.exe");
-    let output = command
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .stderr(Stdio::null())
-        .output()
-        .context("无法查询 OpenAI Codex 安装包")?;
-    if output.status.success() {
-        let text = String::from_utf8_lossy(&output.stdout);
-        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            if let Some(executable) = normalize_app_candidate(Path::new(line)) {
+        let mut command = background_command("powershell.exe");
+        let output = command
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .stderr(Stdio::null())
+            .output()
+            .context("无法查询 OpenAI Codex 安装包")?;
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                if let Some(executable) = normalize_app_candidate(Path::new(line)) {
+                    return Ok(executable);
+                }
+            }
+        }
+
+        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        let candidates = local
+            .into_iter()
+            .flat_map(|root| {
+                [
+                    root.join("Programs").join("ChatGPT"),
+                    root.join("Programs").join("OpenAI Codex"),
+                    root.join("OpenAI").join("ChatGPT"),
+                ]
+            })
+            .collect::<Vec<_>>();
+        for candidate in candidates {
+            if let Some(executable) = normalize_app_candidate(&candidate) {
                 return Ok(executable);
             }
         }
     }
 
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let candidates = local
-        .into_iter()
-        .flat_map(|root| {
-            [
-                root.join("Programs").join("ChatGPT"),
-                root.join("Programs").join("OpenAI Codex"),
-                root.join("OpenAI").join("ChatGPT"),
-            ]
-        })
-        .collect::<Vec<_>>();
-    for candidate in candidates {
-        if let Some(executable) = normalize_app_candidate(&candidate) {
-            return Ok(executable);
+    #[cfg(target_os = "macos")]
+    {
+        for candidate in [
+            PathBuf::from("/Applications/ChatGPT.app"),
+            PathBuf::from("/Applications/Codex.app"),
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join("Applications")
+                .join("ChatGPT.app"),
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join("Applications")
+                .join("Codex.app"),
+        ] {
+            if let Some(executable) = normalize_app_candidate(&candidate) {
+                return Ok(executable);
+            }
         }
     }
+
     bail!("未找到官方 OpenAI Codex/ChatGPT 桌面应用")
 }
 
@@ -431,11 +459,23 @@ fn is_openai_codex_process(name: &OsStr, executable: Option<&Path>) -> bool {
         return false;
     };
     let path = normalized_path(executable);
-    path.contains("\\windowsapps\\openai.codex_")
-        || path.contains("\\windowsapps\\openai.codexbeta_")
-        || path.contains("\\windowsapps\\openai.chatgpt-desktop_")
-        || path.contains("\\openai\\chatgpt\\")
-        || path.contains("\\openai codex\\")
+    #[cfg(windows)]
+    {
+        path.contains("\\windowsapps\\openai.codex_")
+            || path.contains("\\windowsapps\\openai.codexbeta_")
+            || path.contains("\\windowsapps\\openai.chatgpt-desktop_")
+            || path.contains("\\openai\\chatgpt\\")
+            || path.contains("\\openai codex\\")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        path == "/applications/chatgpt.app/contents/macos/chatgpt"
+            || path == "/applications/codex.app/contents/macos/codex"
+            || path.ends_with("/applications/chatgpt.app/contents/macos/chatgpt")
+            || path.ends_with("/applications/codex.app/contents/macos/codex")
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    false
 }
 
 fn is_openai_codex_root_process(process: &sysinfo::Process) -> bool {
@@ -461,20 +501,31 @@ fn normalize_app_candidate(path: &Path) -> Option<PathBuf> {
     let candidates = if path.is_file() {
         vec![path.to_path_buf()]
     } else {
-        vec![
+        #[cfg(windows)]
+        let values = vec![
             path.join("app").join("ChatGPT.exe"),
             path.join("app").join("Codex.exe"),
             path.join("ChatGPT.exe"),
             path.join("Codex.exe"),
-        ]
+        ];
+        #[cfg(target_os = "macos")]
+        let values = vec![
+            path.join("Contents").join("MacOS").join("ChatGPT"),
+            path.join("Contents").join("MacOS").join("Codex"),
+        ];
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        let values = Vec::new();
+        values
     };
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 fn normalized_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('/', "\\")
-        .to_ascii_lowercase()
+    let value = path.to_string_lossy().to_ascii_lowercase();
+    #[cfg(windows)]
+    return value.replace('/', "\\");
+    #[cfg(not(windows))]
+    return value.replace('\\', "/");
 }
 
 fn sanitize_event(value: &str) -> String {
@@ -518,6 +569,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn only_known_openai_process_paths_match() {
         assert!(is_openai_codex_process(
@@ -533,6 +585,27 @@ mod tests {
         assert!(!is_openai_codex_process(
             OsStr::new("explorer.exe"),
             Some(Path::new(r"C:\Windows\explorer.exe"))
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_known_openai_macos_process_paths_match() {
+        assert!(is_openai_codex_process(
+            OsStr::new("ChatGPT"),
+            Some(Path::new(
+                "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+            ))
+        ));
+        assert!(is_openai_codex_process(
+            OsStr::new("Codex"),
+            Some(Path::new(
+                "/Users/test/Applications/Codex.app/Contents/MacOS/Codex"
+            ))
+        ));
+        assert!(!is_openai_codex_process(
+            OsStr::new("ChatGPT"),
+            Some(Path::new("/Applications/Other.app/Contents/MacOS/ChatGPT"))
         ));
     }
 

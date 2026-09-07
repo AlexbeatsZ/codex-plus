@@ -2,9 +2,20 @@
 
 ## 产品边界
 
-`codex-plus.exe` 仍是唯一的 Windows 自启动入口。仓库内的 `local-tools/` 是随启动器部署的 tool-only MCP 组件，不提供独立界面，也不接管 Codex/ChatGPT 页面。
+`codex-plus` 在每台桌面主机上仍只有一个启动器入口：Windows 使用 `codex-plus.exe`，macOS 使用同一 Rust launcher 的 Darwin 构建并由 LaunchAgent 以 `--login-startup` 启动。仓库内的 `local-tools/` 是随启动器部署的 tool-only MCP 组件，不提供独立管理界面，也不要求用户在 UI 中选择机器。
 
 OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求转交给 `local-tools` 的 stdio MCP。它需要常驻才能接收工具调用；MCP 本身不持有 Tunnel runtime key。
+
+## 多机器路由
+
+- Windows PC `Meta-OMEN` 默认地址为 `meta@192.168.31.214`（备用 `meta@100.113.70.121`）；Mac 默认地址为 `meta@192.168.31.174`（备用 `meta@100.64.2.94`）。两端已配置双向免密 SSH。
+- Windows 与 Mac 可以同时连接 alias `codex-chat-local-tools` / 同一个远端 Tunnel。控制面可能把某次 MCP 请求交给任一在线 runtime，因此“当前 runtime 所在机器”不能再代表“用户想操作的机器”。
+- MCP 0.3.0 为主要 workspace/file/Git/command 操作同时注册 `windows_*` 与 `mac_*` 工具。模型根据用户语义直接选择目标机器，不增加机器选择 UI。
+- 若工具目标就是当前 runtime 所在主机，直接复用 `LocalOperations`；若目标是另一台主机，则通过 OpenSSH `BatchMode=yes` 把 JSON 请求从 stdin 转发到对端 `dist/host-rpc.js`。对端仍复用相同的 `WorkspaceRegistry` 与 `LocalOperations`，所以路径边界、patch 检查、命令超时和输出限制不因 SSH 转发而改变。
+- `machine_info` 仅用于目标不清楚时查看两台主机及当前 runtime。旧的无前缀工具继续保留兼容性，但它们只作用于实际接到请求的 runtime；只要机器身份会影响结果，就必须使用 `windows_*` / `mac_*`。
+- 默认 SSH 地址与工作区根可分别用 `CODEX_PLUS_WINDOWS_SSH_TARGET`、`CODEX_PLUS_WINDOWS_WORKSPACE_ROOT`、`CODEX_PLUS_MAC_SSH_TARGET`、`CODEX_PLUS_MAC_WORKSPACE_ROOT` 覆盖，不需要重新编译。
+
+这一层使同一 Tunnel 下的多个 runtime 变成对称 gateway：即使控制面把请求分配到另一台机器，显式目标工具仍会路由回正确主机，从协议层消除“同一工具调用有时进 Windows、有时进 Mac”的歧义。
 
 MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本机全局与已配置工作区根的 `AGENTS` 指令链，并直接放入 MCP `initialize` 指令；嵌套目录或进程启动后变化的指令仍由工具按需刷新。初始化另外携带有界的 skill 元数据目录；完整 `SKILL.md` 与其资源分阶段按需加载。详细发现顺序、触发与路径边界见 `local-tools/docs/design/codex-context-sync.md`。
 
@@ -27,8 +38,10 @@ MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本
 一个可启动组件必须同时具有：
 
 - `dist/cli.js`；
-- `scripts/start-tunnel-mcp.ps1`；
-- `.tools/tunnel-client/tunnel-client.exe`；
+- `dist/host-rpc.js`；
+- Windows：`scripts/start-tunnel-mcp.ps1` 与 `.tools/tunnel-client/tunnel-client.exe`；
+- macOS：`scripts/start-tunnel-mcp.sh` 与 `.tools/tunnel-client/tunnel-client`；
+- 双机转发脚本 `scripts/host-rpc.ps1` / `scripts/host-rpc.sh`；
 - 未提交的 `.env.local`，其中含非空 `OPENAI_API_KEY`。
 
 ## 密钥边界
@@ -42,6 +55,8 @@ MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本
 ## 工作区边界
 
 合并部署默认把 `codex-plus` 仓库根目录作为 MCP 的唯一 workspace root；这使本地工具能同时维护启动器和内嵌 `local-tools`，同时不会自动扩大到整个 `Workspaces` 或用户目录。
+
+跨机器工具也只把对端 `codex-plus` 根注册为 workspace。`run_command` 与本地版本一样，shell 虽从 workspace 内启动但仍拥有目标用户权限；需要修改 workspace 外的系统配置时必须继续遵守目标机 `AGENTS.md` 权限规则。Windows 命令由 PowerShell 执行，Mac 命令由 Bash 执行。
 
 ## 发布与回退
 

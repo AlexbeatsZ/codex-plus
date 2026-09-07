@@ -17,6 +17,13 @@ It intentionally does **not** contain the browser automation, ChatGPT response p
 
 Path-based tools enforce configured workspace roots. `run_command` starts inside a workspace but is **not** an OS sandbox: it has the permissions and network access of the account running this server. Foreground commands default to 30 seconds and are capped at 45 seconds; a timeout terminates the spawned process tree and force-closes inherited pipes so one descendant cannot block the shared Tunnel stdio channel. Split or background longer work and inspect it in later calls.
 
+## Windows / Mac routing
+
+The same Tunnel may have both desktop runtimes online. Use `windows_*` for `Meta-OMEN` (`meta@192.168.31.214`, backup `meta@100.113.70.121`) and `mac_*` for the Mac (`meta@192.168.31.174`, backup `meta@100.64.2.94`). If the selected target is the machine currently serving the MCP request, the operation runs locally. Otherwise the gateway forwards a JSON request over passwordless OpenSSH to the matching host and executes the same `LocalOperations` there. This makes the target deterministic even when the Tunnel control plane dispatches different calls to different online runtimes.
+
+`machine_info` reports both targets and which one is local to the current runtime. The unprefixed tools remain for backward compatibility and act on the runtime that happened to receive the request; they should not be used when host identity matters.
+
+The defaults can be overridden with `CODEX_PLUS_WINDOWS_SSH_TARGET`, `CODEX_PLUS_WINDOWS_WORKSPACE_ROOT`, `CODEX_PLUS_MAC_SSH_TARGET`, and `CODEX_PLUS_MAC_WORKSPACE_ROOT`.
 ## Codex context synchronization
 
 The context bridge injects the global and configured workspace-root `AGENTS` chain into the MCP `initialize` response. The payload follows Codex precedence, is deduplicated across workspaces, and is bounded by `project_doc_max_bytes` (32 KiB by default), so the connected AI sees those instructions before choosing or calling a tool.
@@ -35,8 +42,9 @@ Discovery includes `~/.codex/skills`, `~/.agents/skills`, applicable repository 
 ## Requirements
 
 - Node.js 20 or newer.
-- `git` and `rg` (ripgrep) available on `PATH`.
+- `git`; ripgrep is preferred when available, with a bounded Node.js fallback for file listing/text search when `rg` is absent or not executable.
 - PowerShell on Windows, Bash on Linux/macOS.
+- Passwordless OpenSSH between the Windows and Mac hosts for cross-machine routing.
 
 ## Build and run
 
@@ -104,9 +112,9 @@ ChatGPT cannot directly dial a private loopback endpoint. Use OpenAI's Secure MC
    .\scripts\tunnel-client.ps1 runtimes status codex-chat-local-tools --json
    ```
 
-6. In ChatGPT/Codex Chat mode, enable Developer mode under **Settings → Security and login**, add an app using **Tunnel**, and review the thirteen tools before enabling it.
+6. In ChatGPT/Codex Chat mode, enable Developer mode under **Settings → Security and login**, add an app using **Tunnel**, and review the exposed tools before enabling it. Multi-machine builds include the `windows_*`, `mac_*`, and `machine_info` routing tools in addition to the compatibility tools.
 
-The OpenAI API key used by `tunnel-client` is external to this server. Never commit `.env.local`, put the key in a script or profile, or pass it to the MCP process. The parent `codex-plus.exe` starts this managed runtime on explicit, attach, web-login, and Windows login-startup paths.
+The OpenAI API key used by `tunnel-client` is external to this server. Never commit `.env.local`, put the key in a script or profile, or pass it to the MCP process. The parent `codex-plus` launcher starts this managed runtime on explicit, attach, web-login, and platform login-startup paths.
 
 Official references:
 

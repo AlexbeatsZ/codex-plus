@@ -49,21 +49,37 @@ pub async fn ensure_runtime(paths: &AccountPaths) {
 
 fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
     let component_root = discover_component_root()?;
+    #[cfg(windows)]
     let tunnel_client = component_root
         .join(".tools")
         .join("tunnel-client")
         .join("tunnel-client.exe");
+    #[cfg(not(windows))]
+    let tunnel_client = component_root
+        .join(".tools")
+        .join("tunnel-client")
+        .join("tunnel-client");
+    #[cfg(windows)]
     let start_script = component_root.join("scripts").join("start-tunnel-mcp.ps1");
+    #[cfg(not(windows))]
+    let start_script = component_root.join("scripts").join("start-tunnel-mcp.sh");
     let workspace_root = component_root
         .parent()
         .context("local-tools 没有可用的父工作区")?;
     let env_file = component_root.join(".env.local");
     let runtime_key = read_runtime_key(&env_file)?;
     let tunnel_http_proxy = read_optional_env_value(&env_file, "TUNNEL_HTTP_PROXY")?;
+    #[cfg(windows)]
     let mcp_command = format!(
         "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {} -Root {}",
         command_path(&start_script),
         command_path(workspace_root),
+    );
+    #[cfg(not(windows))]
+    let mcp_command = format!(
+        "/bin/bash {} {}",
+        shell_quote(&start_script),
+        shell_quote(workspace_root),
     );
 
     let mut command = crate::runtime::background_command(&tunnel_client);
@@ -170,13 +186,22 @@ fn discover_component_root() -> anyhow::Result<PathBuf> {
 }
 
 fn component_is_runnable(root: &Path) -> bool {
-    root.join("dist").join("cli.js").is_file()
-        && root.join("scripts").join("start-tunnel-mcp.ps1").is_file()
+    #[cfg(windows)]
+    let platform_files = root.join("scripts").join("start-tunnel-mcp.ps1").is_file()
         && root
             .join(".tools")
             .join("tunnel-client")
             .join("tunnel-client.exe")
-            .is_file()
+            .is_file();
+    #[cfg(not(windows))]
+    let platform_files = root.join("scripts").join("start-tunnel-mcp.sh").is_file()
+        && root
+            .join(".tools")
+            .join("tunnel-client")
+            .join("tunnel-client")
+            .is_file();
+    root.join("dist").join("cli.js").is_file()
+        && platform_files
         && root.join(".env.local").is_file()
 }
 
@@ -215,6 +240,12 @@ fn command_path(path: &Path) -> String {
     path.strip_prefix(r"\\?\")
         .unwrap_or(path.as_ref())
         .replace('\\', "/")
+}
+
+#[cfg(not(windows))]
+fn shell_quote(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

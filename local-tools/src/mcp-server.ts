@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import { CodexContextSync } from "./codex-context.js";
 import { LocalOperations } from "./operations.js";
+import { registerMachineTools } from "./machine-tools.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
 const readonlyAnnotations = {
@@ -26,15 +27,18 @@ function textResult<T extends object>(structuredContent: T) {
 export function createMcpServer(registry: WorkspaceRegistry, codexContext: CodexContextSync): McpServer {
   const operations = new LocalOperations(registry);
   const initializationInstructions = [
+    "Multi-machine routing is enabled. The Windows PC is Meta-OMEN at meta@192.168.31.214 (backup meta@100.113.70.121) and the Mac is at meta@192.168.31.174 (backup meta@100.64.2.94). When the user names or clearly implies a host, always use the matching windows_* or mac_* tool. Those tools preserve the target even if this shared Tunnel request is handled by the other computer, forwarding over passwordless SSH when necessary. Generic workspace/read/run tools operate only on whichever runtime handled the request and are retained for compatibility; do not use them when machine identity matters.",
     "Operate only within configured workspaces. Call workspace_info first when the workspace is unclear. The synced AGENTS instructions below already apply; call codex_instructions again for nested directories or instructions changed after this MCP process started. When the user names a synced skill or the task matches one of the metadata descriptions attached to load_codex_skill, load that skill before acting; read referenced resources only when needed. Prefer read/search before edits and apply_patch for file changes. run_command executes with the current OS user's authority and is not an OS sandbox; use it only for commands needed by the user's task.",
     codexContext.initializationInstructions(),
   ].join("\n\n");
   const server = new McpServer(
-    { name: "codex-chat-local-tools", version: "0.2.1" },
+    { name: "codex-chat-local-tools", version: "0.3.0" },
     {
       instructions: initializationInstructions,
     },
   );
+
+  registerMachineTools(server, registry);
 
   server.registerTool(
     "workspace_info",

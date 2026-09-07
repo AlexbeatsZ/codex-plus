@@ -1,4 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { runProcess, shellInvocation, type ProcessResult } from "./process.js";
 import { WorkspaceRegistry } from "./workspaces.js";
@@ -37,7 +38,15 @@ export class LocalOperations {
 
     const args = ["--files", "--hidden", "--glob", "!.git/**"];
     if (glob) args.push("--glob", glob);
-    const result = await runProcess("rg", args, { cwd, timeoutMs: 30_000, maxOutputBytes: 2_000_000 });
+    let result: ProcessResult;
+    try {
+      result = await runProcess(ripgrepExecutable(), args, { cwd, timeoutMs: 30_000, maxOutputBytes: 2_000_000 });
+    } catch (error) {
+      if (!isUnavailableExecutable(error)) throw error;
+      const files = await fallbackFileList(cwd, glob);
+      const all = files.map((item) => this.registry.relative(workspace, item));
+      return { files: all.slice(0, limit), truncated: all.length > limit };
+    }
     if (result.exitCode !== 0 && result.exitCode !== 1) throw processFailure("ripgrep file listing", result);
     const all = result.stdout
       .split(/\r?\n/)
@@ -59,7 +68,20 @@ export class LocalOperations {
     if (fixed) args.push("--fixed-strings");
     if (glob) args.push("--glob", glob);
     args.push("--", query, ".");
-    const result = await runProcess("rg", args, { cwd, timeoutMs: 30_000, maxOutputBytes: 4_000_000 });
+    let result: ProcessResult;
+    try {
+      result = await runProcess(ripgrepExecutable(), args, { cwd, timeoutMs: 30_000, maxOutputBytes: 4_000_000 });
+    } catch (error) {
+      if (!isUnavailableExecutable(error)) throw error;
+      return fallbackSearch(
+        cwd,
+        (absolutePath) => this.registry.relative(workspace, absolutePath),
+        query,
+        fixed,
+        glob,
+        limit,
+      );
+    }
     if (result.exitCode !== 0 && result.exitCode !== 1) throw processFailure("ripgrep search", result);
 
     const matches: SearchMatch[] = [];
@@ -171,6 +193,92 @@ export class LocalOperations {
     if (result.exitCode !== 0) throw processFailure("git diff", result);
     return { diff: result.stdout, truncated: result.truncated };
   }
+}
+
+function ripgrepExecutable(): string {
+  const explicit = process.env.CODEX_PLUS_RG;
+  if (explicit) return explicit;
+
+  if (process.platform === "darwin") {
+    const bundled = [
+      "/Applications/ChatGPT.app/Contents/Resources/rg",
+      "/Applications/Codex.app/Contents/Resources/rg",
+    ].find((candidate) => existsSync(candidate));
+    if (bundled) return bundled;
+  }
+
+  return "rg";
+}
+function isUnavailableExecutable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "EPERM" || code === "EACCES";
+}
+
+async function fallbackFileList(cwd: string, glob: string | undefined): Promise<string[]> {
+  const files: string[] = [];
+  await walkFiles(cwd, async (absolutePath, relativePath) => {
+    if (!glob || matchesGlob(relativePath, glob)) files.push(absolutePath);
+    return false;
+  });
+  return files;
+}
+
+async function fallbackSearch(
+  cwd: string,
+  displayPath: (absolutePath: string) => string,
+  query: string,
+  fixed: boolean,
+  glob: string | undefined,
+  limit: number,
+): Promise<{ matches: SearchMatch[]; truncated: boolean }> {
+  const matches: SearchMatch[] = [];
+  const expression = fixed ? undefined : new RegExp(query);
+  await walkFiles(cwd, async (absolutePath, relativePath) => {
+    if (glob && !matchesGlob(relativePath, glob)) return false;
+    const fileStat = await stat(absolutePath);
+    if (fileStat.size > 5_000_000) return false;
+    const buffer = await readFile(absolutePath);
+    if (buffer.subarray(0, Math.min(buffer.length, 8_192)).includes(0)) return false;
+    const lines = buffer.toString("utf8").split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const column = fixed ? line.indexOf(query) : (expression?.exec(line)?.index ?? -1);
+      if (column < 0) continue;
+      matches.push({ path: displayPath(absolutePath), line: index + 1, column: column + 1, text: line });
+      if (matches.length >= limit) return true;
+    }
+    return false;
+  });
+  return { matches, truncated: matches.length >= limit };
+}
+
+async function walkFiles(
+  root: string,
+  visitor: (absolutePath: string, relativePath: string) => Promise<boolean>,
+): Promise<boolean> {
+  const visitDirectory = async (directory: string): Promise<boolean> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.isSymbolicLink()) continue;
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (await visitDirectory(absolutePath)) return true;
+      } else if (entry.isFile()) {
+        const relativePath = path.relative(root, absolutePath).split(path.sep).join("/");
+        if (await visitor(absolutePath, relativePath)) return true;
+      }
+    }
+    return false;
+  };
+  return visitDirectory(root);
+}
+
+function matchesGlob(value: string, glob: string): boolean {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const pattern = escaped.replace(/\*\*\//g, "(?:.*/)?").replace(/\*\*/g, ".*").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
+  return new RegExp(`^${pattern}$`).test(value);
 }
 
 function processFailure(action: string, result: ProcessResult): Error {

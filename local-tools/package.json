@@ -1,6 +1,6 @@
 {
   "name": "codex-chat-local-tools",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "Workspace-scoped MCP tools with startup Codex AGENTS injection and progressive skill sync",
   "type": "module",

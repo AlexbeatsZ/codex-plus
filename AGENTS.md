@@ -1,6 +1,6 @@
 # Goal
 
-`codex-plus` 是面向 Windows 官方 OpenAI Codex 桌面应用的单一启动器。正常点击 `codex-plus.exe` 时，它必须确保仓库内 tool-only MCP 的 Secure MCP Tunnel managed runtime 可用、受控关闭旧 Codex/launcher、启动本机多 API broker、增量核对 provider 配置、带 CDP 参数重新启动官方应用，并把账户与 API 界面注入 Codex 左下角个人资料菜单。
+`codex-plus` 是面向 Windows 与 macOS 官方 OpenAI Codex/ChatGPT 桌面应用的单一跨平台启动器。显式启动时，它必须确保仓库内 tool-only MCP 的 Secure MCP Tunnel managed runtime 可用、受控关闭旧 Codex/launcher、启动本机多 API broker、增量核对 provider 配置、带 CDP 参数重新启动官方应用，并把账户与 API 界面注入左下角个人资料菜单。Windows 与 Mac 的 local-tools 可同时在线；机器选择由模型通过 `windows_*` / `mac_*` 工具语义路由，不增加 UI 选择器。
 
 产品包含账户列表、异步额度、`auth.json` 导入、网页登录、账户切换/删除，多个 OpenAI 兼容 API、模型发现/别名/可见性和智能 provider 路由，以及 `local-tools/` MCP sidecar。不得增加独立管理页面、第二个产品可执行文件或其他 `codex-ppp` 功能。
 
@@ -8,6 +8,8 @@
 
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，版本 `0.3.0`。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-05 当前安装/进程识别验证版本为 `26.901.4073.0`，实际进程名为 `ChatGPT.exe`。
+- 2026-09-07 已验证 macOS 26.6.1 Apple Silicon：官方应用 `/Applications/ChatGPT.app` 版本 1.2026.238.5，可直接以 `Contents/MacOS/ChatGPT --remote-debugging-port=...` 启动并完成 CDP 注入；Mac release 位于 `/Users/meta/Project/Workspaces/codex-plus/target/release/codex-plus`，登录后台入口使用 LaunchAgent `com.codex-plus.launcher`，不会主动打开 ChatGPT 窗口。
+- `local-tools` 0.3.0 增加对称双机 gateway：Windows PC `meta@192.168.31.214`（备用 `meta@100.113.70.121`）与 Mac `meta@192.168.31.174`（备用 `meta@100.64.2.94`） 可同时挂在 alias `codex-chat-local-tools`。模型应使用 `windows_*` / `mac_*` 明确目标；若请求落到另一台 runtime，则通过双向免密 SSH 调用对端 `host-rpc`，继续复用相同 workspace/path/patch/timeout 边界。旧无前缀工具仅为兼容保留，机器身份重要时不得使用。
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`；MCP 的上下文同步设计见 `local-tools/docs/design/codex-context-sync.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
 - 当前自动化基线：`cargo test` 44 项、DOM/路由测试 15 项、`local-tools` MCP 测试 8 项通过；Windows 回归测试同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。
@@ -16,16 +18,18 @@
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时立即确保 local-tools runtime 可用，再等待官方 Codex 被用户打开接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
 - `local-tools/` 已纳入仓库；正常、attach、网页登录和登录自启入口都会幂等确保 alias `codex-chat-local-tools` 运行。登录自启会立即启动 MCP，但仍不会主动打开官方 Codex。Tunnel key 只从忽略的 `local-tools/.env.local` 传给 `tunnel-client`，MCP 子进程会清除相关环境变量。
 - 2026-09-03 已确认本机 Internet Settings 使用 `127.0.0.1:7897` 时，`tunnel-client` 不会自动继承该代理并会直连 OpenAI 超时；现支持从忽略的 `.env.local` 读取可选 `TUNNEL_HTTP_PROXY`，仅给 Tunnel runtime 注入 `HTTPS_PROXY`。2026-09-04 21:30 修复旧正式 EXE 重新拉起无代理 runtime 的部署漂移：保留当前 Codex 窗口，以最新正式 EXE 的 `--attach-existing` 重启 launcher 和 Tunnel；远端 metadata、完整长轮询周期无 WARN/ERROR、唯一进程及 health/ready 200 均已验证。
-- 2026-09-07 已部署 `local-tools` 0.2.1：本机全局和工作区根 `AGENTS` 指令直接进入 MCP `initialize` 响应，嵌套/变更后指令仍可按需刷新；`run_command` 超时会终止子进程树并强制关闭继承管道。managed runtime 已热重载为唯一 Tunnel/Node 实例，health/ready 为 200，完整轮询周期无 WARN/ERROR，原 Codex 窗口保持响应且未重启。按用户要求未在 Chat 模式主动发起工具调用。
+- 2026-09-07 已部署 `local-tools` 0.3.0：本机全局和工作区根 `AGENTS` 指令直接进入 MCP `initialize` 响应，嵌套/变更后指令仍可按需刷新；`run_command` 超时会终止子进程树并强制关闭继承管道。managed runtime 已热重载为唯一 Tunnel/Node 实例，health/ready 为 200，完整轮询周期无 WARN/ERROR，原 Codex 窗口保持响应且未重启。按用户要求未在 Chat 模式主动发起工具调用。
 - 2026-09-04 Tunnel 曾在保留原工作区 `a7ff583c-c893-4be2-98ab-7173e84a3f7c` 的同时关联 Business 工作区 `Xia (b9c51c7a-e7a7-40d7-9978-aa60f76fbec0)`；当时只读验收通过插件发现与 `workspace_info`。用户随后切换了 ChatGPT 小号，因此当前 Chat 侧插件连接可能断开；本轮按用户要求不在 Chat 模式测试，不能沿用旧连接结论。
 - 2026-09-04 22:16 已定位并部署首次重试仍返回 502 的修复：Tunnel 的共享 stdio MCP 通道会串行处理响应，而 `run_command` 原默认 90 秒、最大 300 秒，能超过托管请求约 83 秒的截止时间；原请求超时后，立即重试仍排在未结束命令之后。同步前台命令现限制为默认 30 秒、最大 45 秒；隔离 Tunnel 代理验证了命令超时后下一次 MCP 请求可立即恢复。实际 managed runtime 已重载为 PID 10040、MCP Node PID 25856，来自当前 `local-tools/dist/cli.js`；health/ready 200、远端 metadata 复查成功，重载后的运行日志无 WARN/ERROR。
 
 # Active Work
 
+- 2026-09-07 multi-machine routing: `machine_info` plus symmetric `windows_*` / `mac_*` tools keep the target host deterministic even when both runtimes share one Tunnel; remote calls use passwordless SSH + stdin JSON `host-rpc`. Windows->Mac and Mac->Windows real command smokes both passed.
+
 - 2026-09-05 已修复同一 ChatGPT Business 工作区的不同席位因共享 `tokens.account_id` 而互相覆盖：本地 CRUD、活动判断、额度和 pending switch 改用席位级散列 `recordId`，API 请求仍发送真实工作区 ID；同工作区双席位与旧 vault 自动迁移回归通过。正式 release 已无重启附加到当前 Codex；实际 vault 已先备份到 `%LOCALAPPDATA%\codex-plus\backups\account-seat-migration-20260905-033703`，再导入桌面席位，运行中 `/accounts/list` 验证该 Business 工作区同时保留两个不同邮箱席位。
 
 - 0.3.0 已把 `codex-chat-local-tools` 合并为仓库内 `local-tools/` 组件，并在正常、attach、网页登录和登录自启入口幂等启动 managed runtime；旧 runtime 已热迁移到新目录，health/ready HTTP 200、doctor 通过、stdio MCP 报告 workspace `codex-plus`，当前 Codex 通过新 release 的 attach 模式保持注入，未为迁移重启用户窗口。最终验收在外部持有 launcher 锁时停止 runtime 并执行正式 release 的 `--login-startup`：日志记录 `alreadyRunning=false` 后 runtime 恢复为唯一 ready 进程，随后因锁安全退出，证明登录入口会实际拉起 MCP 且不会产生重复实例。
-- `local-tools` 0.2.1 已把本机 Codex 可见的全局与已配置工作区根 `AGENTS` 指令注入 MCP 初始化上下文，使客户端在调用工具前即可看到；嵌套目录和运行中变化继续通过 `codex_instructions` 读取。Skills 仍先暴露有界元数据用于隐式/显式匹配，再加载单个完整 `SKILL.md` 和被引用资源。OpenAI 平台内部提示词不属于同步范围。
+- `local-tools` 0.3.0 已把本机 Codex 可见的全局与已配置工作区根 `AGENTS` 指令注入 MCP 初始化上下文，使客户端在调用工具前即可看到；嵌套目录和运行中变化继续通过 `codex_instructions` 读取。Skills 仍先暴露有界元数据用于隐式/显式匹配，再加载单个完整 `SKILL.md` 和被引用资源。OpenAI 平台内部提示词不属于同步范围。
 - `local-tools` 已将同步 `run_command` 收紧为默认 30 秒、最大 45 秒，并增加继承 stdio 的子进程回归：超时时终止整棵进程树，短暂宽限后即使 `close` 未到也强制释放管道；随后同一 MCP 连接的 `workspace_info` 必须继续成功。
 
 - 2026-08-15 用户确认关闭/重启 Codex 可短暂改善、运行后鼠标再次周期性卡顿。现场官方 Codex 已更新为 `26.810.6296.0`，根进程仅运行约 5 分钟即持续约 134% 单核 CPU，其中一个 `AboveNormal` 线程约 65%，其余多个线程各约 7–10%；GPU、DPC、磁盘无饱和。此时没有运行中的 codex-plus、主进程没有 CDP 参数且 9229 不可达，确认复发不由 plus 注入引起。当前进程临时降为 `BelowNormal` 后仍消耗约 138% 单核，但不再以普通/更高调度优先级与桌面输入竞争。
@@ -66,6 +70,8 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 普通启动优先使用 9229；若该地址不可绑定，会在日志 `launcher.debug_port.selected` 中记录实际回退端口。`--attach-existing` 仍只表示附加开发者显式启动的 9229 实例。
 
 # Durable Lessons
+
+- A shared Tunnel can dispatch requests to either online runtime, so the runtime that receives an MCP call must never be treated as the user's intended host. Host-sensitive tools need an explicit semantic target and must route to that host locally or over SSH; keeping only generic local tools makes simultaneous Windows/Mac runtimes nondeterministic.
 
 - Codex 顶部“编辑”菜单与个人资料菜单都可能包含文字为“设置”的 `role=menuitem`；账户/API 注入不能仅匹配该文字，必须要求同一直接父容器还包含原生“退出登录”。
 - Codex `26.803.5235.0` 的个人资料菜单项外层是 `flex flex-col`；图标和标签直接作为外层子节点会换行。自定义内容必须放进一个 `w-full` 的横向内层，且实际菜单项高度应约为 30px。

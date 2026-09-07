@@ -61,15 +61,32 @@ impl AccountPaths {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::var_os("USERPROFILE")
+                std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                     .filter(|value| !value.is_empty())
                     .map(|value| PathBuf::from(value).join(".codex"))
             })
             .ok_or_else(|| anyhow::anyhow!("无法定位 Codex 用户目录"))?;
+        #[cfg(windows)]
         let state_dir = std::env::var_os("LOCALAPPDATA")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .ok_or_else(|| anyhow::anyhow!("无法定位 LOCALAPPDATA"))?
+            .join("codex-plus");
+        #[cfg(target_os = "macos")]
+        let state_dir = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("无法定位 HOME"))?
+            .join("Library")
+            .join("Application Support")
+            .join("codex-plus");
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        let state_dir = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("无法定位 HOME"))?
+            .join(".local")
+            .join("state")
             .join("codex-plus");
         Ok(Self {
             codex_home,
