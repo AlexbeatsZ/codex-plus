@@ -9,13 +9,14 @@ OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求
 ## 多机器路由
 
 - Windows PC `Meta-OMEN` 默认地址为 `meta@192.168.31.214`（备用 `meta@100.113.70.121`）；Mac 默认地址为 `meta@192.168.31.174`（备用 `meta@100.64.2.94`）。两端已配置双向免密 SSH。
-- Windows 与 Mac 可以同时连接 alias `codex-chat-local-tools` / 同一个远端 Tunnel。控制面可能把某次 MCP 请求交给任一在线 runtime，因此“当前 runtime 所在机器”不能再代表“用户想操作的机器”。
+- Windows 与 Mac 默认各自连接独立 Tunnel：Windows alias 为 `codex-chat-local-tools-win`，macOS alias 为 `codex-chat-local-tools-mac`。ChatGPT 将它们注册为两个可独立启用的连接器，从控制面避免同一 Tunnel 的随机分流。
+- `windows_*` / `mac_*` 语义路由和双向 SSH 仍作为协议层保证：无论用户只启用其中一个连接器，还是以后显式改回共享 Tunnel，请求都能到达指定主机，不能把“当前 runtime 所在机器”等同于“用户想操作的机器”。
 - MCP 0.3.0 为主要 workspace/file/Git/command 操作同时注册 `windows_*` 与 `mac_*` 工具。模型根据用户语义直接选择目标机器，不增加机器选择 UI。
 - 若工具目标就是当前 runtime 所在主机，直接复用 `LocalOperations`；若目标是另一台主机，则通过 OpenSSH `BatchMode=yes` 把 JSON 请求从 stdin 转发到对端 `dist/host-rpc.js`。对端仍复用相同的 `WorkspaceRegistry` 与 `LocalOperations`，所以路径边界、patch 检查、命令超时和输出限制不因 SSH 转发而改变。
 - `machine_info` 仅用于目标不清楚时查看两台主机及当前 runtime。旧的无前缀工具继续保留兼容性，但它们只作用于实际接到请求的 runtime；只要机器身份会影响结果，就必须使用 `windows_*` / `mac_*`。
 - 默认 SSH 地址与工作区根可分别用 `CODEX_PLUS_WINDOWS_SSH_TARGET`、`CODEX_PLUS_WINDOWS_WORKSPACE_ROOT`、`CODEX_PLUS_MAC_SSH_TARGET`、`CODEX_PLUS_MAC_WORKSPACE_ROOT` 覆盖，不需要重新编译。
 
-这一层使同一 Tunnel 下的多个 runtime 变成对称 gateway：即使控制面把请求分配到另一台机器，显式目标工具仍会路由回正确主机，从协议层消除“同一工具调用有时进 Windows、有时进 Mac”的歧义。
+这一层使两个独立连接器都成为对称 gateway：显式目标工具始终路由到正确主机；即使某台机器暂时离线，另一台在线主机仍可通过 SSH 代为执行。
 
 MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本机全局与已配置工作区根的 `AGENTS` 指令链，并直接放入 MCP `initialize` 指令；嵌套目录或进程启动后变化的指令仍由工具按需刷新。初始化另外携带有界的 skill 元数据目录；完整 `SKILL.md` 与其资源分阶段按需加载。详细发现顺序、触发与路径边界见 `local-tools/docs/design/codex-context-sync.md`。
 

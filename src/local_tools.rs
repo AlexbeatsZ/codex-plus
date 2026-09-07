@@ -13,7 +13,7 @@ const COMPONENT_DIR: &str = "local-tools";
 #[cfg(windows)]
 const DEFAULT_TUNNEL_ID: &str = "tunnel_6a971ae4c9c0819192f1a813a4120a88";
 #[cfg(not(windows))]
-const DEFAULT_TUNNEL_ID: &str = "tunnel_6a9e6895ebd48191bfdfcae0aed40153";
+const DEFAULT_TUNNEL_ID: &str = "tunnel_6a9e8895ebd48191bfdfcae0aed40153";
 
 #[cfg(windows)]
 const DEFAULT_RUNTIME_ALIAS: &str = "codex-chat-local-tools-win";

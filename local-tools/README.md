@@ -19,7 +19,7 @@ Path-based tools enforce configured workspace roots. `run_command` starts inside
 
 ## Windows / Mac routing
 
-The same Tunnel may have both desktop runtimes online. Use `windows_*` for `Meta-OMEN` (`meta@192.168.31.214`, backup `meta@100.113.70.121`) and `mac_*` for the Mac (`meta@192.168.31.174`, backup `meta@100.64.2.94`). If the selected target is the machine currently serving the MCP request, the operation runs locally. Otherwise the gateway forwards a JSON request over passwordless OpenSSH to the matching host and executes the same `LocalOperations` there. This makes the target deterministic even when the Tunnel control plane dispatches different calls to different online runtimes.
+Windows and macOS use separate Secure MCP Tunnels by default, so ChatGPT can register and enable them as two independent connections. Both connections expose the same symmetric gateway: use `windows_*` for `Meta-OMEN` (`meta@192.168.31.214`, backup `meta@100.113.70.121`) and `mac_*` for the Mac (`meta@192.168.31.174`, backup `meta@100.64.2.94`). If the selected target is the machine currently serving the MCP request, the operation runs locally. Otherwise the gateway forwards a JSON request over passwordless OpenSSH to the matching host and executes the same `LocalOperations` there. This keeps the target deterministic and lets either online connection reach both hosts when SSH is available.
 
 `machine_info` reports both targets and which one is local to the current runtime. The unprefixed tools remain for backward compatibility and act on the runtime that happened to receive the request; they should not be used when host identity matters.
 
@@ -91,28 +91,30 @@ ChatGPT cannot directly dial a private loopback endpoint. Use OpenAI's Secure MC
 
 2. Create a tunnel in [OpenAI Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels). The runtime key principal needs **Tunnels Read + Use**; creating the tunnel needs **Tunnels Read + Manage**.
 3. Save the runtime key as `OPENAI_API_KEY` in the ignored `.env.local` file. The wrapper maps it to `CONTROL_PLANE_API_KEY` for `tunnel-client` and removes both variables before the MCP child starts.
-4. Initialize a project-local stdio profile, replacing the sample tunnel ID and workspace root:
+4. For dual-machine registration, give each host its own `TUNNEL_ID` and `TUNNEL_ALIAS` in `.env.local`. The launcher defaults are `codex-chat-local-tools-win` on Windows and `codex-chat-local-tools-mac` on macOS, but an explicit ID avoids deployment ambiguity.
+5. Initialize a project-local stdio profile, replacing the sample tunnel ID, alias, and workspace root:
 
    ```powershell
    # Use forward slashes: tunnel-client parses backslashes as command escapes.
    $mcpCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/Users/Meta/Project/Workspaces/codex-plus/local-tools/scripts/start-tunnel-mcp.ps1 -Root C:/Users/Meta/Project/Workspaces/codex-plus'
-   .\scripts\tunnel-client.ps1 init --sample sample_mcp_stdio_local --profile codex-chat-local-tools --profile-dir .\.tunnel-client --tunnel-id tunnel_0123456789abcdef0123456789abcdef --mcp-command $mcpCommand
+   $alias = 'codex-chat-local-tools-win'
+   .\scripts\tunnel-client.ps1 init --sample sample_mcp_stdio_local --profile $alias --profile-dir .\.tunnel-client --tunnel-id tunnel_0123456789abcdef0123456789abcdef --mcp-command $mcpCommand
    ```
 
-5. Validate the profile, then either run it in the foreground or let `codex-plus.exe` register the managed local runtime automatically:
+6. Validate the profile, then either run it in the foreground or let `codex-plus.exe` register the managed local runtime automatically:
 
    ```powershell
-   .\scripts\tunnel-client.ps1 doctor --profile codex-chat-local-tools --profile-dir .\.tunnel-client --explain
+   .\scripts\tunnel-client.ps1 doctor --profile $alias --profile-dir .\.tunnel-client --explain
 
    # Foreground
-   .\scripts\tunnel-client.ps1 run --profile codex-chat-local-tools --profile-dir .\.tunnel-client
+   .\scripts\tunnel-client.ps1 run --profile $alias --profile-dir .\.tunnel-client
 
    # Manual equivalent of the codex-plus startup integration
-   .\scripts\tunnel-client.ps1 runtimes connect --alias codex-chat-local-tools --tunnel-id tunnel_0123456789abcdef0123456789abcdef --profile codex-chat-local-tools --profile-dir .\.tunnel-client --mcp-command $mcpCommand --runtime-api-key env:CONTROL_PLANE_API_KEY
-   .\scripts\tunnel-client.ps1 runtimes status codex-chat-local-tools --json
+   .\scripts\tunnel-client.ps1 runtimes connect --alias $alias --tunnel-id tunnel_0123456789abcdef0123456789abcdef --profile $alias --profile-dir .\.tunnel-client --mcp-command $mcpCommand --runtime-api-key env:CONTROL_PLANE_API_KEY
+   .\scripts\tunnel-client.ps1 runtimes status $alias --json
    ```
 
-6. In ChatGPT/Codex Chat mode, enable Developer mode under **Settings → Security and login**, add an app using **Tunnel**, and review the exposed tools before enabling it. Multi-machine builds include the `windows_*`, `mac_*`, and `machine_info` routing tools in addition to the compatibility tools.
+7. In ChatGPT/Codex Chat mode, enable Developer mode under **Settings → Security and login**, then create one app per Tunnel using **Tunnel** under Connection. Use distinct names such as **Codex Local Tools - Windows** and **Codex Local Tools - Mac**, and review the exposed `windows_*`, `mac_*`, and `machine_info` tools before enabling either connection.
 
 The OpenAI API key used by `tunnel-client` is external to this server. Never commit `.env.local`, put the key in a script or profile, or pass it to the MCP process. The parent `codex-plus` launcher starts this managed runtime on explicit, attach, web-login, and platform login-startup paths.
 
