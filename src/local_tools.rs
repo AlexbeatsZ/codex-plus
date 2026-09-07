@@ -9,9 +9,42 @@ use serde_json::{Value, json};
 use crate::accounts::AccountPaths;
 
 const COMPONENT_DIR: &str = "local-tools";
-const PROFILE_NAME: &str = "codex-chat-local-tools";
-const RUNTIME_ALIAS: &str = "codex-chat-local-tools";
-const TUNNEL_ID: &str = "tunnel_6a971ae4c9c0819192f1a813a4120a88";
+
+#[cfg(windows)]
+const DEFAULT_TUNNEL_ID: &str = "tunnel_6a971ae4c9c0819192f1a813a4120a88";
+#[cfg(not(windows))]
+const DEFAULT_TUNNEL_ID: &str = "tunnel_6a9e6895ebd48191bfdfcae0aed40153";
+
+#[cfg(windows)]
+const DEFAULT_RUNTIME_ALIAS: &str = "codex-chat-local-tools-win";
+#[cfg(not(windows))]
+const DEFAULT_RUNTIME_ALIAS: &str = "codex-chat-local-tools-mac";
+
+fn resolve_tunnel_id(env_file: &Path) -> anyhow::Result<String> {
+    if let Some(explicit) = std::env::var("CODEX_PLUS_TUNNEL_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(explicit.trim().to_string());
+    }
+    if let Some(configured) = read_optional_env_value(env_file, "TUNNEL_ID")? {
+        return Ok(configured);
+    }
+    Ok(DEFAULT_TUNNEL_ID.to_string())
+}
+
+fn resolve_runtime_alias(env_file: &Path) -> anyhow::Result<String> {
+    if let Some(explicit) = std::env::var("CODEX_PLUS_TUNNEL_ALIAS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(explicit.trim().to_string());
+    }
+    if let Some(configured) = read_optional_env_value(env_file, "TUNNEL_ALIAS")? {
+        return Ok(configured);
+    }
+    Ok(DEFAULT_RUNTIME_ALIAS.to_string())
+}
 
 #[derive(Debug)]
 struct RuntimeStart {
@@ -69,6 +102,9 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
     let env_file = component_root.join(".env.local");
     let runtime_key = read_runtime_key(&env_file)?;
     let tunnel_http_proxy = read_optional_env_value(&env_file, "TUNNEL_HTTP_PROXY")?;
+    let tunnel_id = resolve_tunnel_id(&env_file)?;
+    let runtime_alias = resolve_runtime_alias(&env_file)?;
+    let profile_name = runtime_alias.clone();
     #[cfg(windows)]
     let mcp_command = format!(
         "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {} -Root {}",
@@ -89,15 +125,15 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
             "runtimes",
             "connect",
             "--alias",
-            RUNTIME_ALIAS,
+            &runtime_alias,
             "--admin-profile",
             "default",
             "--profile",
-            PROFILE_NAME,
+            &profile_name,
             "--profile-dir",
             ".tunnel-client",
             "--tunnel-id",
-            TUNNEL_ID,
+            &tunnel_id,
             "--mcp-command",
         ])
         .arg(&mcp_command)
@@ -213,6 +249,9 @@ fn read_runtime_key(path: &Path) -> anyhow::Result<OsString> {
 }
 
 fn read_optional_env_value(path: &Path, name: &str) -> anyhow::Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
     let contents = fs::read_to_string(path)
         .with_context(|| format!("无法读取 local-tools 配置文件 {}", path.display()))?;
     Ok(contents
@@ -301,5 +340,25 @@ mod tests {
             command_path(Path::new(r"\\?\C:\Project\local-tools\scripts\start.ps1")),
             "C:/Project/local-tools/scripts/start.ps1"
         );
+    }
+
+    #[test]
+    fn tunnel_resolvers_use_env_file_and_fall_back_to_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let env_file = directory.path().join(".env.local");
+
+        // Defaults
+        assert_eq!(resolve_tunnel_id(&env_file).unwrap(), DEFAULT_TUNNEL_ID);
+        assert_eq!(resolve_runtime_alias(&env_file).unwrap(), DEFAULT_RUNTIME_ALIAS);
+
+        // From file
+        fs::write(
+            &env_file,
+            "TUNNEL_ID='tunnel_custom_123'\nTUNNEL_ALIAS=codex-custom-alias\n",
+        )
+        .unwrap();
+
+        assert_eq!(resolve_tunnel_id(&env_file).unwrap(), "tunnel_custom_123");
+        assert_eq!(resolve_runtime_alias(&env_file).unwrap(), "codex-custom-alias");
     }
 }
