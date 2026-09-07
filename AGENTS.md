@@ -1,6 +1,6 @@
 # Goal
 
-`codex-plus` 是面向 Windows 与 macOS 官方 OpenAI Codex/ChatGPT 桌面应用的单一跨平台启动器。显式启动时，它必须确保仓库内 tool-only MCP 的 Secure MCP Tunnel managed runtime 可用、受控关闭旧 Codex/launcher、启动本机多 API broker、增量核对 provider 配置、带 CDP 参数重新启动官方应用，并把账户与 API 界面注入左下角个人资料菜单。Windows 与 Mac 的 local-tools 可同时在线；机器选择由模型通过 `windows_*` / `mac_*` 工具语义路由，不增加 UI 选择器。
+`codex-plus` 是面向 Windows 与 macOS 官方 OpenAI Codex/ChatGPT 桌面应用的单一跨平台启动器。显式启动时，它必须确保仓库内 tool-only MCP 的 Secure MCP Tunnel managed runtime 可用、受控关闭旧 Codex/launcher、启动本机多 API broker、增量核对 provider 配置、带 CDP 参数重新启动官方应用，并把账户与 API 界面注入左下角个人资料菜单。Windows 与 Mac 的 local-tools 可同时在线；既支持为每台机器分配独立的 Tunnel ID（Windows `codex-chat-local-tools-win` 与 macOS `codex-chat-local-tools-mac`）在 ChatGPT 侧同时作为两个独立 Connector 挂载，也支持在共享/跨机器场景下通过 `windows_*` / `mac_*` 工具语义路由与 SSH `host-rpc` 协同，不增加 UI 选择器。
 
 产品包含账户列表、异步额度、`auth.json` 导入、网页登录、账户切换/删除，多个 OpenAI 兼容 API、模型发现/别名/可见性和智能 provider 路由，以及 `local-tools/` MCP sidecar。不得增加独立管理页面、第二个产品可执行文件或其他 `codex-ppp` 功能。
 
@@ -9,7 +9,9 @@
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，版本 `0.3.0`。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-05 当前安装/进程识别验证版本为 `26.901.4073.0`，实际进程名为 `ChatGPT.exe`。
 - 2026-09-07 已验证 macOS 26.6.1 Apple Silicon：官方应用 `/Applications/ChatGPT.app` 版本 1.2026.238.5，可直接以 `Contents/MacOS/ChatGPT --remote-debugging-port=...` 启动并完成 CDP 注入；Mac release 位于 `/Users/meta/Project/Workspaces/codex-plus/target/release/codex-plus`，登录后台入口使用 LaunchAgent `com.codex-plus.launcher`，不会主动打开 ChatGPT 窗口。
-- `local-tools` 0.3.0 增加对称双机 gateway：Windows PC `meta@192.168.31.214`（备用 `meta@100.113.70.121`）与 Mac `meta@192.168.31.174`（备用 `meta@100.64.2.94`） 可同时挂在 alias `codex-chat-local-tools`。模型应使用 `windows_*` / `mac_*` 明确目标；若请求落到另一台 runtime，则通过双向免密 SSH 调用对端 `host-rpc`，继续复用相同 workspace/path/patch/timeout 边界。旧无前缀工具仅为兼容保留，机器身份重要时不得使用。
+- 2026-09-07 已实现双机独立 Tunnel 架构：`src/local_tools.rs` 支持从 `.env.local` 动态加载 `TUNNEL_ID` 与 `TUNNEL_ALIAS`（Windows 默认 alias `codex-chat-local-tools-win` / Tunnel ID `tunnel_6a971ae4c9c0819192f1a813a4120a88`；macOS 默认 alias `codex-chat-local-tools-mac` / Tunnel ID `tunnel_6a9e6895ebd48191bfdfcae0aed40153`）。两端不再共享单一 Tunnel，彻底避免 OpenAI control plane 随机分流；同时保留免密 SSH 远程 `host-rpc` 双向通信作为后备。
+- Windows 桌面端启动闪退与 `无法停止旧 Codex/codex-plus 实例` 根因解决：此前通过 OpenSSH 后台启动的 `codex-plus` 与子进程 `ChatGPT.exe` 运行在 Windows Session 0（非交互会话），导致桌面交互会话（Session 1）用户启动时因权限不足（0x80070005 Access Denied）无法终止 Session 0 实例而报错退出。已使用提权 taskkill 清理全部 Session 0 孤儿进程，恢复在交互式 Session 1 中正常启动与附加（CDP 9229 / broker 43121 均正常）。
+- macOS 端 managed runtime（PID 47193）与 stdio MCP Node（PID 47194）已就绪并持续轮询。注意：OpenAI Secure MCP Tunnel 的 API Key 存在工作区（Workspace）隔离限制；若 Tunnel 仅关联了 Business 工作区（如 `Xia`），但所使用的 API Key 生成自个人/默认工作区，control-plane 会返回 `401 tunnel_use_forbidden`。需在平台设置中将该 Tunnel 同时勾选关联默认工作区，或配置对应工作区的专有 Key。
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`；MCP 的上下文同步设计见 `local-tools/docs/design/codex-context-sync.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
 - 当前自动化基线：`cargo test` 44 项、DOM/路由测试 15 项、`local-tools` MCP 测试 8 项通过；Windows 回归测试同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。
@@ -24,6 +26,8 @@
 
 # Active Work
 
+- 2026-09-07 dual-tunnel architecture: 解耦 Windows 与 macOS 独立的 Secure MCP Tunnel 绑定。`src/local_tools.rs` 动态解析各端配置（Windows 默认 alias `codex-chat-local-tools-win` / ID `tunnel_6a971ae4c9c0819192f1a813a4120a88`；macOS 默认 alias `codex-chat-local-tools-mac` / ID `tunnel_6a9e6895ebd48191bfdfcae0aed40153`），单元测试 45 项全过。双端各自独立运行 Tunnel 守护进程与 MCP 实例，解决单 Tunnel 随机分流问题，使 ChatGPT Web / Desktop 端能够同时勾选并调用 Windows 与 Mac 工具。
+- 2026-09-07 Windows Session 0 冲突定位与修复：排查解决 OpenSSH 后台遗留 Session 0 `codex-plus` 与 `ChatGPT.exe` 拦截桌面启动导致的 `无法停止旧 Codex/codex-plus 实例` 与闪退问题，清理孤儿进程后桌面端 ChatGPT 正常接管启动与 CDP 注入。
 - 2026-09-07 multi-machine routing: `machine_info` plus symmetric `windows_*` / `mac_*` tools keep the target host deterministic even when both runtimes share one Tunnel; remote calls use passwordless SSH + stdin JSON `host-rpc`. Windows->Mac and Mac->Windows real command smokes both passed.
 
 - 2026-09-05 已修复同一 ChatGPT Business 工作区的不同席位因共享 `tokens.account_id` 而互相覆盖：本地 CRUD、活动判断、额度和 pending switch 改用席位级散列 `recordId`，API 请求仍发送真实工作区 ID；同工作区双席位与旧 vault 自动迁移回归通过。正式 release 已无重启附加到当前 Codex；实际 vault 已先备份到 `%LOCALAPPDATA%\codex-plus\backups\account-seat-migration-20260905-033703`，再导入桌面席位，运行中 `/accounts/list` 验证该 Business 工作区同时保留两个不同邮箱席位。
@@ -71,6 +75,9 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 
 # Durable Lessons
 
+- OpenAI Secure MCP Tunnel 为 1-to-1 Connector 模型：ChatGPT Web/Desktop 将每个 Tunnel ID 视为一个独立的 Connector。如果多台机器接入同一个 Tunnel ID，OpenAI 控制平面会进行负载均衡/随机分流。要让 ChatGPT 同时清晰显示并调用 Windows 与 Mac 的工具，必须在 OpenAI Platform 为两台机器创建独立的 Tunnel ID，并在 ChatGPT 中分别添加连接器。
+- Windows OpenSSH 服务运行在 Session 0：通过 SSH 或服务账户启动 Windows GUI 应用或 `codex-plus` 接管进程时，进程会落在非交互的 Session 0 中无界面运行；而登录用户的桌面属于 Session 1。当用户在桌面上再次启动应用时，Session 1 普通权限无法终止 Session 0 的高权限/隔离进程，导致报 `0x80070005 拒绝访问` 或 `无法停止旧 Codex/codex-plus 实例`。严禁通过后台 SSH 启动长期托管的 GUI 接管进程，调试 Windows 桌面应用必须确保在 Session 1 下运行。
+- OpenAI Tunnel 的工作区（Workspace）权限边界：在 OpenAI Platform 创建 Tunnel 时，必须确保该 Tunnel 勾选的工作区涵盖了生成 `OPENAI_API_KEY`（或 `CONTROL_PLANE_API_KEY`）的所在工作区。如果 Tunnel 仅分配给子工作区（如 Business 工作区 `Xia`），而 API Key 是在默认/个人工作区派生的，`tunnel-client` 在 control-plane 长轮询时会报 `401 tunnel_use_forbidden: Access denied: caller does not have permission to use this tunnel`。多环境使用的 Tunnel 应在后台编辑页面同时勾选关联默认工作区与目标工作区。
 - A shared Tunnel can dispatch requests to either online runtime, so the runtime that receives an MCP call must never be treated as the user's intended host. Host-sensitive tools need an explicit semantic target and must route to that host locally or over SSH; keeping only generic local tools makes simultaneous Windows/Mac runtimes nondeterministic.
 
 - Codex 顶部“编辑”菜单与个人资料菜单都可能包含文字为“设置”的 `role=menuitem`；账户/API 注入不能仅匹配该文字，必须要求同一直接父容器还包含原生“退出登录”。
