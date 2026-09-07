@@ -27,7 +27,7 @@
 # Active Work
 
 - 2026-09-07 dual-tunnel architecture: 解耦 Windows 与 macOS 独立的 Secure MCP Tunnel 绑定。`src/local_tools.rs` 动态解析各端配置（Windows 默认 alias `codex-chat-local-tools-win` / ID `tunnel_6a971ae4c9c0819192f1a813a4120a88`；macOS 默认 alias `codex-chat-local-tools-mac` / ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`），单元测试 45 项全过。双端各自独立运行 Tunnel 守护进程与 MCP 实例，解决单 Tunnel 随机分流问题，使 ChatGPT Web / Desktop 端能够同时勾选并调用 Windows 与 Mac 工具。
-- 2026-09-07 ChatGPT 注册收尾：现有 Windows 连接器已刷新并读取到 0.3.0 的上下文同步与双机工具元数据；Mac Tunnel runtime 已恢复远端连接，Mac 连接器创建表单已就绪，待用户确认持久授权后创建。按用户要求不从 Chat 模式主动发起工具调用。
+- 2026-09-07 ChatGPT 双连接器注册完成：现有 Windows 连接器已刷新并读取到 0.3.0 的上下文同步与双机工具元数据；`Xia Business` 已创建并连接 `Codex Local Tools - Mac`（应用 ID `asdk_app_6a9ed0ec880c819188b71e492ed3887f`），详情页确认包含 `machine_info`、完整 `windows_*` / `mac_*` 路由、Codex 上下文与 Skill 同步工具，`run_command` 超时上限为 45 秒。按用户要求未从 Chat 模式主动发起工具调用。
 - 2026-09-07 Windows Session 0 冲突定位与修复：排查解决 OpenSSH 后台遗留 Session 0 `codex-plus` 与 `ChatGPT.exe` 拦截桌面启动导致的 `无法停止旧 Codex/codex-plus 实例` 与闪退问题，清理孤儿进程后桌面端 ChatGPT 正常接管启动与 CDP 注入。
 - 2026-09-07 multi-machine routing: `machine_info` plus symmetric `windows_*` / `mac_*` tools keep the target host deterministic even when both runtimes share one Tunnel; remote calls use passwordless SSH + stdin JSON `host-rpc`. Windows->Mac and Mac->Windows real command smokes both passed.
 
