@@ -51,8 +51,14 @@ test(
   { skip: process.platform !== "win32" },
   async () => {
     const temporary = await makeAgentTemp("codex-chat-tunnel-stdio");
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    const minimalPath = [
+      path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
+      path.join(systemRoot, "System32"),
+      systemRoot,
+    ].join(";");
     const transport = new StdioClientTransport({
-      command: "powershell.exe",
+      command: path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       args: [
         "-NoProfile",
         "-ExecutionPolicy",
@@ -64,7 +70,8 @@ test(
       ],
       cwd: process.cwd(),
       env: {
-        ...process.env,
+        ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path")),
+        Path: minimalPath,
         CONTROL_PLANE_API_KEY: "test-control-plane-secret",
         OPENAI_API_KEY: "test-openai-secret",
         HTTPS_PROXY: "http://127.0.0.1:7897",
