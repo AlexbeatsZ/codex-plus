@@ -18,6 +18,15 @@ const MAX_RESOURCE_BYTES = 5_000_000;
 const MAX_IMAGE_BYTES = 10_000_000;
 const MAX_RESOURCE_INVENTORY = 1_000;
 
+// These bundled plugins rely on Codex-host-only runtime services that this
+// context bridge intentionally does not expose to ChatGPT Web. Advertising
+// their skills without those services creates a false-positive capability
+// (for example computer-use requires node_repl + @oai/sky).
+const CODEX_HOST_ONLY_PLUGIN_SKILL_SOURCES = new Set([
+  "computer-use@openai-bundled",
+  "unified-computer-use@openai-bundled",
+]);
+
 const IMAGE_MIME_TYPES: Record<string, string> = {
   ".gif": "image/gif",
   ".jpeg": "image/jpeg",
@@ -373,6 +382,7 @@ export class CodexContextSync {
     addSearchRoot(roots, path.join(path.dirname(this.codexHome), ".agents", "skills"), "user", "user", 2);
 
     for (const plugin of config.enabledPlugins) {
+      if (CODEX_HOST_ONLY_PLUGIN_SKILL_SOURCES.has(plugin)) continue;
       const split = plugin.lastIndexOf("@");
       if (split <= 0) continue;
       const name = plugin.slice(0, split);
@@ -381,6 +391,7 @@ export class CodexContextSync {
       if (versionRoot) addSearchRoot(roots, path.join(versionRoot, "skills"), "plugin", plugin, 2);
     }
     for (const remote of installedRemotePluginRoots(this.codexHome)) {
+      if (CODEX_HOST_ONLY_PLUGIN_SKILL_SOURCES.has(remote.source)) continue;
       addSearchRoot(roots, path.join(remote.versionRoot, "skills"), "plugin", remote.source, 2);
     }
 

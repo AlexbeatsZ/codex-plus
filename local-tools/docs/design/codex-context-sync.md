@@ -33,6 +33,8 @@ The service scans these sources without copying them:
 - remote plugins carrying a local installation marker;
 - explicitly configured extra roots.
 
+The bridge mirrors skill text, not arbitrary Codex plugin runtime services. Bundled Computer Use plugins are therefore excluded from Web skill discovery: their instructions require Codex-host-only `node_repl` / `@oai/sky` services that are not part of this MCP. This prevents a skill from being advertised as executable when only its documentation is available. Computer Use remains enabled and usable inside the local Codex host itself.
+
 A skill is valid only when `SKILL.md` has `name` and `description` frontmatter. Duplicate names remain separate and receive stable path-derived IDs, matching Codex's non-merge behavior. `[[skills.config]]` entries with `enabled = false` are excluded. `agents/openai.yaml` controls whether metadata participates in implicit matching.
 
 ## Progressive loading and triggers

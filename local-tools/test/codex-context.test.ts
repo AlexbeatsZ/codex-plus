@@ -16,12 +16,16 @@ test("Codex context sync layers AGENTS files and progressively loads skill resou
     const explicitSkill = path.join(codexHome, "skills", "explicit-skill");
     const linkedSkill = path.join(temporary.directory, "linked-skill-source");
     const projectSkill = path.join(workspaceRoot, ".agents", "skills", "project-skill");
+    const portablePluginSkill = path.join(codexHome, "plugins", "cache", "openai-bundled", "portable-plugin", "1.0.0", "skills", "portable-skill");
+    const computerUseSkill = path.join(codexHome, "plugins", "cache", "openai-bundled", "computer-use", "1.0.0", "skills", "computer-use");
     await Promise.all([
       mkdir(nested, { recursive: true }),
       mkdir(path.join(userSkill, "references"), { recursive: true }),
       mkdir(path.join(explicitSkill, "agents"), { recursive: true }),
       mkdir(linkedSkill, { recursive: true }),
       mkdir(projectSkill, { recursive: true }),
+      mkdir(portablePluginSkill, { recursive: true }),
+      mkdir(computerUseSkill, { recursive: true }),
     ]);
 
     await Promise.all([
@@ -51,6 +55,21 @@ test("Codex context sync layers AGENTS files and progressively loads skill resou
         "---\nname: project-skill\ndescription: Project-scoped workflow.\n---\n\nProject instructions.\n",
         "utf8",
       ),
+      writeFile(
+        path.join(portablePluginSkill, "SKILL.md"),
+        "---\nname: portable-skill\ndescription: Portable plugin workflow.\n---\n\nPortable instructions.\n",
+        "utf8",
+      ),
+      writeFile(
+        path.join(computerUseSkill, "SKILL.md"),
+        "---\nname: computer-use\ndescription: Requires Codex node_repl and @oai/sky.\n---\n\nUse node_repl.\n",
+        "utf8",
+      ),
+      writeFile(
+        path.join(codexHome, "config.toml"),
+        "[plugins.\"portable-plugin@openai-bundled\"]\nenabled = true\n\n[plugins.\"computer-use@openai-bundled\"]\nenabled = true\n",
+        "utf8",
+      ),
     ]);
     await symlink(linkedSkill, path.join(codexHome, "skills", "linked-skill"), process.platform === "win32" ? "junction" : "dir");
 
@@ -74,7 +93,8 @@ test("Codex context sync layers AGENTS files and progressively loads skill resou
     assert.match(initializationInstructions, /mandatory operating instructions/);
 
     const skills = context.listSkills(workspace, "src");
-    assert.deepEqual(skills.map((skill) => skill.name).sort(), ["explicit-skill", "linked-skill", "project-skill", "sample-skill"]);
+    assert.deepEqual(skills.map((skill) => skill.name).sort(), ["explicit-skill", "linked-skill", "portable-skill", "project-skill", "sample-skill"]);
+    assert.equal(skills.some((skill) => skill.name === "computer-use"), false);
     assert.equal(skills.find((skill) => skill.name === "explicit-skill")?.implicitInvocation, false);
     assert.equal(skills.find((skill) => skill.name === "project-skill")?.scope, "project");
 
