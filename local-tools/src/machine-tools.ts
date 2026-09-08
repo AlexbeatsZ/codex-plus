@@ -1,4 +1,4 @@
-﻿import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import { MachineOperations, type MachineId } from "./machine-operations.js";
 import { WorkspaceRegistry } from "./workspaces.js";
@@ -224,74 +224,5 @@ function registerToolsForMachine(server: McpServer, operations: MachineOperation
       annotations: readonlyAnnotations,
     },
     async ({ workspace, staged, path }) => textResult(await operations.gitDiff(machine, workspace, staged, path)),
-  );
-  server.registerTool(
-    `${prefix}_desktop_state`,
-    {
-      title: `Inspect ${label} desktop`,
-      description: `${route} Returns cursor position, displays, frontmost app, and visible windows. Use before coordinate-based interaction.`,
-      inputSchema: {},
-      annotations: readonlyAnnotations,
-    },
-    async () => textResult(await operations.desktopCall(machine, "state", {}) as object),
-  );
-
-  server.registerTool(
-    `${prefix}_desktop_screenshot`,
-    {
-      title: `Screenshot ${label} desktop`,
-      description: `${route} Captures the current desktop or a specific window from the interactive user session.`,
-      inputSchema: { width: z.number().int().min(320).max(3840).default(1440), windowId: z.number().int().optional() },
-      annotations: readonlyAnnotations,
-    },
-    async ({ width, windowId }) => {
-      const image = await operations.desktopCall<{ base64?: string; width: number; height: number; mimeType: string; hash: string; unchanged: boolean }>(machine, "screenshot", { width, windowId });
-      const { base64, ...structuredContent } = image;
-      return { content: [{ type: "text" as const, text: JSON.stringify(structuredContent, null, 2) }, ...(base64 ? [{ type: "image" as const, data: base64, mimeType: image.mimeType }] : [])], structuredContent };
-    },
-  );
-
-  server.registerTool(
-    `${prefix}_desktop_mouse`,
-    {
-      title: `Control ${label} mouse`,
-      description: `${route} Moves, clicks, drags, or scrolls the mouse in the interactive desktop session.`,
-      inputSchema: { action: z.enum(["move", "click", "double_click", "right_click", "drag", "scroll"]), x: z.number().optional(), y: z.number().optional(), deltaY: z.number().default(0), deltaX: z.number().default(0) },
-      annotations: mutatingAnnotations,
-    },
-    async (args) => textResult(await operations.desktopCall(machine, "mouse", args) as object),
-  );
-
-  server.registerTool(
-    `${prefix}_desktop_keyboard`,
-    {
-      title: `Control ${label} keyboard`,
-      description: `${route} Types literal text or sends one key/shortcut such as Ctrl+L or Cmd+L. Provide exactly one of text or key.`,
-      inputSchema: { text: z.string().optional(), key: z.string().optional(), repeat: z.number().int().min(1).max(100).default(1) },
-      annotations: mutatingAnnotations,
-    },
-    async (args) => textResult(await operations.desktopCall(machine, "keyboard", args) as object),
-  );
-
-  server.registerTool(
-    `${prefix}_desktop_find`,
-    {
-      title: `Find ${label} UI elements`,
-      description: `${route} Searches the accessibility tree for UI elements in a window. Prefer this over coordinates when available.`,
-      inputSchema: { windowId: z.number().int(), role: z.string().optional(), label: z.string().optional(), value: z.string().optional(), maxResults: z.number().int().min(1).max(100).default(20) },
-      annotations: readonlyAnnotations,
-    },
-    async (args) => textResult({ elements: await operations.desktopCall(machine, "find", args) as unknown[] }),
-  );
-
-  server.registerTool(
-    `${prefix}_desktop_ui_action`,
-    {
-      title: `Act on ${label} UI element`,
-      description: `${route} Activates a window, performs an accessibility action, or sets an accessibility element value.`,
-      inputSchema: { windowId: z.number().int(), operation: z.enum(["activate_window", "perform", "set_value"]), role: z.string().optional(), label: z.string().optional(), action: z.string().optional(), value: z.string().optional() },
-      annotations: mutatingAnnotations,
-    },
-    async (args) => textResult(await operations.desktopCall(machine, "ui_action", args) as object),
   );
 }

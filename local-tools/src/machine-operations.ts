@@ -115,14 +115,6 @@ export class MachineOperations {
     return this.remoteCall<{ diff: string; truncated: boolean }>(machine, "git_diff", { workspace, staged, path }, 35_000);
   }
 
-  async desktopCall<T>(machine: MachineId, operation: string, args: Record<string, unknown>, maxOutputBytes = 16_000_000): Promise<T> {
-    if (machine === localMachineId()) {
-      const { dispatchDesktopRequest } = await import("./desktop-ipc.js");
-      return await dispatchDesktopRequest({ operation, arguments: args }) as T;
-    }
-    return this.remoteCall<T>(machine, "desktop", { operation, arguments: args }, 35_000, maxOutputBytes);
-  }
-
   private async remoteCall<T>(machine: MachineId, operation: string, args: Record<string, unknown>, timeoutMs: number, maxOutputBytes = 2_000_000): Promise<T> {
     const target = machineDefinition(machine);
     const localRoot = this.registry.workspaces[0]?.root ?? process.cwd();
