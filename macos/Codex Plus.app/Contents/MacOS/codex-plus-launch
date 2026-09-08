@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+BIN="$ROOT/target/release/codex-plus"
+LOG="$HOME/Library/Logs/codex-plus-manual.log"
+if [[ ! -x "$BIN" ]]; then
+  /usr/bin/osascript -e 'display alert "Codex Plus" message "Missing target/release/codex-plus. Build the release binary first." as critical'
+  exit 1
+fi
+/usr/bin/nohup "$BIN" >>"$LOG" 2>&1 </dev/null &
+exit 0

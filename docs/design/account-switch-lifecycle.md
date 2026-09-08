@@ -13,6 +13,7 @@
 - 接管的 Codex 会以 Windows `BelowNormal` priority class 启动，避免官方 Electron 主进程出现持续 CPU 忙循环时以普通或更高线程优先级阻塞桌面输入；该设置仅作用于本次 Codex 进程树，不修改系统全局调度配置。
 - 一次受管 Codex 生命周期结束后，登录模式必须重新获取等待锁并回到静默监测；官方应用更新或自重启产生的新根进程也要再次接管。根进程发现必须排除带 `--type=` 的 Electron 子进程和 `codex app-server`，避免残留 crashpad/renderer 触发无意义重启。
 - 用户直接双击无参数 EXE 时，仍立即执行普通启动；它会停止等待中的登录实例，因此不会被后台 monitor 阻塞。
+- macOS LaunchAgent 必须设置 `AbandonProcessGroup=true`。账户 helper 是 launcher 的子进程，但切换事务会主动停止父 launcher；若由 `launchd` 默认管理整个进程组，父进程退出时 helper 也会被清理，事务会停在 `runtime.stop.started`，留下 `pending-action.json` 且无法重新拉起 launcher。
 
 ## 普通启动
 

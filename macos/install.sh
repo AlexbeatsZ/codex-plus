@@ -39,6 +39,8 @@ cat > "$PLIST" <<PLIST
   <false/>
   <key>ProcessType</key>
   <string>Background</string>
+  <key>AbandonProcessGroup</key>
+  <true/>
   <key>StandardOutPath</key>
   <string>$LOG</string>
   <key>StandardErrorPath</key>
