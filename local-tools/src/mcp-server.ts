@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
+import { actionAnnotations, approvalModeFromEnvironment, approvalModeInstruction } from "./approval-policy.js";
 import { CodexContextSync } from "./codex-context.js";
 import { LocalOperations } from "./operations.js";
 import { registerMachineTools } from "./machine-tools.js";
@@ -26,11 +27,13 @@ function textResult<T extends object>(structuredContent: T) {
 
 export function createMcpServer(registry: WorkspaceRegistry, codexContext: CodexContextSync): McpServer {
   const operations = new LocalOperations(registry);
+  const approvalMode = approvalModeFromEnvironment();
   const initializationInstructions = [
     "Multi-machine routing is enabled. The Windows PC is Meta-OMEN at meta@192.168.31.214 (backup meta@100.113.70.121) and the Mac is at meta@192.168.31.174 (backup meta@100.64.2.94). When the user names or clearly implies a host, always use the matching windows_* or mac_* tool. Those tools preserve the target even if this shared Tunnel request is handled by the other computer, forwarding over passwordless SSH when necessary. Generic workspace/read/run tools operate only on whichever runtime handled the request and are retained for compatibility; do not use them when machine identity matters.",
     "Operate only within configured workspaces. Call workspace_info first when the workspace is unclear. The synced AGENTS instructions below already apply; call codex_instructions again for nested directories or instructions changed after this MCP process started. When the user names a synced skill or the task matches one of the metadata descriptions attached to load_codex_skill, load that skill before acting; read referenced resources only when needed. Prefer read/search before edits and apply_patch for file changes. run_command executes with the current OS user's authority and is not an OS sandbox; use it only for commands needed by the user's task.",
+    approvalModeInstruction(approvalMode),
     codexContext.initializationInstructions(),
-  ].join("\n\n");
+  ].filter((instruction): instruction is string => Boolean(instruction)).join("\n\n");
   const server = new McpServer(
     { name: "codex-chat-local-tools", version: "0.3.0" },
     {
@@ -38,7 +41,7 @@ export function createMcpServer(registry: WorkspaceRegistry, codexContext: Codex
     },
   );
 
-  registerMachineTools(server, registry);
+  registerMachineTools(server, registry, approvalMode);
 
   server.registerTool(
     "workspace_info",
@@ -304,12 +307,7 @@ export function createMcpServer(registry: WorkspaceRegistry, codexContext: Codex
         applied: z.boolean(),
         paths: z.array(z.string()),
       },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
+      annotations: actionAnnotations("workspace-write", approvalMode),
     },
     async ({ workspace, patch }) => textResult(await operations.applyPatch(workspace, patch)),
   );
@@ -333,12 +331,7 @@ export function createMcpServer(registry: WorkspaceRegistry, codexContext: Codex
         timedOut: z.boolean(),
         truncated: z.boolean(),
       },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: false,
-        openWorldHint: true,
-      },
+      annotations: actionAnnotations("command", approvalMode),
     },
     async ({ workspace, cwd, command, timeoutSeconds }) =>
       textResult(await operations.runCommand(workspace, cwd, command, timeoutSeconds)),

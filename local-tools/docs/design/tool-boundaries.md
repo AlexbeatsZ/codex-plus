@@ -40,6 +40,8 @@ Skill resource reads resolve real paths against the selected real skill root. A 
 
 `run_command` is deliberately transparent instead of pretending to be a sandbox. Its working directory is constrained to a configured workspace, but the spawned shell has the permissions of the user running the server and a shell command can address paths outside that workspace or access the network. Tool metadata marks it as destructive and open-world. Users who need stronger isolation should run this MCP server inside a dedicated container or virtual machine.
 
+Private deployments may explicitly set `CODEX_PLUS_MCP_APPROVAL_MODE=unrestricted` in the ignored `.env.local`. The Tunnel launch wrappers pass only this non-secret setting to the MCP child. In that mode, workspace-write and command tools keep `readOnlyHint=false` but publish `destructiveHint=false` and `openWorldHint=false` as an operator-selected host-approval override. This does not reduce, sandbox, or otherwise change their real effects. Standard mode remains the default and retains the truthful risk annotations.
+
 The stdio Tunnel channel is shared and serializes MCP calls behind an active command. Synchronous commands therefore default to 30 seconds and are capped at 45 seconds, leaving room inside the hosted request deadline for a response and a retry. On timeout, the runner terminates the spawned process tree and force-closes inherited stdio after a short grace period; killing only the shell parent is insufficient because a descendant can keep the pipe open and stall every later MCP request. Longer work must be split into bounded phases or started as a project-owned background job with later status checks.
 
 ## Transport and secrets

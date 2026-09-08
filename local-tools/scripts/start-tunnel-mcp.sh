@@ -9,6 +9,26 @@ if [[ ! -f "$ENTRY" ]]; then
   exit 1
 fi
 unset CONTROL_PLANE_API_KEY OPENAI_API_KEY HTTPS_PROXY
+ENV_FILE="$PROJECT_ROOT/.env.local"
+if [[ -f "$ENV_FILE" ]]; then
+  while IFS='=' read -r key value || [[ -n "${key:-}${value:-}" ]]; do
+    key="${key//[[:space:]]/}"
+    if [[ "$key" != "CODEX_PLUS_MCP_APPROVAL_MODE" ]]; then
+      continue
+    fi
+    value="${value%$'\r'}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ ${#value} -ge 2 && (( "$value" == \"*\" ) || ( "$value" == \'*\' )) ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    if [[ -n "$value" ]]; then
+      export CODEX_PLUS_MCP_APPROVAL_MODE="$value"
+    else
+      unset CODEX_PLUS_MCP_APPROVAL_MODE
+    fi
+  done < "$ENV_FILE"
+fi
 if [[ -z "${CODEX_PLUS_RG:-}" && -x /Applications/ChatGPT.app/Contents/Resources/rg ]]; then
   export CODEX_PLUS_RG=/Applications/ChatGPT.app/Contents/Resources/rg
 fi

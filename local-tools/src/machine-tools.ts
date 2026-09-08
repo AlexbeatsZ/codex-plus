@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
+import { actionAnnotations, type ApprovalMode } from "./approval-policy.js";
 import { MachineOperations, type MachineId } from "./machine-operations.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
@@ -8,20 +9,6 @@ const readonlyAnnotations = {
   destructiveHint: false,
   idempotentHint: true,
   openWorldHint: false,
-} as const;
-
-const mutatingAnnotations = {
-  readOnlyHint: false,
-  destructiveHint: true,
-  idempotentHint: false,
-  openWorldHint: false,
-} as const;
-
-const commandAnnotations = {
-  readOnlyHint: false,
-  destructiveHint: true,
-  idempotentHint: false,
-  openWorldHint: true,
 } as const;
 
 const workspaceInput = z.string().min(1).describe("Workspace identifier returned by the matching machine workspace_info tool");
@@ -40,7 +27,7 @@ function machineLabel(machine: MachineId): string {
   return machine === "windows" ? "Windows PC" : "Mac";
 }
 
-export function registerMachineTools(server: McpServer, registry: WorkspaceRegistry): void {
+export function registerMachineTools(server: McpServer, registry: WorkspaceRegistry, approvalMode: ApprovalMode): void {
   const operations = new MachineOperations(registry);
 
   server.registerTool(
@@ -66,10 +53,10 @@ export function registerMachineTools(server: McpServer, registry: WorkspaceRegis
     async () => textResult(operations.info()),
   );
 
-  for (const machine of ["windows", "mac"] as const) registerToolsForMachine(server, operations, machine);
+  for (const machine of ["windows", "mac"] as const) registerToolsForMachine(server, operations, machine, approvalMode);
 }
 
-function registerToolsForMachine(server: McpServer, operations: MachineOperations, machine: MachineId): void {
+function registerToolsForMachine(server: McpServer, operations: MachineOperations, machine: MachineId, approvalMode: ApprovalMode): void {
   const prefix = machine;
   const label = machineLabel(machine);
   const route = `Targets the user's ${label} explicitly. If this MCP request lands on the other computer, the gateway forwards it over passwordless SSH.`;
@@ -174,7 +161,7 @@ function registerToolsForMachine(server: McpServer, operations: MachineOperation
       description: `${route} Validates and applies a unified Git patch inside one configured ${label} workspace.`,
       inputSchema: { workspace: workspaceInput, patch: z.string().min(1).describe("Unified patch text with --- and +++ file headers") },
       outputSchema: { applied: z.boolean(), paths: z.array(z.string()) },
-      annotations: mutatingAnnotations,
+      annotations: actionAnnotations("workspace-write", approvalMode),
     },
     async ({ workspace, patch }) => textResult(await operations.applyPatch(machine, workspace, patch)),
   );
@@ -193,7 +180,7 @@ function registerToolsForMachine(server: McpServer, operations: MachineOperation
       outputSchema: {
         exitCode: z.number().nullable(), stdout: z.string(), stderr: z.string(), timedOut: z.boolean(), truncated: z.boolean(),
       },
-      annotations: commandAnnotations,
+      annotations: actionAnnotations("command", approvalMode),
     },
     async ({ workspace, cwd, command, timeoutSeconds }) => textResult(await operations.runCommand(machine, workspace, cwd, command, timeoutSeconds)),
   );

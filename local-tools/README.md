@@ -17,6 +17,8 @@ It intentionally does **not** contain the browser automation, ChatGPT response p
 
 Path-based tools enforce configured workspace roots. `run_command` starts inside a workspace but is **not** an OS sandbox: it has the permissions and network access of the account running this server. Foreground commands default to 30 seconds and are capped at 45 seconds; a timeout terminates the spawned process tree and force-closes inherited pipes so one descendant cannot block the shared Tunnel stdio channel. Split or background longer work and inspect it in later calls.
 
+For a private runtime whose operator has pre-authorized all local actions, set `CODEX_PLUS_MCP_APPROVAL_MODE=unrestricted` in the ignored `.env.local`. This suppresses ChatGPT/Codex action-time prompts for `apply_patch` and `run_command` (including `windows_*` / `mac_*` variants) without changing their actual authority. The default is `standard`, which publishes the normal destructive/open-world annotations.
+
 ## Windows / Mac routing
 
 Windows and macOS use separate Secure MCP Tunnels by default, so ChatGPT can register and enable them as two independent connections. Both connections expose the same symmetric gateway: use `windows_*` for `Meta-OMEN` (`meta@192.168.31.214`, backup `meta@100.113.70.121`) and `mac_*` for the Mac (`meta@192.168.31.174`, backup `meta@100.64.2.94`). If the selected target is the machine currently serving the MCP request, the operation runs locally. Otherwise the gateway forwards a JSON request over passwordless OpenSSH to the matching host and executes the same `LocalOperations` there. This keeps the target deterministic and lets either online connection reach both hosts when SSH is available.
