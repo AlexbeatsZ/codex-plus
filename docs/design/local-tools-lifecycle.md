@@ -18,6 +18,12 @@ OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求
 
 这一层使两个独立连接器都成为对称 gateway：显式目标工具始终路由到正确主机；即使某台机器暂时离线，另一台在线主机仍可通过 SSH 代为执行。
 
+## 桌面交互桥
+
+桌面控制不新增 `desktop_*` MCP tool。ChatGPT 继续通过 `windows_run_command` / `mac_run_command` 调用 `local-tools/scripts/desktop-helper.mjs`；薄客户端再访问目标机登录会话里 `codex-plus` 自己监听的 loopback desktop helper。Windows 因此不会在 OpenSSH Session 0 中直接执行 GUI 输入，ChatGPT App 的 frozen tool schema 也无需因桌面 primitive 变化而重新发布。
+
+helper 的生命周期、截图缓存、Windows DPI 物理坐标、macOS Retina/TCC 和 UI Automation/Accessibility 约束详见 `docs/design/desktop-helper.md`。
+
 MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本机全局与已配置工作区根的 `AGENTS` 指令链，并直接放入 MCP `initialize` 指令；嵌套目录或进程启动后变化的指令仍由工具按需刷新。初始化另外携带有界的 skill 元数据目录；完整 `SKILL.md` 与其资源分阶段按需加载。详细发现顺序、触发与路径边界见 `local-tools/docs/design/codex-context-sync.md`。
 
 ## 启动时序

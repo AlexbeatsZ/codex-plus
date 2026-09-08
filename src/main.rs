@@ -4,6 +4,7 @@ mod accounts;
 mod broker;
 mod cdp;
 mod config;
+mod desktop;
 mod local_tools;
 #[allow(dead_code)]
 mod protocol_proxy;
@@ -67,9 +68,31 @@ async fn main_impl() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let paths = AccountPaths::discover()?;
     let mode = LaunchMode::from_args(&args);
+    let mut _desktop: Option<desktop::DesktopHandle> = None;
 
     if mode != LaunchMode::ApplyPendingAction {
         local_tools::ensure_runtime(&paths).await;
+        match desktop::start(&paths).await {
+            Ok(handle) => {
+                runtime::append_log(
+                    &paths,
+                    "launcher.desktop_helper.ready",
+                    json!({
+                        "preferredPort": desktop::PREFERRED_DESKTOP_PORT,
+                        "selectedPort": handle.port(),
+                        "fallback": handle.preferred_bind_error().is_some() && !handle.reused(),
+                        "reused": handle.reused(),
+                        "preferredBindError": handle.preferred_bind_error(),
+                    }),
+                );
+                _desktop = Some(handle);
+            }
+            Err(error) => runtime::append_log(
+                &paths,
+                "launcher.desktop_helper.failed",
+                json!({"message": error.to_string()}),
+            ),
+        }
     }
 
     match mode {
