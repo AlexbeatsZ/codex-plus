@@ -1,6 +1,7 @@
 import { stdin, stdout } from "node:process";
 import { LocalOperations } from "./operations.js";
 import { WorkspaceRegistry } from "./workspaces.js";
+import { callDesktopIpc } from "./desktop-ipc.js";
 
 interface HostRpcRequest {
   operation: string;
@@ -46,6 +47,8 @@ async function dispatch(request: HostRpcRequest) {
   const args = request.arguments ?? {};
 
   switch (request.operation) {
+    case "desktop":
+      return callDesktopIpc({ operation: stringArg(args, "operation"), arguments: typeof args.arguments === "object" && args.arguments ? args.arguments as Record<string, unknown> : {} });
     case "workspace_info":
       return { workspaces: registry.workspaces };
     case "list_files":

@@ -18,6 +18,15 @@ OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求
 
 这一层使两个独立连接器都成为对称 gateway：显式目标工具始终路由到正确主机；即使某台机器暂时离线，另一台在线主机仍可通过 SSH 代为执行。
 
+## 桌面控制
+
+- ChatGPT Web/Desktop 继续复用 Windows 与 macOS 已注册的两个 Secure MCP Tunnel，不创建第三套 Connector。每个目标主机暴露 `*_desktop_state`、`*_desktop_screenshot`、`*_desktop_mouse`、`*_desktop_keyboard`、`*_desktop_find`、`*_desktop_ui_action` 六组精简工具。
+- 底层复用 `@zavora-ai/computer-use-mcp` 的 Rust/N-API 原生模块，只采用截图、窗口、输入和 Accessibility/UI Automation 能力；不导入其文件系统、shell、会话管理等与现有 local-tools 重复的 MCP 工具面。
+- Windows 的 OpenSSH 位于 Session 0，因此跨机 GUI 请求不能直接在 SSH 子进程中注入输入。每个 Tunnel stdio MCP 在交互登录会话内监听仅回环地址的 desktop IPC；远端 `host-rpc` 只负责把 desktop 请求转给这个交互进程，鼠标、键盘、截图和 UIA 操作最终都在 Session 1 中执行。
+- macOS 同理让 GUI 操作在登录用户的 MCP 进程中执行，以便 Accessibility 与 Screen Recording 权限绑定到实际交互进程。系统权限未授予时必须返回明确错误，不能尝试绕过 TCC。
+- 坐标操作前优先调用 desktop state/screenshot；能通过 Accessibility/UIA 元素定位时优先 `desktop_find` + `desktop_ui_action`，降低分辨率、缩放和窗口移动造成的坐标脆弱性。
+- desktop IPC 默认绑定 `127.0.0.1:3345`，可通过 `CODEX_CHAT_DESKTOP_IPC_PORT` 覆盖；不对局域网开放。
+
 MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本机全局与已配置工作区根的 `AGENTS` 指令链，并直接放入 MCP `initialize` 指令；嵌套目录或进程启动后变化的指令仍由工具按需刷新。初始化另外携带有界的 skill 元数据目录；完整 `SKILL.md` 与其资源分阶段按需加载。详细发现顺序、触发与路径边界见 `local-tools/docs/design/codex-context-sync.md`。
 
 ## 启动时序

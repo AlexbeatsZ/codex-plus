@@ -7,6 +7,7 @@ import {
   extraSkillRootsFromEnvironment,
 } from "./codex-context.js";
 import { createMcpServer } from "./mcp-server.js";
+import { startDesktopIpcServer } from "./desktop-ipc.js";
 import { startHttpServer } from "./http.js";
 import { rootsFromEnvironment, WorkspaceRegistry } from "./workspaces.js";
 
@@ -30,9 +31,16 @@ async function main(): Promise<void> {
   });
 
   if (options.stdio) {
+    const desktopIpc = await startDesktopIpcServer().catch((error) => {
+      console.error(`desktop IPC unavailable: ${error instanceof Error ? error.message : error}`);
+      return undefined;
+    });
     const server = createMcpServer(registry, codexContext);
     await server.connect(new StdioServerTransport());
     console.error(`codex-chat-local-tools ready on stdio (${registry.workspaces.map((item) => item.id).join(", ")})`);
+    const shutdown = () => desktopIpc?.close(() => process.exit(0));
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
     return;
   }
 
