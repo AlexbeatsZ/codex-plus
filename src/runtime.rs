@@ -216,6 +216,8 @@ $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocatio
 
 pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<Child> {
     let mut command = codex_command(executable);
+    #[cfg(target_os = "macos")]
+    apply_codex_desktop_proxy(&mut command);
     command
         .arg(format!("--remote-debugging-port={debug_port}"))
         .arg(format!(
@@ -359,6 +361,61 @@ pub(crate) fn background_command(program: impl AsRef<OsStr>) -> Command {
         command.creation_flags(CREATE_NO_WINDOW);
     }
     command
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_codex_desktop_proxy(command: &mut Command) {
+    let Some(proxy) = resolve_codex_desktop_proxy() else {
+        return;
+    };
+    command
+        .env("HTTPS_PROXY", &proxy)
+        .env("HTTP_PROXY", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env("NO_PROXY", "127.0.0.1,localhost");
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_codex_desktop_proxy() -> Option<String> {
+    for key in ["CODEX_PLUS_CODEX_PROXY", "HTTPS_PROXY", "https_proxy"] {
+        if let Ok(value) = std::env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("local-tools/.env.local");
+    let text = fs::read_to_string(path).ok()?;
+    proxy_from_env_text(&text)
+}
+
+#[cfg(target_os = "macos")]
+fn proxy_from_env_text(text: &str) -> Option<String> {
+    let keys = [
+        "CODEX_DESKTOP_HTTP_PROXY",
+        "CODEX_CLI_HTTP_PROXY",
+        "TUNNEL_HTTP_PROXY",
+    ];
+    for key in keys {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((candidate, raw_value)) = line.split_once('=') else {
+                continue;
+            };
+            if candidate.trim() != key {
+                continue;
+            }
+            let value = raw_value.trim().trim_matches(['"', '\'']).trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn codex_command(program: impl AsRef<OsStr>) -> Command {
@@ -607,6 +664,22 @@ mod tests {
             OsStr::new("ChatGPT"),
             Some(Path::new("/Applications/Other.app/Contents/MacOS/ChatGPT"))
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn desktop_proxy_prefers_dedicated_key_then_cli_then_tunnel() {
+        assert_eq!(
+            proxy_from_env_text(
+                "TUNNEL_HTTP_PROXY=http://127.0.0.1:1\nCODEX_CLI_HTTP_PROXY=http://127.0.0.1:2\nCODEX_DESKTOP_HTTP_PROXY=http://127.0.0.1:3\n"
+            ),
+            Some("http://127.0.0.1:3".to_string())
+        );
+        assert_eq!(
+            proxy_from_env_text("TUNNEL_HTTP_PROXY='http://127.0.0.1:7897'\n"),
+            Some("http://127.0.0.1:7897".to_string())
+        );
+        assert_eq!(proxy_from_env_text("# empty\nOTHER=value\n"), None);
     }
 
     #[test]

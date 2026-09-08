@@ -38,7 +38,7 @@ function parseOptions(values) {
 
 function buildRequest(args) {
   const [command, subcommand, ...rest] = args;
-  if (!command) fail("Usage: desktop-helper.mjs <state|windows|screenshot|mouse|keyboard|uia|permissions> ...");
+  if (!command) fail("Usage: desktop-helper.mjs <state|windows|screenshot|mouse|keyboard|uia|permissions|codex-task> ...");
   if (command === "state") return { operation: "state" };
   if (command === "windows") return { operation: "windows" };
   if (command === "permissions") {
@@ -50,6 +50,27 @@ function buildRequest(args) {
       postEvents: options.postEvents === "true",
       screenCapture: options.screenCapture === "true",
     };
+  }
+  if (command === "codex-task") {
+    if (subcommand === "start64") {
+      if (rest.length !== 1) fail("codex-task start64 requires one base64 prompt");
+      return { operation: "codex_task_start", prompt: Buffer.from(rest[0], "base64").toString("utf8") };
+    }
+    if (subcommand === "status") {
+      if (rest.length < 1) fail("codex-task status requires a job id");
+      const [jobId, ...optionArgs] = rest;
+      const options = parseOptions(optionArgs);
+      return {
+        operation: "codex_task_status",
+        jobId,
+        ...(options.waitMs !== undefined ? { waitMs: parseNumber(options.waitMs, "waitMs") } : {}),
+      };
+    }
+    if (subcommand === "cancel") {
+      if (rest.length !== 1) fail("codex-task cancel requires a job id");
+      return { operation: "codex_task_cancel", jobId: rest[0] };
+    }
+    fail("codex-task requires start64, status, or cancel");
   }
   if (command === "screenshot") {
     const options = parseOptions(subcommand ? [subcommand, ...rest] : []);
@@ -123,6 +144,9 @@ async function main() {
   const request = buildRequest(process.argv.slice(2));
   let response;
   try {
+    const requestTimeout = request.operation === "codex_task_status"
+      ? Math.min(40_000, Math.max(15_000, Number(request.waitMs ?? 0) + 5_000))
+      : 15_000;
     response = await fetch(`http://127.0.0.1:${port}/v1/desktop`, {
       method: "POST",
       headers: {
@@ -130,7 +154,7 @@ async function main() {
         "content-type": "application/json",
       },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(requestTimeout),
     });
   } catch (error) {
     fail(`Desktop helper at 127.0.0.1:${port} is not reachable: ${error.message}`);

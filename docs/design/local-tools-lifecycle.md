@@ -20,7 +20,7 @@ OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求
 
 ## 桌面交互桥
 
-桌面控制不新增 `desktop_*` MCP tool。ChatGPT 继续通过 `windows_run_command` / `mac_run_command` 调用 `local-tools/scripts/desktop-helper.mjs`；薄客户端再访问目标机登录会话里 `codex-plus` 自己监听的 loopback desktop helper。Windows 因此不会在 OpenSSH Session 0 中直接执行 GUI 输入，ChatGPT App 的 frozen tool schema 也无需因桌面 primitive 变化而重新发布。
+桌面控制不新增 `desktop_*` MCP tool。ChatGPT 继续通过 `windows_run_command` / `mac_run_command` 调用 `local-tools/scripts/desktop-helper.mjs`；薄客户端再访问目标机登录会话里 `codex-plus` 自己监听的 loopback desktop helper。Windows 后端使用登录会话里的 Win32/SendInput/UIA，因此不会在 OpenSSH Session 0 中直接执行 GUI 输入；macOS 后端通过 `codex-task` 启动 OpenAI `codex exec --json --ephemeral`，把 GUI 观察与操作交给官方 `cua_repl` Computer Use。ChatGPT App 的 frozen tool schema 因此无需因桌面 primitive 变化而重新发布，也不需要维护可见的 Codex Desktop bridge thread。
 
 helper 的生命周期、截图缓存、Windows DPI 物理坐标、macOS Retina/TCC 和 UI Automation/Accessibility 约束详见 `docs/design/desktop-helper.md`。
 

@@ -25,6 +25,10 @@ const WINDOWS_SCRIPT: &str = include_str!("../desktop/windows.ps1");
 #[cfg(target_os = "macos")]
 const MACOS_SCRIPT: &str = include_str!("../desktop/macos.jxa");
 
+#[cfg(target_os = "macos")]
+#[path = "desktop_codex_task.rs"]
+mod codex_task;
+
 #[derive(Clone)]
 struct DesktopState {
     state_dir: Arc<PathBuf>,
@@ -174,6 +178,18 @@ fn execute_request(mut request: Value, state_dir: &Path) -> anyhow::Result<Value
             unsafe { CGRequestScreenCaptureAccess() };
         }
         return Ok(macos_permission_status());
+    }
+    #[cfg(target_os = "macos")]
+    if operation == "codex_task_start" {
+        return codex_task::start(&request, state_dir);
+    }
+    #[cfg(target_os = "macos")]
+    if operation == "codex_task_status" {
+        return codex_task::status(&request, state_dir);
+    }
+    #[cfg(target_os = "macos")]
+    if operation == "codex_task_cancel" {
+        return codex_task::cancel(&request, state_dir);
     }
     if operation == "screenshot" {
         let capture_dir = state_dir.join("desktop");
