@@ -7,6 +7,7 @@
 # Current State
 
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，版本 `0.3.0`。
+- 2026-09-08 持久状态已从平台用户数据目录迁入仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`pending-action.json`、`launcher.lock` 与 `codex-plus.log` 均随项目目录移动，不再使用 Windows `%LOCALAPPDATA%\codex-plus`、macOS `~/Library/Application Support/codex-plus` 或 Linux `~/.local/state/codex-plus`。Windows 现有状态已完成原位迁移并以 `--attach-existing` 在 Session 1 验证账户状态、broker 与 CDP 注入继续正常。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-05 当前安装/进程识别验证版本为 `26.901.4073.0`，实际进程名为 `ChatGPT.exe`。
 - 2026-09-07 已验证 macOS 26.6.1 Apple Silicon：官方应用 `/Applications/ChatGPT.app` 版本 1.2026.238.5，可直接以 `Contents/MacOS/ChatGPT --remote-debugging-port=...` 启动并完成 CDP 注入；Mac release 位于 `/Users/meta/Project/Workspaces/codex-plus/target/release/codex-plus`，登录后台入口使用 LaunchAgent `com.codex-plus.launcher`，不会主动打开 ChatGPT 窗口。
 - 2026-09-07 已实现双机独立 Tunnel 架构：`src/local_tools.rs` 支持从 `.env.local` 动态加载 `TUNNEL_ID` 与 `TUNNEL_ALIAS`（Windows 默认 alias `codex-chat-local-tools-win` / Tunnel ID `tunnel_6a971ae4c9c0819192f1a813a4120a88`；macOS 默认 alias `codex-chat-local-tools-mac` / Tunnel ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`）。两端不再共享单一 Tunnel，彻底避免 OpenAI control plane 随机分流；同时保留免密 SSH 远程 `host-rpc` 双向通信作为后备。
@@ -31,7 +32,7 @@
 - 2026-09-07 Windows Session 0 冲突定位与修复：排查解决 OpenSSH 后台遗留 Session 0 `codex-plus` 与 `ChatGPT.exe` 拦截桌面启动导致的 `无法停止旧 Codex/codex-plus 实例` 与闪退问题，清理孤儿进程后桌面端 ChatGPT 正常接管启动与 CDP 注入。
 - 2026-09-07 multi-machine routing: `machine_info` plus symmetric `windows_*` / `mac_*` tools keep the target host deterministic even when both runtimes share one Tunnel; remote calls use passwordless SSH + stdin JSON `host-rpc`. Windows->Mac and Mac->Windows real command smokes both passed.
 
-- 2026-09-05 已修复同一 ChatGPT Business 工作区的不同席位因共享 `tokens.account_id` 而互相覆盖：本地 CRUD、活动判断、额度和 pending switch 改用席位级散列 `recordId`，API 请求仍发送真实工作区 ID；同工作区双席位与旧 vault 自动迁移回归通过。正式 release 已无重启附加到当前 Codex；实际 vault 已先备份到 `%LOCALAPPDATA%\codex-plus\backups\account-seat-migration-20260905-033703`，再导入桌面席位，运行中 `/accounts/list` 验证该 Business 工作区同时保留两个不同邮箱席位。
+- 2026-09-05 已修复同一 ChatGPT Business 工作区的不同席位因共享 `tokens.account_id` 而互相覆盖：本地 CRUD、活动判断、额度和 pending switch 改用席位级散列 `recordId`，API 请求仍发送真实工作区 ID；同工作区双席位与旧 vault 自动迁移回归通过。正式 release 已无重启附加到当前 Codex；迁移时曾为回滚创建任务级 vault 副本，但误放在 `%LOCALAPPDATA%\codex-plus\backups\account-seat-migration-20260905-033703`，该副本现已清理。此类由助手为当前任务创建的备份、快照、原文件副本或回滚副本一律视为临时产物，Windows 必须放入 `%LOCALAPPDATA%\Temp\.agents\<任务名>\`，不得因用途是“备份”而写入程序、配置、项目目录或自建 `backups` 目录；只有用户明确要求长期保留或程序正式备份机制要求该位置时例外。随后导入桌面席位，运行中 `/accounts/list` 验证该 Business 工作区同时保留两个不同邮箱席位。
 
 - 0.3.0 已把 `codex-chat-local-tools` 合并为仓库内 `local-tools/` 组件，并在正常、attach、网页登录和登录自启入口幂等启动 managed runtime；旧 runtime 已热迁移到新目录，health/ready HTTP 200、doctor 通过、stdio MCP 报告 workspace `codex-plus`，当前 Codex 通过新 release 的 attach 模式保持注入，未为迁移重启用户窗口。最终验收在外部持有 launcher 锁时停止 runtime 并执行正式 release 的 `--login-startup`：日志记录 `alreadyRunning=false` 后 runtime 恢复为唯一 ready 进程，随后因锁安全退出，证明登录入口会实际拉起 MCP 且不会产生重复实例。
 - `local-tools` 0.3.0 已把本机 Codex 可见的全局与已配置工作区根 `AGENTS` 指令注入 MCP 初始化上下文，使客户端在调用工具前即可看到；嵌套目录和运行中变化继续通过 `codex_instructions` 读取。Skills 仍先暴露有界元数据用于隐式/显式匹配，再加载单个完整 `SKILL.md` 和被引用资源。OpenAI 平台内部提示词不属于同步范围。
@@ -49,7 +50,7 @@
 - 0.2.0 已统一将账户切换 helper、重启 launcher、Codex 与安装位置查询 PowerShell 作为无窗口后台子进程启动，避免切换后重新解析 Store 安装路径时闪现命令行窗口。
 - 0.2.0 已修复 WSL mirrored networking/FSE 将动态范围内的固定 broker 端口 57321 标记为不可绑定、导致登录接管在 `broker` 阶段以 `WSAEACCES 10013` 退出的问题；broker 改用动态范围外的首选端口 43121，任何绑定失败都直接持有系统分配的备用 listener，并用实际端口更新配置。
 - 0.2.0 已为账户列表增加非当前账户删除；Rust 层拒绝删除当前实时账户。列表底部同时提供 `auth.json` 导入和网页登录，后者用 pending action 保存当前账户、移走实时凭据、重启到原生登录页并自动捕获新账户。
-- 2026-08-14 已清理状态库中 142 条明确的临时记录（子代理、CLI/exec/未知来源及一条已确认的翻译校对侧会话），活动目录由 377 条降至 307 条；可恢复备份位于 `%LOCALAPPDATA%\codex-plus\backups\thread-cleanup-20260814-195125`。正常用户任务未按项目目录批量删除。
+- 2026-08-14 已清理状态库中 142 条明确的临时记录（子代理、CLI/exec/未知来源及一条已确认的翻译校对侧会话），活动目录由 377 条降至 307 条；当时曾为回滚创建任务级副本，但误放在 `%LOCALAPPDATA%\codex-plus\backups\thread-cleanup-20260814-195125`，该副本现已清理，今后此类回滚副本必须使用 `%LOCALAPPDATA%\Temp\.agents\<任务名>\`。正常用户任务未按项目目录批量删除。
 - 路由脚本的 `thread/list.modelProviders` 已从旧空数组改为 Codex `26.810.4967.0` 原生使用的 `null` 全 provider 哨兵，并保留 `sourceKinds`、`archived` 等范围参数，避免再次放大共享会话目录。
 - Codex `26.803.10989.0` 不支持已有任务跨 provider 原地切换；v16 候选改为发送前明确询问，确认后以目标 model/provider 执行 `thread/fork`，验证新任务 provider，再把本条消息发送到继承完整历史的分支并自动导航。取消或验证失败时不发送且原任务不变。2026-08-14 审阅当前 `26.810.4967.0` app.asar 后，已移除普通 fork fallback 错误使用的 `excludeTurns: true`；自动化与隔离构建通过，尚未实机验收。
 

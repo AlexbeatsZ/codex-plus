@@ -15,6 +15,32 @@ use uuid::Uuid;
 
 const MAX_AUTH_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
+const PROJECT_STATE_DIR: &str = ".codex-plus";
+
+fn discover_project_state_dir() -> anyhow::Result<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("CODEX_PLUS_STATE_DIR").filter(|value| !value.is_empty())
+    {
+        return Ok(PathBuf::from(explicit));
+    }
+
+    if let Ok(executable) = std::env::current_exe() {
+        for ancestor in executable.ancestors() {
+            if ancestor.file_name().is_some_and(|name| name == "target")
+                && let Some(repository_root) = ancestor.parent()
+            {
+                return Ok(repository_root.join(PROJECT_STATE_DIR));
+            }
+        }
+    }
+
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if repository_root.is_dir() {
+        return Ok(repository_root.join(PROJECT_STATE_DIR));
+    }
+
+    anyhow::bail!("无法定位 codex-plus 项目目录")
+}
 
 #[derive(Debug, Error)]
 pub enum AccountError {
@@ -66,28 +92,7 @@ impl AccountPaths {
                     .map(|value| PathBuf::from(value).join(".codex"))
             })
             .ok_or_else(|| anyhow::anyhow!("无法定位 Codex 用户目录"))?;
-        #[cfg(windows)]
-        let state_dir = std::env::var_os("LOCALAPPDATA")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("无法定位 LOCALAPPDATA"))?
-            .join("codex-plus");
-        #[cfg(target_os = "macos")]
-        let state_dir = std::env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("无法定位 HOME"))?
-            .join("Library")
-            .join("Application Support")
-            .join("codex-plus");
-        #[cfg(all(not(windows), not(target_os = "macos")))]
-        let state_dir = std::env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("无法定位 HOME"))?
-            .join(".local")
-            .join("state")
-            .join("codex-plus");
+        let state_dir = discover_project_state_dir()?;
         Ok(Self {
             codex_home,
             state_dir,
