@@ -58,6 +58,15 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
         "mac_search_text",
         "mac_workspace_info",
         "machine_info",
+        "omen_apply_patch",
+        "omen_git_diff",
+        "omen_git_status",
+        "omen_list_files",
+        "omen_read_file",
+        "omen_read_image",
+        "omen_run_command",
+        "omen_search_text",
+        "omen_workspace_info",
         "read_codex_skill_resource",
         "read_file",
         "read_image",
@@ -72,15 +81,6 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
         "rog_workspace_info",
         "run_command",
         "search_text",
-        "windows_apply_patch",
-        "windows_git_diff",
-        "windows_git_status",
-        "windows_list_files",
-        "windows_read_file",
-        "windows_read_image",
-        "windows_run_command",
-        "windows_search_text",
-        "windows_workspace_info",
         "workspace_info",
       ],
     );
@@ -90,7 +90,7 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
     assert.equal(timeoutSchema?.maximum, 45);
 
     const machineInfo = await client.callTool({ name: "machine_info", arguments: {} });
-    const localMachine = process.platform === "win32" ? "windows" : "mac";
+    const localMachine = process.platform === "win32" ? "omen" : "mac";
     assert.equal((machineInfo.structuredContent as { localMachine: string }).localMachine, localMachine);
     const routedMachines = (machineInfo.structuredContent as {
       machines: Array<{ id: string; sshTarget: string; sshFallbackTarget: string }>;
@@ -98,7 +98,7 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
     assert.deepEqual(
       routedMachines.map(({ id, sshTarget, sshFallbackTarget }) => ({ id, sshTarget, sshFallbackTarget })),
       [
-        { id: "windows", sshTarget: "meta@192.168.31.214", sshFallbackTarget: "meta@100.113.70.121" },
+        { id: "omen", sshTarget: "meta@192.168.31.214", sshFallbackTarget: "meta@100.113.70.121" },
         { id: "mac", sshTarget: "meta@192.168.31.174", sshFallbackTarget: "meta@100.64.2.94" },
         { id: "rog", sshTarget: "meta@192.168.31.32", sshFallbackTarget: "meta@100.106.169.46" },
       ],

@@ -2,7 +2,7 @@ import { LocalOperations } from "./operations.js";
 import { runProcess } from "./process.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
-export type MachineId = "windows" | "mac" | "rog";
+export type MachineId = "omen" | "mac" | "rog";
 
 export interface MachineDefinition {
   id: MachineId;
@@ -20,8 +20,8 @@ interface HostRpcResponse<T> {
 }
 
 const DEFAULT_MACHINES: Record<MachineId, MachineDefinition> = {
-  windows: {
-    id: "windows",
+  omen: {
+    id: "omen",
     label: "Windows PC Meta-OMEN",
     platform: "win32",
     sshTarget: "meta@192.168.31.214",
@@ -48,7 +48,7 @@ const DEFAULT_MACHINES: Record<MachineId, MachineDefinition> = {
 
 export function machineDefinition(id: MachineId): MachineDefinition {
   const base = DEFAULT_MACHINES[id];
-  const prefix = id === "windows" ? "CODEX_PLUS_WINDOWS" : id === "mac" ? "CODEX_PLUS_MAC" : "CODEX_PLUS_ROG";
+  const prefix = id === "omen" ? "CODEX_PLUS_OMEN" : id === "mac" ? "CODEX_PLUS_MAC" : "CODEX_PLUS_ROG";
   return {
     ...base,
     sshTarget: process.env[`${prefix}_SSH_TARGET`] ?? base.sshTarget,
@@ -59,8 +59,8 @@ export function machineDefinition(id: MachineId): MachineDefinition {
 
 export function localMachineId(): MachineId {
   const configured = process.env.CODEX_PLUS_MACHINE_ID?.trim().toLowerCase();
-  if (configured === "windows" || configured === "mac" || configured === "rog") return configured;
-  if (process.platform === "win32") return "windows";
+  if (configured === "omen" || configured === "mac" || configured === "rog") return configured;
+  if (process.platform === "win32") return "omen";
   if (process.platform === "darwin") return "mac";
   throw new Error(`Unsupported gateway platform: ${process.platform}`);
 }
@@ -76,7 +76,7 @@ export class MachineOperations {
     const localId = localMachineId();
     return {
       localMachine: localId,
-      machines: (["windows", "mac", "rog"] as const).map((id) => ({ ...machineDefinition(id), local: id === localId })),
+      machines: (["omen", "mac", "rog"] as const).map((id) => ({ ...machineDefinition(id), local: id === localId })),
     };
   }
 

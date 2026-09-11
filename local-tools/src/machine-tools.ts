@@ -24,7 +24,7 @@ function textResult<T extends object>(structuredContent: T) {
 }
 
 function machineLabel(machine: MachineId): string {
-  if (machine === "windows") return "Windows PC Meta-OMEN";
+  if (machine === "omen") return "Windows PC Meta-OMEN";
   if (machine === "rog") return "Windows ROG Meta-ROGAlly";
   return "Mac";
 }
@@ -39,9 +39,9 @@ export function registerMachineTools(server: McpServer, registry: WorkspaceRegis
       description: "Shows the Meta-OMEN, Mac, and ROG targets known to this gateway, including which machine received the current MCP process. Use when the target host is unclear.",
       inputSchema: {},
       outputSchema: {
-        localMachine: z.enum(["windows", "mac", "rog"]),
+        localMachine: z.enum(["omen", "mac", "rog"]),
         machines: z.array(z.object({
-          id: z.enum(["windows", "mac", "rog"]),
+          id: z.enum(["omen", "mac", "rog"]),
           label: z.string(),
           platform: z.enum(["win32", "darwin"]),
           sshTarget: z.string(),
@@ -55,7 +55,7 @@ export function registerMachineTools(server: McpServer, registry: WorkspaceRegis
     async () => textResult(operations.info()),
   );
 
-  for (const machine of ["windows", "mac", "rog"] as const) registerToolsForMachine(server, operations, machine, approvalMode);
+  for (const machine of ["omen", "mac", "rog"] as const) registerToolsForMachine(server, operations, machine, approvalMode);
 }
 
 function registerToolsForMachine(server: McpServer, operations: MachineOperations, machine: MachineId, approvalMode: ApprovalMode): void {
