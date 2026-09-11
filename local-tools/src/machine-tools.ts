@@ -24,7 +24,9 @@ function textResult<T extends object>(structuredContent: T) {
 }
 
 function machineLabel(machine: MachineId): string {
-  return machine === "windows" ? "Windows PC" : "Mac";
+  if (machine === "windows") return "Windows PC Meta-OMEN";
+  if (machine === "rog") return "Windows ROG Meta-ROGAlly";
+  return "Mac";
 }
 
 export function registerMachineTools(server: McpServer, registry: WorkspaceRegistry, approvalMode: ApprovalMode): void {
@@ -34,12 +36,12 @@ export function registerMachineTools(server: McpServer, registry: WorkspaceRegis
     "machine_info",
     {
       title: "List routed machines",
-      description: "Shows the Windows PC and Mac targets known to this gateway, including which machine received the current MCP process. Use when the target host is unclear.",
+      description: "Shows the Meta-OMEN, Mac, and ROG targets known to this gateway, including which machine received the current MCP process. Use when the target host is unclear.",
       inputSchema: {},
       outputSchema: {
-        localMachine: z.enum(["windows", "mac"]),
+        localMachine: z.enum(["windows", "mac", "rog"]),
         machines: z.array(z.object({
-          id: z.enum(["windows", "mac"]),
+          id: z.enum(["windows", "mac", "rog"]),
           label: z.string(),
           platform: z.enum(["win32", "darwin"]),
           sshTarget: z.string(),
@@ -53,13 +55,13 @@ export function registerMachineTools(server: McpServer, registry: WorkspaceRegis
     async () => textResult(operations.info()),
   );
 
-  for (const machine of ["windows", "mac"] as const) registerToolsForMachine(server, operations, machine, approvalMode);
+  for (const machine of ["windows", "mac", "rog"] as const) registerToolsForMachine(server, operations, machine, approvalMode);
 }
 
 function registerToolsForMachine(server: McpServer, operations: MachineOperations, machine: MachineId, approvalMode: ApprovalMode): void {
   const prefix = machine;
   const label = machineLabel(machine);
-  const route = `Targets the user's ${label} explicitly. If this MCP request lands on the other computer, the gateway forwards it over passwordless SSH.`;
+  const route = `Targets the user's ${label} explicitly. If this MCP request lands on another computer, the gateway forwards it over passwordless SSH.`;
 
   server.registerTool(
     `${prefix}_workspace_info`,
@@ -174,7 +176,7 @@ function registerToolsForMachine(server: McpServer, operations: MachineOperation
       inputSchema: {
         workspace: workspaceInput,
         cwd: relativePathInput.describe("Working directory relative to the workspace root"),
-        command: z.string().min(1).describe(machine === "windows" ? "PowerShell command for the Windows PC" : "Bash command for the Mac"),
+        command: z.string().min(1).describe(machine === "mac" ? "Bash command for the Mac" : `PowerShell command for the ${label}`),
         timeoutSeconds: z.number().int().min(1).max(RUN_COMMAND_MAX_TIMEOUT_SECONDS).default(RUN_COMMAND_DEFAULT_TIMEOUT_SECONDS),
       },
       outputSchema: {

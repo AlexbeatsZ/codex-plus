@@ -61,6 +61,15 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
         "read_codex_skill_resource",
         "read_file",
         "read_image",
+        "rog_apply_patch",
+        "rog_git_diff",
+        "rog_git_status",
+        "rog_list_files",
+        "rog_read_file",
+        "rog_read_image",
+        "rog_run_command",
+        "rog_search_text",
+        "rog_workspace_info",
         "run_command",
         "search_text",
         "windows_apply_patch",
@@ -91,6 +100,7 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
       [
         { id: "windows", sshTarget: "meta@192.168.31.214", sshFallbackTarget: "meta@100.113.70.121" },
         { id: "mac", sshTarget: "meta@192.168.31.174", sshFallbackTarget: "meta@100.64.2.94" },
+        { id: "rog", sshTarget: "meta@192.168.31.32", sshFallbackTarget: "meta@100.106.169.46" },
       ],
     );
     const routedRead = await client.callTool({

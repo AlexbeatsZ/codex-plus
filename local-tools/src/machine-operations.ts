@@ -2,7 +2,7 @@ import { LocalOperations } from "./operations.js";
 import { runProcess } from "./process.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
-export type MachineId = "windows" | "mac";
+export type MachineId = "windows" | "mac" | "rog";
 
 export interface MachineDefinition {
   id: MachineId;
@@ -36,11 +36,19 @@ const DEFAULT_MACHINES: Record<MachineId, MachineDefinition> = {
     sshFallbackTarget: "meta@100.64.2.94",
     workspaceRoot: "/Users/meta/Project/Workspaces/codex-plus",
   },
+  rog: {
+    id: "rog",
+    label: "Windows ROG Meta-ROGAlly",
+    platform: "win32",
+    sshTarget: "meta@192.168.31.32",
+    sshFallbackTarget: "meta@100.106.169.46",
+    workspaceRoot: "C:/Users/Meta/Project/Workspaces/codex-plus",
+  },
 };
 
 export function machineDefinition(id: MachineId): MachineDefinition {
   const base = DEFAULT_MACHINES[id];
-  const prefix = id === "windows" ? "CODEX_PLUS_WINDOWS" : "CODEX_PLUS_MAC";
+  const prefix = id === "windows" ? "CODEX_PLUS_WINDOWS" : id === "mac" ? "CODEX_PLUS_MAC" : "CODEX_PLUS_ROG";
   return {
     ...base,
     sshTarget: process.env[`${prefix}_SSH_TARGET`] ?? base.sshTarget,
@@ -50,6 +58,8 @@ export function machineDefinition(id: MachineId): MachineDefinition {
 }
 
 export function localMachineId(): MachineId {
+  const configured = process.env.CODEX_PLUS_MACHINE_ID?.trim().toLowerCase();
+  if (configured === "windows" || configured === "mac" || configured === "rog") return configured;
   if (process.platform === "win32") return "windows";
   if (process.platform === "darwin") return "mac";
   throw new Error(`Unsupported gateway platform: ${process.platform}`);
@@ -66,7 +76,7 @@ export class MachineOperations {
     const localId = localMachineId();
     return {
       localMachine: localId,
-      machines: (["windows", "mac"] as const).map((id) => ({ ...machineDefinition(id), local: id === localId })),
+      machines: (["windows", "mac", "rog"] as const).map((id) => ({ ...machineDefinition(id), local: id === localId })),
     };
   }
 
