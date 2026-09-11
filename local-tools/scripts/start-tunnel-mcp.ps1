@@ -40,7 +40,7 @@ function Get-LocalEnvValue {
 $envFile = Join-Path (Split-Path $PSScriptRoot -Parent) ".env.local"
 if (Test-Path $envFile) {
     $envLines = @(Get-Content $envFile)
-    foreach ($key in @("CODEX_PLUS_MCP_APPROVAL_MODE", "CODEX_PLUS_MACHINE_ID")) {
+    foreach ($key in @("CODEX_PLUS_MCP_APPROVAL_MODE", "CODEX_PLUS_MACHINE_ID", "CODEX_PLUS_NODE")) {
         $value = Get-LocalEnvValue -Lines $envLines -Name $key
         if ($value) {
             [Environment]::SetEnvironmentVariable($key, $value, "Process")
