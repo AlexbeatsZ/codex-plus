@@ -19,22 +19,43 @@ $ErrorActionPreference = "Stop"
 
 $envFile = Join-Path (Split-Path $PSScriptRoot -Parent) ".env.local"
 if (Test-Path $envFile) {
-    $approvalModeConfigured = $false
-    $approvalMode = $null
+    $forwardedKeys = @("CODEX_PLUS_MCP_APPROVAL_MODE", "CODEX_PLUS_MACHINE_ID")
+    $forwardedValues = @{}
     foreach ($line in Get-Content $envFile) {
-        if ($line -match '^\s*CODEX_PLUS_MCP_APPROVAL_MODE\s*=\s*(.*?)\s*$') {
-            $approvalModeConfigured = $true
-            $approvalMode = $Matches[1].Trim()
-            if ($approvalMode.Length -ge 2 -and (($approvalMode.StartsWith('"') -and $approvalMode.EndsWith('"')) -or ($approvalMode.StartsWith("'") -and $approvalMode.EndsWith("'")))) {
-                $approvalMode = $approvalMode.Substring(1, $approvalMode.Length - 2)
+        foreach ($key in $forwardedKeys) {
+            if ($line -match ('^\s*' + [regex]::Escape($key) + '\s*=\s*(.*?)\s*
+}
+
+$startArguments = @{
+    Root = $Root
+    Stdio = $true
+}
+if ($CodexHome) {
+    $startArguments.CodexHome = $CodexHome
+}
+if ($SkillRoot) {
+    $startArguments.SkillRoot = $SkillRoot
+}
+if ($NoCodexContext) {
+    $startArguments.NoCodexContext = $true
+}
+
+& (Join-Path $PSScriptRoot "start.ps1") @startArguments
+exit $LASTEXITCODE
+)) {
+                $value = $Matches[1].Trim()
+                if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
+                    $value = $value.Substring(1, $value.Length - 2)
+                }
+                $forwardedValues[$key] = $value
             }
         }
     }
-    if ($approvalModeConfigured) {
-        if ($approvalMode) {
-            [Environment]::SetEnvironmentVariable("CODEX_PLUS_MCP_APPROVAL_MODE", $approvalMode, "Process")
+    foreach ($key in $forwardedKeys) {
+        if ($forwardedValues.ContainsKey($key) -and $forwardedValues[$key]) {
+            [Environment]::SetEnvironmentVariable($key, $forwardedValues[$key], "Process")
         } else {
-            [Environment]::SetEnvironmentVariable("CODEX_PLUS_MCP_APPROVAL_MODE", $null, "Process")
+            [Environment]::SetEnvironmentVariable($key, $null, "Process")
         }
     }
 }
