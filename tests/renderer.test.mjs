@@ -512,3 +512,59 @@ test("invalid JSON preserves the draft and never calls the backend", async () =>
   assert.match(dom.window.document.querySelector(".cp-account-status").textContent, /有效/);
   assert.equal(calls.filter((path) => path === "/accounts/import").length, 0);
 });
+
+const bridgeScript = (
+  await readFile(new URL("../assets/bridge.js", import.meta.url), "utf8")
+).replace('"__CODEX_PLUS_BINDING_NAME__"', '"codexPlusAccountsBridgeV1"');
+
+function bridgeDom() {
+  const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", {
+    runScripts: "dangerously",
+    url: "app://-/index.html",
+  });
+  return dom;
+}
+
+test("bridge fails the promise when the launcher never answers", async () => {
+  const dom = bridgeDom();
+  const seen = [];
+  dom.window.codexPlusAccountsBridgeV1 = (raw) => seen.push(JSON.parse(raw));
+  dom.window.eval(bridgeScript);
+
+  await assert.rejects(
+    dom.window.codexPlusInvoke("/accounts/list", {}, { timeoutMs: 20 }),
+    /请求超时/,
+  );
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].path, "/accounts/list");
+  assert.equal(dom.window.__codexPlusPending.size, 0);
+});
+
+test("bridge resolves a request when the launcher answers", async () => {
+  const dom = bridgeDom();
+  let payload = null;
+  dom.window.codexPlusAccountsBridgeV1 = (raw) => { payload = JSON.parse(raw); };
+  dom.window.eval(bridgeScript);
+
+  const pending = dom.window.codexPlusInvoke("/accounts/list", {});
+  await flush();
+  assert.equal(payload.path, "/accounts/list");
+  assert.equal(dom.window.__codexPlusBridgeResolve(payload.id, { status: "ok" }), true);
+  assert.deepEqual(await pending, { status: "ok" });
+  assert.equal(dom.window.__codexPlusPending.size, 0);
+  assert.equal(dom.window.__codexPlusBridgeResolve(payload.id, { status: "ok" }), false);
+});
+
+test("re-injecting the bridge fails requests left over from the dead connection", async () => {
+  const dom = bridgeDom();
+  dom.window.codexPlusAccountsBridgeV1 = () => {};
+  dom.window.eval(bridgeScript);
+
+  const stranded = dom.window.codexPlusInvoke("/accounts/list", {});
+  await flush();
+  assert.equal(dom.window.__codexPlusPending.size, 1);
+
+  dom.window.eval(bridgeScript);
+  await assert.rejects(stranded, /重新连接/);
+  assert.equal(dom.window.__codexPlusPending.size, 0);
+});

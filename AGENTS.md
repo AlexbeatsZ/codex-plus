@@ -15,7 +15,9 @@
 - 2026-09-07 已在 Platform 复核 Windows 与 macOS 两个独立 Tunnel 都同时关联默认工作区与 `Xia`。macOS `.env.local` 已改用 Platform 显示的真实 ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`，managed runtime 重新连接后远端 metadata 与本地 health/ready 均成功，不再出现原错误 ID 导致的 `401 tunnel_use_forbidden`。
 - 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`；MCP 的上下文同步设计见 `local-tools/docs/design/codex-context-sync.md`。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
-- 当前自动化基线：`cargo test` 47 项、DOM/路由测试 15 项、`local-tools` MCP 测试 8 项通过；新增 desktop helper 回归覆盖 loopback endpoint 与健康实例复用，Windows 回归同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。
+- 当前自动化基线：`cargo test` 51 项、DOM/路由测试 18 项、`local-tools` MCP 测试 8 项通过；新增 desktop helper 回归覆盖 loopback endpoint 与健康实例复用，Windows 回归同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。2026-09-12 新增 `cdp::tests::session_fails_when_heartbeat_stops_being_answered`（假 CDP 服务停止回包时会话必须报错退出）与 3 项 `assets/bridge.js` DOM 测试。
+- 2026-09-12 macOS 修复“账户弹窗永久停在正在读取本地账户…”：根因是睡眠唤醒后 launcher 保留的旧 CDP WebSocket 假存活（TCP 仍 `ESTABLISHED`、ChatGPT 接收队列堆积约 583 KB，新建连接却正常），而心跳原为单向 `Runtime.evaluate`，watchdog 永远不重连，页面侧 `codexPlusInvoke` 也没有超时。现心跳改为可确认命令（45 秒无回包判定假存活并重连重注入）、CDP 写入加 10 秒上限、页面桥 `assets/bridge.js` 增加 30 秒兜底超时并在重新注入时让上一轮挂起请求立即失败。已部署 release 并实机验收：`bridgeVersion=2`、`/accounts/list` 经页面桥返回 4 个账户、强制超时无挂起残留。
+- 2026-09-12 修复 macOS LaunchAgent plist 部署漂移：`macos/install.sh` 自 2026-09-09 起已写 `AbandonProcessGroup=true`，但本机已安装的 plist 早于该提交、缺该键。临时 job 对照实测确认缺省时 `launchctl bootout` 会连子进程一起杀掉，因此 launcher 由 LaunchAgent 管理时切换 helper 会在杀掉父 launcher 后被 launchd 连带清理，事务停在中间。已重新执行 `macos/install.sh` 部署修正后的 plist。
 - 当前 0.3.0 自启动产物为账户脚本 v8/API 脚本 v6/路由脚本 v16：`target\release\codex-plus.exe`，6,672,896 bytes。2026-09-05 已从 `main` 的 `d418af1` 正式构建，并用 `--attach-existing` 无重启部署到当前 Codex；账户 vault 使用工作区与席位共同派生的 `recordId`，允许同一 Business 工作区的不同席位并存，并会迁移旧工作区级快照。普通接管会以 `BelowNormal` 启动 Codex 根进程，登录自启先确保 local-tools runtime 可用，在一次受管 Codex 生命周期结束后重新待命，可重新接管官方更新/自重启产生的新根进程。
 - Windows 发布 EXE 通过 `build.rs` 嵌入 `assets/app-icon.ico`；图标以 Microsoft Fluent UI System Icons 的 Person Swap 为主体，蓝色圆角底用于和其他自制工具区分。
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时立即确保 local-tools runtime 可用，再等待官方 Codex 被用户打开接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
@@ -28,6 +30,8 @@
 - 2026-09-04 22:16 已定位并部署首次重试仍返回 502 的修复：Tunnel 的共享 stdio MCP 通道会串行处理响应，而 `run_command` 原默认 90 秒、最大 300 秒，能超过托管请求约 83 秒的截止时间；原请求超时后，立即重试仍排在未结束命令之后。同步前台命令现限制为默认 30 秒、最大 45 秒；隔离 Tunnel 代理验证了命令超时后下一次 MCP 请求可立即恢复。实际 managed runtime 已重载为 PID 10040、MCP Node PID 25856，来自当前 `local-tools/dist/cli.js`；health/ready 200、远端 metadata 复查成功，重载后的运行日志无 WARN/ERROR。
 
 # Active Work
+
+- 2026-09-12 mac 账户切换可靠性：已完成并部署 CDP 桥假存活修复（心跳需回包 + 写超时 + 页面桥兜底超时）与 LaunchAgent plist 漂移修复，设计见 `docs/design/account-switch-lifecycle.md`。进行中：第三项缺陷——`stop_existing_runtime` 直接 SIGKILL 正在工作的 Codex 会留下只有 `task_started`、没有 `task_complete` 的孤儿 turn，导致 app-server `thread/read`、`thread/turns/list` 对受影响 thread 只返回最早的 1 个 turn（已知受影响 thread `01a08474-445e-7370-a1a1-a9af071f0325`）；需要改为先中断活跃 turn、等落盘后再停止应用。任务日志：`~/.agents/macos--codex-plus-account-switch/AGENTS.md`。
 
 - 2026-09-08 desktop helper: 新增 `src/desktop.rs`、`desktop/windows.ps1`、`desktop/macos.jxa` 与 `local-tools/scripts/desktop-helper.mjs`。Windows 使用 Per-Monitor-V2 统一截图/窗口/鼠标为物理像素坐标，并修正 x64 `SendInput.INPUT` union；macOS 状态/窗口使用 CoreGraphics、文字输入由 Rust `core-graphics` 直接发 Unicode CGEvent、Accessibility 查询仍经 System Events 并限制 UI 树遍历深度/访问量。helper 仅绑定 loopback，若已有健康 `codex-plus` 占用首选端口则复用，避免多 launcher 覆盖 endpoint；macOS 另提供 TCC preflight/request，当前正式 helper 的 PostEvent 与 Screen Capture 尚未获批。设计见 `docs/design/desktop-helper.md`。
 - 2026-09-07 dual-tunnel architecture: 解耦 Windows 与 macOS 独立的 Secure MCP Tunnel 绑定。`src/local_tools.rs` 动态解析各端配置（Windows 默认 alias `codex-chat-local-tools-win` / ID `tunnel_6a971ae4c9c0819192f1a813a4120a88`；macOS 默认 alias `codex-chat-local-tools-mac` / ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`），单元测试 45 项全过。双端各自独立运行 Tunnel 守护进程与 MCP 实例，解决单 Tunnel 随机分流问题，使 ChatGPT Web / Desktop 端能够同时勾选并调用 Windows 与 Mac 工具。
@@ -79,6 +83,9 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 普通启动优先使用 9229；若该地址不可绑定，会在日志 `launcher.debug_port.selected` 中记录实际回退端口。`--attach-existing` 仍只表示附加开发者显式启动的 9229 实例。
 
 # Durable Lessons
+
+- CDP 心跳必须要求回包：macOS 睡眠唤醒后旧 WebSocket 可以长期保持 `ESTABLISHED` 却不再处理消息（发送队列与对端接收队列持续增长）。单向写入式 `Runtime.evaluate` 心跳永远拿不到失效信号，watchdog 也就永不重连，UI 会永久卡在加载态。心跳要记录命令 id 并等待同 id 回包，超时即丢弃连接重新发现 target；socket 写入同样要有上限，否则对端停止读取写满缓冲后连失活检测都运行不到。页面侧请求还需要自己的兜底超时，并在脚本重新注入时让上一轮挂起的请求立即失败。
+- `launchctl bootout`（以及作业自然退出）会按 `AbandonProcessGroup` 清理同一进程组的剩余进程，缺省为 false。实测对照：缺省时子进程随作业被杀，设为 `true` 时存活。因此 macOS launcher 的 plist 必须显式 `AbandonProcessGroup=true`，否则“helper 杀掉父 launcher 后继续完成切换事务”的设计必然失败；同理，任何依赖 `launchctl` 重启 launcher 的部署都会连带重启它拉起的官方应用，需要改用 `--attach-existing` 热更新。核对部署是否生效要看**已安装**的 plist，而不是仓库里的安装脚本。
 
 - OpenAI Secure MCP Tunnel 为 1-to-1 Connector 模型：ChatGPT Web/Desktop 将每个 Tunnel ID 视为一个独立的 Connector。如果多台机器接入同一个 Tunnel ID，OpenAI 控制平面会进行负载均衡/随机分流。要让 ChatGPT 同时清晰显示并调用 Windows 与 Mac 的工具，必须在 OpenAI Platform 为两台机器创建独立的 Tunnel ID，并在 ChatGPT 中分别添加连接器。
 - Tunnel ID 必须以 Platform Tunnels 页实际显示值为准，不能从截图或转述手工重打后直接写入默认值。2026-09-07 的 macOS ID 曾把 `...e8895...` 误记成 `...e6895...`，表现为 runtime 本地 health/ready 正常但 control plane 持续 `401 tunnel_use_forbidden`。

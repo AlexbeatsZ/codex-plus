@@ -5,14 +5,27 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::service::AccountService;
 
 const BINDING_NAME: &str = "codexPlusAccountsBridgeV1";
+const BINDING_PLACEHOLDER: &str = "\"__CODEX_PLUS_BINDING_NAME__\"";
+const BRIDGE_SCRIPT: &str = include_str!("../assets/bridge.js");
 const RENDERER_SCRIPT: &str = include_str!("../assets/renderer.js");
 const API_PROVIDERS_SCRIPT: &str = include_str!("../assets/api-providers.js");
 const MODEL_ROUTING_SCRIPT: &str = include_str!("../assets/model-routing.js");
+
+/// 心跳保持 15 秒一次：健康检查只做一次极轻量 evaluate，不应变成固定频率的 DOM 扫描。
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+/// macOS 睡眠唤醒后，launcher 保留的旧 CDP socket 会长期保持 ESTABLISHED 却不再回包。
+/// 心跳必须要求回包，超过该时限即判定连接假存活，丢弃 socket 并重新注入。
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
+const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
+/// 对端完全停止读取时 socket 写缓冲最终会写满，写入本身也必须有时限。
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const HEARTBEAT_SCRIPT: &str = "(() => { const health = window.__codexPlusAccounts?.health?.(); if (!health?.ready || !health?.observerReady) window.__codexPlusAccounts?.install?.(); return true; })()";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,7 +112,33 @@ fn pick_main_target(targets: Vec<Target>) -> Option<Target> {
     })
 }
 
+/// 会话内部的时限参数。默认值是正式运行使用的常量，测试可以缩短以便快速验证失活检测。
+#[derive(Debug, Clone, Copy)]
+struct SessionTuning {
+    heartbeat: Duration,
+    heartbeat_timeout: Duration,
+    liveness: Duration,
+}
+
+impl Default for SessionTuning {
+    fn default() -> Self {
+        Self {
+            heartbeat: HEARTBEAT_INTERVAL,
+            heartbeat_timeout: HEARTBEAT_TIMEOUT,
+            liveness: LIVENESS_INTERVAL,
+        }
+    }
+}
+
 async fn run_target_session(target: &Target, service: AccountService) -> anyhow::Result<()> {
+    run_target_session_with_tuning(target, service, SessionTuning::default()).await
+}
+
+async fn run_target_session_with_tuning(
+    target: &Target,
+    service: AccountService,
+    tuning: SessionTuning,
+) -> anyhow::Result<()> {
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -175,7 +214,10 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
     crate::runtime::append_log(service.paths(), "injection.ready", json!({}));
 
     let (responses_tx, mut responses_rx) = mpsc::unbounded_channel::<(String, Value)>();
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+    let mut heartbeat = tokio::time::interval(tuning.heartbeat);
+    let mut liveness = tokio::time::interval(tuning.liveness);
+    let mut pending_heartbeat: Option<u64> = None;
+    let mut heartbeat_deadline = Instant::now() + tuning.heartbeat_timeout;
     loop {
         tokio::select! {
             next = socket.next() => {
@@ -183,6 +225,9 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
                 let message = next.context("读取 CDP 消息失败")?;
                 let Message::Text(text) = message else { continue };
                 let value: Value = serde_json::from_str(text.as_str()).context("CDP 消息不是 JSON")?;
+                if value.get("id").and_then(Value::as_u64) == pending_heartbeat {
+                    pending_heartbeat = None;
+                }
                 if value.get("method").and_then(Value::as_str) == Some("Runtime.bindingCalled") {
                     let name = value.pointer("/params/name").and_then(Value::as_str);
                     if name != Some(BINDING_NAME) { continue; }
@@ -209,46 +254,37 @@ async fn run_target_session(target: &Target, service: AccountService) -> anyhow:
                     serde_json::to_string(&request_id)?,
                     serde_json::to_string(&value)?
                 );
-                send_evaluate_without_wait(&mut socket, &mut next_id, &expression).await?;
+                send_evaluate_async(&mut socket, &mut next_id, &expression).await?;
+            }
+            _ = liveness.tick() => {
+                // 心跳已发出但没有回包：socket 可能仍然 ESTABLISHED，渲染器却不再处理消息。
+                if pending_heartbeat.is_some() && Instant::now() >= heartbeat_deadline {
+                    crate::runtime::append_log(
+                        service.paths(),
+                        "injection.heartbeat.stalled",
+                        json!({"timeoutSeconds": tuning.heartbeat_timeout.as_secs()}),
+                    );
+                    bail!(
+                        "CDP 心跳超过 {} 秒未回包，连接进入假存活状态",
+                        tuning.heartbeat_timeout.as_secs()
+                    );
+                }
             }
             _ = heartbeat.tick() => {
-                send_evaluate_without_wait(
-                    &mut socket,
-                    &mut next_id,
-                    "(() => { const health = window.__codexPlusAccounts?.health?.(); if (!health?.ready || !health?.observerReady) window.__codexPlusAccounts?.install?.(); return true; })()",
-                ).await?;
+                if pending_heartbeat.is_none() {
+                    let id = send_evaluate_async(&mut socket, &mut next_id, HEARTBEAT_SCRIPT).await?;
+                    pending_heartbeat = Some(id);
+                    heartbeat_deadline = Instant::now() + tuning.heartbeat_timeout;
+                }
             }
         }
     }
 }
 
 fn browser_bridge_script() -> String {
-    format!(
-        r#"(() => {{
-  const bindingName = {binding};
-  if (window.__codexPlusBridgeVersion === 1 && typeof window.codexPlusInvoke === "function") return;
-  const pending = new Map();
-  let sequence = 0;
-  window.__codexPlusBridgeVersion = 1;
-  window.codexPlusInvoke = (path, payload = {{}}) => new Promise((resolve, reject) => {{
-    const id = `${{Date.now()}}-${{++sequence}}-${{Math.random().toString(16).slice(2)}}`;
-    pending.set(id, {{ resolve, reject }});
-    try {{
-      window[bindingName](JSON.stringify({{ id, path, payload }}));
-    }} catch (error) {{
-      pending.delete(id);
-      reject(error);
-    }}
-  }});
-  window.__codexPlusBridgeResolve = (id, value) => {{
-    const entry = pending.get(String(id));
-    if (!entry) return false;
-    pending.delete(String(id));
-    entry.resolve(value);
-    return true;
-  }};
-}})()"#,
-        binding = serde_json::to_string(BINDING_NAME).expect("binding name is serializable")
+    BRIDGE_SCRIPT.replace(
+        BINDING_PLACEHOLDER,
+        &serde_json::to_string(BINDING_NAME).expect("binding name is serializable"),
     )
 }
 
@@ -280,11 +316,13 @@ where
 {
     let id = *next_id;
     *next_id += 1;
-    socket
-        .send(Message::Text(
+    write_message(
+        socket,
+        Message::Text(
             serde_json::to_string(&json!({"id": id, "method": method, "params": params}))?.into(),
-        ))
-        .await?;
+        ),
+    )
+    .await?;
     loop {
         let message = tokio::time::timeout(Duration::from_secs(8), socket.next())
             .await
@@ -307,27 +345,44 @@ where
     }
 }
 
-async fn send_evaluate_without_wait<S>(
+/// 发送但不等待回包的 `Runtime.evaluate`，返回本次命令的 id，
+/// 便于调用方（例如心跳）在后续消息里确认它确实被执行过。
+async fn send_evaluate_async<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
     next_id: &mut u64,
     expression: &str,
-) -> anyhow::Result<()>
+) -> anyhow::Result<u64>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let id = *next_id;
     *next_id += 1;
-    socket
-        .send(Message::Text(
+    write_message(
+        socket,
+        Message::Text(
             serde_json::to_string(&json!({
                 "id": id,
                 "method": "Runtime.evaluate",
                 "params": {"expression": expression, "returnByValue": true}
             }))?
             .into(),
-        ))
-        .await?;
-    Ok(())
+        ),
+    )
+    .await?;
+    Ok(id)
+}
+
+async fn write_message<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    message: Message,
+) -> anyhow::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    tokio::time::timeout(WRITE_TIMEOUT, socket.send(message))
+        .await
+        .context("CDP 写入超时，连接已失效")?
+        .context("写入 CDP 消息失败")
 }
 
 fn local_client() -> anyhow::Result<reqwest::Client> {
@@ -341,6 +396,7 @@ fn local_client() -> anyhow::Result<reqwest::Client> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::AccountPaths;
 
     fn target(url: &str, kind: &str) -> Target {
         Target {
@@ -367,13 +423,103 @@ mod tests {
     fn bridge_script_does_not_embed_credentials() {
         let script = browser_bridge_script();
         assert!(script.contains(BINDING_NAME));
+        assert!(!script.contains(BINDING_PLACEHOLDER));
         assert!(!script.contains("access_token"));
         assert!(!script.contains("refresh_token"));
+    }
+
+    #[test]
+    fn bridge_script_fails_stalled_requests() {
+        let script = browser_bridge_script();
+        assert!(script.contains("__codexPlusPending"));
+        assert!(script.contains("请求超时"));
+        assert!(script.contains("桥已重新连接"));
     }
 
     #[test]
     fn injected_scripts_do_not_embed_provider_keys() {
         assert!(!API_PROVIDERS_SCRIPT.contains("secret-value"));
         assert!(!MODEL_ROUTING_SCRIPT.contains("apiKey"));
+    }
+
+    fn test_service(state_dir: &std::path::Path) -> AccountService {
+        AccountService::new(AccountPaths {
+            codex_home: state_dir.join("codex-home"),
+            state_dir: state_dir.to_path_buf(),
+            usage_endpoint: "http://127.0.0.1:1/usage".to_string(),
+        })
+    }
+
+    fn healthy_health_payload(id: Value) -> Value {
+        json!({
+            "id": id,
+            "result": {
+                "result": {
+                    "type": "object",
+                    "value": {
+                        "accounts": {"ready": true, "observerReady": true},
+                        "api": true,
+                        "models": true,
+                    }
+                }
+            }
+        })
+    }
+
+    /// 模拟 macOS 睡眠唤醒后的真实故障：CDP socket 仍然 ESTABLISHED、握手命令也成功，
+    /// 但渲染器不再处理消息（心跳没有回包）。会话必须在心跳超时后主动报错退出，
+    /// 这样 watchdog 才能丢弃旧 socket 并重新注入。
+    #[tokio::test]
+    async fn session_fails_when_heartbeat_stops_being_answered() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut evaluates = 0_u32;
+            while let Some(Ok(message)) = socket.next().await {
+                let Message::Text(text) = message else { continue };
+                let value: Value = serde_json::from_str(text.as_str()).unwrap();
+                let id = value.get("id").cloned().unwrap_or(Value::Null);
+                let is_evaluate =
+                    value.get("method").and_then(Value::as_str) == Some("Runtime.evaluate");
+                if is_evaluate {
+                    evaluates += 1;
+                    // 前 5 次 evaluate 是注入脚本与注入健康检查，之后模拟渲染器停止回包。
+                    if evaluates > 5 {
+                        continue;
+                    }
+                }
+                let response = healthy_health_payload(id);
+                if socket
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let service = test_service(state_dir.path());
+        let mut injected_target = target("app://-/index.html", "page");
+        injected_target.web_socket_debugger_url =
+            Some(format!("ws://127.0.0.1:{port}/devtools/page/1"));
+        let tuning = SessionTuning {
+            heartbeat: Duration::from_millis(50),
+            heartbeat_timeout: Duration::from_millis(200),
+            liveness: Duration::from_millis(50),
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_target_session_with_tuning(&injected_target, service, tuning),
+        )
+        .await
+        .expect("心跳失活后会话必须自行结束，而不是永久挂起")
+        .expect_err("心跳没有回包时会话必须报错");
+        assert!(result.to_string().contains("心跳"), "{result}");
+        server.abort();
     }
 }
