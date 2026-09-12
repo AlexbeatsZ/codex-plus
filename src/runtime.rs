@@ -39,10 +39,21 @@ pub struct LauncherGuard {
     _file: File,
 }
 
+/// 首选调试端口被占用时的重试参数。
+///
+/// `stop_existing_runtime` 已经等到旧进程退出，但内核释放监听套接字与进程退出之间
+/// 仍有窗口期：紧接着 bind 会拿到 `AddrInUse`，于是静默回退到随机端口，此后开发期的
+/// `--attach-existing`（固定 9229）就再也对不上了。因此在有界时间内重试首选端口，
+/// 只有确实一直占用才回退。15 × 200ms ≈ 3 秒。
+const DEBUG_PORT_BIND_ATTEMPTS: u32 = 15;
+const DEBUG_PORT_BIND_INTERVAL: Duration = Duration::from_millis(200);
+
 #[derive(Debug)]
 pub struct DebugPortSelection {
     pub port: u16,
     pub preferred_bind_error: Option<String>,
+    /// 为拿到首选端口实际尝试绑定的次数；1 表示一次成功。
+    pub preferred_bind_attempts: u32,
 }
 
 pub fn append_log(paths: &AccountPaths, event: &str, details: serde_json::Value) {
@@ -79,26 +90,42 @@ pub fn acquire_launcher_guard(paths: &AccountPaths) -> anyhow::Result<LauncherGu
 }
 
 pub fn select_debug_port(preferred_port: u16) -> anyhow::Result<DebugPortSelection> {
-    match TcpListener::bind((Ipv4Addr::LOCALHOST, preferred_port)) {
-        Ok(listener) => {
-            let port = listener.local_addr()?.port();
-            drop(listener);
-            Ok(DebugPortSelection {
-                port,
-                preferred_bind_error: None,
-            })
-        }
-        Err(error) => {
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-                .context("无法为 Codex CDP 选择备用本机端口")?;
-            let port = listener.local_addr()?.port();
-            drop(listener);
-            Ok(DebugPortSelection {
-                port,
-                preferred_bind_error: Some(error.to_string()),
-            })
+    let mut last_error = None;
+    let mut attempts = 0_u32;
+    for attempt in 1..=DEBUG_PORT_BIND_ATTEMPTS {
+        attempts = attempt;
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, preferred_port)) {
+            Ok(listener) => {
+                let port = listener.local_addr()?.port();
+                drop(listener);
+                return Ok(DebugPortSelection {
+                    port,
+                    preferred_bind_error: None,
+                    preferred_bind_attempts: attempts,
+                });
+            }
+            Err(error) => {
+                // 只有"地址已被占用"值得等待：那是上一个实例正在退出的窗口期。
+                // 其他错误（权限不足、地址不可用等）重试也不会变好，立即回退。
+                let retryable = error.kind() == std::io::ErrorKind::AddrInUse;
+                last_error = Some(error);
+                if !retryable || attempt == DEBUG_PORT_BIND_ATTEMPTS {
+                    break;
+                }
+                std::thread::sleep(DEBUG_PORT_BIND_INTERVAL);
+            }
         }
     }
+    let error = last_error.expect("select_debug_port 至少尝试绑定过一次");
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .context("无法为 Codex CDP 选择备用本机端口")?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(DebugPortSelection {
+        port,
+        preferred_bind_error: Some(error.to_string()),
+        preferred_bind_attempts: attempts,
+    })
 }
 
 pub fn stop_existing_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
@@ -706,21 +733,51 @@ mod tests {
     }
 
     #[test]
-    fn debug_port_selection_falls_back_when_preferred_port_is_occupied() {
+    fn debug_port_selection_falls_back_when_preferred_port_stays_occupied() {
         let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let preferred_port = occupied.local_addr().unwrap().port();
 
+        // 端口在整个重试窗口内都被占用：必须回退，并且记录到确实重试过。
         let selected = select_debug_port(preferred_port).unwrap();
 
         assert_ne!(selected.port, 0);
         assert_ne!(selected.port, preferred_port);
         assert!(selected.preferred_bind_error.is_some());
+        assert!(selected.preferred_bind_attempts > 1);
         TcpListener::bind((Ipv4Addr::LOCALHOST, selected.port)).unwrap();
 
         drop(occupied);
         let recovered = select_debug_port(preferred_port).unwrap();
         assert_eq!(recovered.port, preferred_port);
         assert!(recovered.preferred_bind_error.is_none());
+        assert_eq!(recovered.preferred_bind_attempts, 1);
+    }
+
+    #[test]
+    fn debug_port_selection_waits_for_preferred_port_to_be_released() {
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let preferred_port = occupied.local_addr().unwrap().port();
+
+        // 复现真实时序：旧实例已经退出，但监听套接字稍后才真正释放。
+        // 单次 bind 会把这种窗口期误判成"端口被占用"并静默回退到随机端口，
+        // 导致开发期的 --attach-existing（固定 9229）再也对不上。
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(occupied);
+        });
+
+        let selected = select_debug_port(preferred_port).unwrap();
+        release.join().unwrap();
+
+        assert_eq!(
+            selected.port, preferred_port,
+            "端口在重试窗口内释放时应拿到首选端口，而不是回退"
+        );
+        assert!(selected.preferred_bind_error.is_none());
+        assert!(
+            selected.preferred_bind_attempts > 1,
+            "应记录到确实等待重试过"
+        );
     }
 
     #[test]

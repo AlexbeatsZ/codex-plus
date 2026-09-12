@@ -180,6 +180,7 @@ async fn run_managed_codex(
             "selectedPort": debug_port.port,
             "fallback": debug_port.preferred_bind_error.is_some(),
             "preferredBindError": debug_port.preferred_bind_error,
+            "preferredBindAttempts": debug_port.preferred_bind_attempts,
         }),
     );
     let codex_process = runtime::launch_codex(&codex_executable, debug_port.port)?;
