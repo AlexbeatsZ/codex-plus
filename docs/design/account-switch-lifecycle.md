@@ -35,6 +35,19 @@ macOS 睡眠唤醒后，launcher 已建立的 CDP WebSocket 会长期保持 `EST
 
 维护时若需在不重启 Codex 的情况下重新附加 launcher，`--attach-existing` 仍连接默认 9229；当当前实例已由普通启动回退到动态端口时，使用内部参数 `--attach-existing-port=<实际端口>`。该入口只恢复 broker、配置核对和注入 watchdog，不执行普通启动的 stop/launch 生命周期。
 
+## 对话历史与投影
+
+UI 显示的历史不直接读 rollout，而是读 `$CODEX_HOME/thread_history_1.sqlite` 的物化投影（`thread_turns` / `thread_items` / `thread_history_projection_state`）。投影按 `rollout_ordinal` 增量推进；一旦某个 rollout 里出现 ordinal 回退（同一文件被第二个 writer 以重新开始的序号追加），投影会停在断点，**断点之后的 turn 不会再投影**。此时 UI 表现为“对话历史消失 / 只剩最早一段”，而原始 rollout 仍然完整（所以模型仍记得内容）。`codex migrate-rollouts` 对已经是 paginated 的 thread 直接跳过，官方没有提供重建投影的入口。
+
+2026-09-12 复核结论（thread `01a08474-445e-7370-a1a1-a9af071f0325`）：
+
+- 该 rollout 第 35 行出现 `ordinal 33 -> 30` 回退（2026-09-09 23:16:53 CST），投影停在 `next_rollout_ordinal=34`，`thread_turns` 只剩第一条 turn（`inProgress`），app-server `thread/read` 因此只返回 1 个 turn。
+- 扫描当时全部 16 份 rollout：只有该文件存在 ordinal 回退；另外 3 个 thread 同样带着未结束的 `inProgress` turn，但投影照常推进到最后。即**未结束的 turn 本身不会破坏投影，ordinal 回退才会**。
+- 该 thread 的未结束 turn 产生于 2026-09-09 15:03，当时 launcher 日志没有任何事件；账户切换发生在 2026-09-10 01:13:03，同一秒 rollout 里写入了正常的 `turn_aborted`（`runtime.stop.started` 与 `turn_aborted` 同秒）。因此**没有证据支持“切换的硬停止会留下孤儿 turn 并吃掉历史”**这一早先结论。
+- 该 thread 由 VS Code 扩展创建（`source=vscode`），回退发生在桌面端向同一 rollout 追加内容时，更像是跨客户端写入时新 writer 的 ordinal 起点取自投影（该处投影最大 item ordinal 为 28，新写入从 30 开始），而 rollout 尾部 ordinal 已经到 33。这是 OpenAI 侧 writer/reader 的一致性问题，codex-plus 不控制该序号，也没有受支持的修复入口。
+
+因此本轮**没有**在停止流程里加入假设性的“先中断活跃 turn”改造；那种改造无法验证、也不针对已确认的机制。若后续要恢复已损坏的 thread，需要先找到让投影重建受支持的途径（例如 unarchive + fork 是否继承完整 rollout），再决定是否提供维护入口。
+
 ## 账户数据
 
 - 实时凭据：`CODEX_HOME\auth.json`，未设置 `CODEX_HOME` 时为 `%USERPROFILE%\.codex\auth.json`。
