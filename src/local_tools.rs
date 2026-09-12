@@ -349,7 +349,10 @@ mod tests {
 
         // Defaults
         assert_eq!(resolve_tunnel_id(&env_file).unwrap(), DEFAULT_TUNNEL_ID);
-        assert_eq!(resolve_runtime_alias(&env_file).unwrap(), DEFAULT_RUNTIME_ALIAS);
+        assert_eq!(
+            resolve_runtime_alias(&env_file).unwrap(),
+            DEFAULT_RUNTIME_ALIAS
+        );
 
         // From file
         fs::write(
@@ -359,6 +362,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolve_tunnel_id(&env_file).unwrap(), "tunnel_custom_123");
-        assert_eq!(resolve_runtime_alias(&env_file).unwrap(), "codex-custom-alias");
+        assert_eq!(
+            resolve_runtime_alias(&env_file).unwrap(),
+            "codex-custom-alias"
+        );
     }
 }

@@ -117,8 +117,8 @@ pub fn select_debug_port(preferred_port: u16) -> anyhow::Result<DebugPortSelecti
         }
     }
     let error = last_error.expect("select_debug_port 至少尝试绑定过一次");
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .context("无法为 Codex CDP 选择备用本机端口")?;
+    let listener =
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).context("无法为 Codex CDP 选择备用本机端口")?;
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(DebugPortSelection {

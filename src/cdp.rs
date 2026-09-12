@@ -478,7 +478,9 @@ mod tests {
             let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
             let mut evaluates = 0_u32;
             while let Some(Ok(message)) = socket.next().await {
-                let Message::Text(text) = message else { continue };
+                let Message::Text(text) = message else {
+                    continue;
+                };
                 let value: Value = serde_json::from_str(text.as_str()).unwrap();
                 let id = value.get("id").cloned().unwrap_or(Value::Null);
                 let is_evaluate =
