@@ -18,6 +18,7 @@
 - 当前自动化基线：`cargo test` 51 项、DOM/路由测试 18 项、`local-tools` MCP 测试 8 项通过；新增 desktop helper 回归覆盖 loopback endpoint 与健康实例复用，Windows 回归同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。2026-09-12 新增 `cdp::tests::session_fails_when_heartbeat_stops_being_answered`（假 CDP 服务停止回包时会话必须报错退出）与 3 项 `assets/bridge.js` DOM 测试。
 - 2026-09-12 macOS 修复“账户弹窗永久停在正在读取本地账户…”：根因是睡眠唤醒后 launcher 保留的旧 CDP WebSocket 假存活（TCP 仍 `ESTABLISHED`、ChatGPT 接收队列堆积约 583 KB，新建连接却正常），而心跳原为单向 `Runtime.evaluate`，watchdog 永远不重连，页面侧 `codexPlusInvoke` 也没有超时。现心跳改为可确认命令（45 秒无回包判定假存活并重连重注入）、CDP 写入加 10 秒上限、页面桥 `assets/bridge.js` 增加 30 秒兜底超时并在重新注入时让上一轮挂起请求立即失败。已部署 release 并实机验收：`bridgeVersion=2`、`/accounts/list` 经页面桥返回 4 个账户、强制超时无挂起残留。
 - 2026-09-12 修复 macOS LaunchAgent plist 部署漂移：`macos/install.sh` 自 2026-09-09 起已写 `AbandonProcessGroup=true`，但本机已安装的 plist 早于该提交、缺该键。临时 job 对照实测确认缺省时 `launchctl bootout` 会连子进程一起杀掉，因此 launcher 由 LaunchAgent 管理时切换 helper 会在杀掉父 launcher 后被 launchd 连带清理，事务停在中间。已重新执行 `macos/install.sh` 部署修正后的 plist。
+- 2026-09-13 修复 macOS 反复索要屏幕录制权限：`target/release/codex-plus` 原为 linker-signed adhoc，designated requirement 退化成 `cdhash H"..."`，每次 `cargo build --release` 都换一个，tccd 遂视为另一个程序（实测 24 小时内 42 次 `Failed to match existing code requirement`，跨 3 个不同 cdhash），而系统设置里的开关虽然打开，管的也只是旧二进制，所以用户怎么点都没用。新增 `macos/sign.sh` 并接入 `macos/install.sh`，用本机中性机器级身份 `Local Development Code Signing` + identifier `com.codex-plus.launcher` 签名，requirement 变为与文件内容无关的 `identifier "com.codex-plus.launcher" and certificate leaf = H"6474f2..."`。二进制已重签，**需重启 launcher 后才生效，并需再授权一次**；该身份与 Sefirah 共用，重建步骤见 `~/.agents/knowledge/macos-tcc-permissions.md`。
 - 当前 0.3.0 自启动产物为账户脚本 v8/API 脚本 v6/路由脚本 v16：`target\release\codex-plus.exe`，6,672,896 bytes。2026-09-05 已从 `main` 的 `d418af1` 正式构建，并用 `--attach-existing` 无重启部署到当前 Codex；账户 vault 使用工作区与席位共同派生的 `recordId`，允许同一 Business 工作区的不同席位并存，并会迁移旧工作区级快照。普通接管会以 `BelowNormal` 启动 Codex 根进程，登录自启先确保 local-tools runtime 可用，在一次受管 Codex 生命周期结束后重新待命，可重新接管官方更新/自重启产生的新根进程。
 - Windows 发布 EXE 通过 `build.rs` 嵌入 `assets/app-icon.ico`；图标以 Microsoft Fluent UI System Icons 的 Person Swap 为主体，蓝色圆角底用于和其他自制工具区分。
 - 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时立即确保 local-tools runtime 可用，再等待官方 Codex 被用户打开接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
@@ -77,6 +78,15 @@ cargo build --release
 
 正常启动：`target\release\codex-plus.exe`。
 
+macOS 构建、签名与部署（**每次 `cargo build --release` 之后都必须重新签名**，否则已授予的 TCC 权限会随 cdhash 变化失效）：
+
+```bash
+arch -arm64 cargo build --release    # 该 shell 跑在 Rosetta 下时，不加 arch 会在链接阶段失败
+bash macos/sign.sh                   # 用本机持久身份签名 release 二进制；已签则跳过
+bash macos/install.sh                # 部署 LaunchAgent（内部会再调用一次 sign.sh）
+open "macos/Codex Plus.app"          # 显式启动，不依赖 launchd
+```
+
 Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模式等待用户打开官方 Codex，不主动拉起应用。
 
 开发时仅附加现有 9229 CDP、不重启 Codex：`target\release\codex-plus.exe --attach-existing`。若普通启动已回退到动态端口，使用 `target\release\codex-plus.exe --attach-existing-port=<实际端口>`。
@@ -85,6 +95,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 # Durable Lessons
 
 - CDP 心跳必须要求回包：macOS 睡眠唤醒后旧 WebSocket 可以长期保持 `ESTABLISHED` 却不再处理消息（发送队列与对端接收队列持续增长）。单向写入式 `Runtime.evaluate` 心跳永远拿不到失效信号，watchdog 也就永不重连，UI 会永久卡在加载态。心跳要记录命令 id 并等待同 id 回包，超时即丢弃连接重新发现 target；socket 写入同样要有上限，否则对端停止读取写满缓冲后连失活检测都运行不到。页面侧请求还需要自己的兜底超时，并在脚本重新注入时让上一轮挂起的请求立即失败。
+- **adhoc 签名的程序，其 TCC 授权绑在 cdhash 上，重新编译即失效。** 未签名 / adhoc / linker-signed 的 Mach-O，designated requirement 就是 `cdhash H"<整文件哈希>"`；`cargo build --release` 一跑哈希就变，tccd 认为换了程序，于是重新索要权限。此时"已在系统设置里允许过"完全无效——那条记录绑的是旧二进制，开关确实是开的，但管的不是现在跑的这个。自签证书 + 固定 identifier 后 requirement 变成 `identifier "..." and certificate leaf = H"<证书 SHA-1>"`，与文件内容无关，重新编译不再影响授权。因此任何需要 TCC 权限（屏幕录制、辅助功能、输入监控、蓝牙）的自构建程序，都必须在**每次构建之后**签名，只在部署脚本里签一次不够。判别方法：看 tccd 日志有没有 `Failed to match existing code requirement` 并列出两个 cdhash。另注意 launcher 直接 `spawn` 官方应用时，官方应用触发的权限请求会被归责到 launcher，弹窗显示的是 launcher 的名字，不要被名字误导。详见 `~/.agents/knowledge/macos-tcc-permissions.md`。
 - `launchctl bootout`（以及作业自然退出）会按 `AbandonProcessGroup` 清理同一进程组的剩余进程，缺省为 false。实测对照：缺省时子进程随作业被杀，设为 `true` 时存活。因此 macOS launcher 的 plist 必须显式 `AbandonProcessGroup=true`，否则“helper 杀掉父 launcher 后继续完成切换事务”的设计必然失败；同理，任何依赖 `launchctl` 重启 launcher 的部署都会连带重启它拉起的官方应用，需要改用 `--attach-existing` 热更新。核对部署是否生效要看**已安装**的 plist，而不是仓库里的安装脚本。
 
 - OpenAI Secure MCP Tunnel 为 1-to-1 Connector 模型：ChatGPT Web/Desktop 将每个 Tunnel ID 视为一个独立的 Connector。如果多台机器接入同一个 Tunnel ID，OpenAI 控制平面会进行负载均衡/随机分流。要让 ChatGPT 同时清晰显示并调用 Windows 与 Mac 的工具，必须在 OpenAI Platform 为两台机器创建独立的 Tunnel ID，并在 ChatGPT 中分别添加连接器。

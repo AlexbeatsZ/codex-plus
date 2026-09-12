@@ -13,6 +13,10 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
+# 必须先签名再部署：adhoc 签名的二进制其 TCC 授权绑在 cdhash 上，下一次
+# cargo build --release 就会失配，系统会反复索要屏幕录制等权限。详见 sign.sh。
+bash "$ROOT/macos/sign.sh" "$BIN"
+
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 launchctl bootout "gui/$UID" "$PLIST" >/dev/null 2>&1 || true
 
