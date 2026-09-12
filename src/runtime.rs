@@ -128,6 +128,65 @@ pub fn select_debug_port(preferred_port: u16) -> anyhow::Result<DebugPortSelecti
     })
 }
 
+/// macOS 上 adhoc / linker-signed 的二进制没有稳定身份，其 designated requirement
+/// 退化成 `cdhash H"..."`，TCC 授权就绑在这个哈希上——任何一次重新链接都会让它失配，
+/// 系统于是重新索要屏幕录制等权限，而"已在系统设置里允许过"完全无效（那条记录绑的
+/// 是旧二进制）。症状会延迟到下一次权限请求才暴露，离病因很远。
+///
+/// 这里只做启动自检：不阻止启动，只把"身份不稳"写进日志，让问题在发生的那一刻
+/// 就可见。修复办法是构建后运行 `macos/sign.sh`。
+#[cfg(target_os = "macos")]
+pub fn warn_if_code_signature_is_unstable(paths: &AccountPaths) {
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    // codesign 的 -d 类输出走 stderr；两边都读，免得将来实现变化时静默失效。
+    let Ok(output) = Command::new("/usr/bin/codesign")
+        .args(["-d", "-r-"])
+        .arg(&executable)
+        .output()
+    else {
+        return;
+    };
+    let requirement = parse_designated_requirement(&String::from_utf8_lossy(&output.stderr))
+        .or_else(|| parse_designated_requirement(&String::from_utf8_lossy(&output.stdout)));
+    let Some(requirement) = requirement else {
+        return;
+    };
+    if requirement_uses_stable_identity(&requirement) {
+        return;
+    }
+    append_log(
+        paths,
+        "launcher.signature.unstable",
+        json!({
+            "requirement": requirement,
+            "hint": "该二进制是 adhoc/linker 签名，TCC 授权绑在 cdhash 上、重新编译即失效；请先运行 bash macos/sign.sh 再启动。",
+        }),
+    );
+}
+
+/// 解析 `codesign -d -r-` 的输出，例如
+/// `designated => identifier "x" and certificate leaf = H"..."`。
+/// 由内部推导出来的 requirement 会带 `#` 前缀。
+#[cfg(target_os = "macos")]
+fn parse_designated_requirement(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        line.trim()
+            .trim_start_matches('#')
+            .trim()
+            .strip_prefix("designated =>")
+            .map(|value| value.trim().to_string())
+    })
+}
+
+/// 证书签名给出的 requirement 带 `certificate leaf = H"..."`，与文件内容无关；
+/// adhoc 签名没有证书，只能退化成 `cdhash H"..."`，重新编译就会变。
+#[cfg(target_os = "macos")]
+fn requirement_uses_stable_identity(requirement: &str) -> bool {
+    requirement.contains("certificate leaf")
+}
+
 pub fn stop_existing_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
     let current_pid = std::process::id();
     let current_exe = std::env::current_exe().context("无法定位 codex-plus.exe")?;
@@ -777,6 +836,41 @@ mod tests {
         assert!(
             selected.preferred_bind_attempts > 1,
             "应记录到确实等待重试过"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn recognizes_an_unstable_code_signature_requirement() {
+        // adhoc / linker 签名：requirement 退化成 cdhash，重新编译即失效。
+        let adhoc = "Executable=/tmp/x\n# designated => cdhash H\"abc\"\n";
+        let requirement = parse_designated_requirement(adhoc).expect("应解析出 requirement");
+        assert_eq!(requirement, "cdhash H\"abc\"");
+        assert!(!requirement_uses_stable_identity(&requirement));
+
+        // 证书签名：requirement 只含 identifier 与证书指纹，与文件内容无关。
+        let signed = concat!(
+            "Executable=/tmp/x\n",
+            "designated => identifier \"com.codex-plus.launcher\" ",
+            "and certificate leaf = H\"6474f29d\"\n"
+        );
+        let requirement = parse_designated_requirement(signed).expect("应解析出 requirement");
+        assert_eq!(
+            requirement,
+            "identifier \"com.codex-plus.launcher\" and certificate leaf = H\"6474f29d\""
+        );
+        assert!(requirement_uses_stable_identity(&requirement));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn missing_codesign_requirement_is_treated_as_unknown() {
+        // 解析不出来时不能误判成"不稳"，否则每次启动都会写一条假告警。
+        assert_eq!(parse_designated_requirement(""), None);
+        assert_eq!(parse_designated_requirement("Executable=/tmp/x\n"), None);
+        assert_eq!(
+            parse_designated_requirement("codesign: not signed at all\n"),
+            None
         );
     }
 

@@ -7,5 +7,9 @@ if [[ ! -x "$BIN" ]]; then
   /usr/bin/osascript -e 'display alert "Codex Plus" message "Missing target/release/codex-plus. Build the release binary first." as critical'
   exit 1
 fi
+# 启动前先补签名：cargo 重新链接会打上 adhoc 签名，那会让 TCC 授权随 cdhash 失效。
+# sign.sh 是幂等的，已用目标身份签过就直接跳过。签名失败不拦启动（应用本身能用），
+# 但会把原因写进日志，运行时自检也会再记一条 launcher.signature.unstable。
+bash "$ROOT/macos/sign.sh" "$BIN" >>"$LOG" 2>&1 || true
 /usr/bin/nohup "$BIN" >>"$LOG" 2>&1 </dev/null &
 exit 0

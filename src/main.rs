@@ -67,6 +67,10 @@ async fn main() {
 async fn main_impl() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let paths = AccountPaths::discover()?;
+    // 不阻止启动，只在身份不稳时留一条可查的日志：adhoc 签名会让 TCC 授权随重新
+    // 编译失效，而症状要到下一次权限请求才暴露。
+    #[cfg(target_os = "macos")]
+    runtime::warn_if_code_signature_is_unstable(&paths);
     let mode = LaunchMode::from_args(&args);
     let mut _desktop: Option<desktop::DesktopHandle> = None;
 
