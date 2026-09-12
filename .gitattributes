@@ -1,1 +1,9 @@
+# 仓库一律以 LF 存储；检出时按平台原生行尾（macOS/Linux 为 LF，Windows 为 CRLF）。
+#
+# 没有 `* text=auto` 时 git 按字节比较，任何把工作区文件转成 CRLF 的操作（编辑器、
+# 跨平台同步工具等）都会让 `git diff` 表现为"整文件重写"。2026-09-13 实测踩过：
+# 10 个文件被误判成上千行改动，而 `git diff --ignore-cr-at-eol` 证明零语义变化，
+# 一旦提交就会把整文件行尾变更写进历史并污染 git blame。
+* text=auto
+
 *.sh text eol=lf
