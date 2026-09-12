@@ -3,3 +3,4 @@
 *.log
 .DS_Store
 /.codex-plus/
+/.tunnel-client/
