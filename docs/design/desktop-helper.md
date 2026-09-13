@@ -2,7 +2,18 @@
 
 ## 边界
 
-`codex-plus` 的桌面控制不新增 MCP tool，也不依赖 ChatGPT Web 能否加载 Codex 专属 `computer-use` / `node_repl` Skill。ChatGPT 继续使用现有 `windows_run_command` / `mac_run_command`；命令只调用仓库内的薄客户端，真正的截图、鼠标、键盘和 Accessibility/UI Automation 操作在目标机登录会话中的 `codex-plus` 进程侧执行。
+`codex-plus` 的桌面控制后端不依赖 ChatGPT Web 能否加载 Codex 专属 `computer-use` / `node_repl` Skill。ChatGPT 继续可以使用现有 `windows_run_command` / `mac_run_command`；此外，macOS 本机现在提供独立的标准 stdio MCP `codex-plus-computer-use`，供 Antigravity/Agy 等普通 MCP 客户端直接复用相同 loopback helper。
+
+标准 MCP 路径不连接 OpenAI 私有 `cua_repl`、不伪造 `elicitation` capability，也不依赖 OpenAI 签名 Node：
+
+```text
+Agy / ordinary MCP client
+  -> local-tools/dist/desktop-mcp-cli.js
+  -> 127.0.0.1 codex-plus desktop helper
+  -> CoreGraphics / Accessibility
+```
+
+MCP 的 `computer_observe` 直接返回 MCP `image` content。坐标工具统一接收该截图的像素坐标，并在 server 内按当前 screen/backing dimensions 转换为 Quartz point，避免 Retina 2x 导致的点击偏移。
 
 Windows 与 macOS 使用不同的稳定后端：
 
