@@ -12,6 +12,8 @@ import { makeAgentTemp } from "./support.js";
 
 test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", async () => {
   const temporary = await makeAgentTemp("codex-chat-http");
+  const previousBridgeConfig = process.env.AI_DECISION_BRIDGE_CONFIG;
+  process.env.AI_DECISION_BRIDGE_CONFIG = path.join(temporary.directory, "missing-ai-decision-bridge.json");
   const registry = new WorkspaceRegistry([temporary.directory]);
   const codexHome = path.join(temporary.directory, ".codex");
   const skillRoot = path.join(codexHome, "skills", "transport-skill");
@@ -90,7 +92,10 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
     assert.equal(timeoutSchema?.maximum, 45);
 
     const machineInfo = await client.callTool({ name: "machine_info", arguments: {} });
-    const localMachine = process.platform === "win32" ? "omen" : "mac";
+    const configuredMachine = process.env.CODEX_PLUS_MACHINE_ID?.trim().toLowerCase();
+    const localMachine = configuredMachine === "omen" || configuredMachine === "mac" || configuredMachine === "rog"
+      ? configuredMachine
+      : process.platform === "win32" ? "omen" : "mac";
     assert.equal((machineInfo.structuredContent as { localMachine: string }).localMachine, localMachine);
     const routedMachines = (machineInfo.structuredContent as {
       machines: Array<{ id: string; sshTarget: string; sshFallbackTarget: string }>;
@@ -131,5 +136,7 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
     await transport.close().catch(() => undefined);
     await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
     await temporary.cleanup();
+    if (previousBridgeConfig === undefined) delete process.env.AI_DECISION_BRIDGE_CONFIG;
+    else process.env.AI_DECISION_BRIDGE_CONFIG = previousBridgeConfig;
   }
 });
