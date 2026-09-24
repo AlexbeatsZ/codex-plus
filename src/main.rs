@@ -164,7 +164,8 @@ async fn run_managed_codex(
 
     // Resolve read-only installation metadata before terminating the app, but the
     // state-changing lifecycle remains stop -> lock -> launch -> inject.
-    let codex_executable = runtime::resolve_codex_executable()?;
+    let codex_target = runtime::resolve_codex_target()?;
+    let codex_executable = codex_target.executable_path().to_path_buf();
     runtime::append_log(
         &paths,
         start_event,
@@ -187,7 +188,7 @@ async fn run_managed_codex(
             "preferredBindAttempts": debug_port.preferred_bind_attempts,
         }),
     );
-    let codex_process = runtime::launch_codex(&codex_executable, debug_port.port)?;
+    let codex_process = runtime::launch_codex(&codex_target, debug_port.port)?;
     let codex_pid = codex_process.id();
     runtime::append_log(
         &paths,

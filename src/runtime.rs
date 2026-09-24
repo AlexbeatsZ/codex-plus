@@ -226,13 +226,80 @@ pub fn stop_existing_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn resolve_codex_executable() -> anyhow::Result<PathBuf> {
+#[derive(Debug, Clone)]
+pub enum CodexAppTarget {
+    #[cfg(windows)]
+    Appx {
+        aumid: String,
+        #[allow(dead_code)]
+        install_location: PathBuf,
+        executable: PathBuf,
+    },
+    Executable(PathBuf),
+}
+
+impl CodexAppTarget {
+    pub fn executable_path(&self) -> &Path {
+        match self {
+            #[cfg(windows)]
+            Self::Appx { executable, .. } => executable,
+            Self::Executable(path) => path,
+        }
+    }
+}
+
+pub enum CodexProcess {
+    Child(Child),
+    #[cfg(windows)]
+    Handle {
+        pid: u32,
+        handle: windows::Win32::Foundation::HANDLE,
+    },
+}
+
+impl CodexProcess {
+    pub fn id(&self) -> u32 {
+        match self {
+            Self::Child(child) => child.id(),
+            #[cfg(windows)]
+            Self::Handle { pid, .. } => *pid,
+        }
+    }
+
+    pub fn is_running(&mut self) -> anyhow::Result<bool> {
+        match self {
+            Self::Child(child) => Ok(child.try_wait()?.is_none()),
+            #[cfg(windows)]
+            Self::Handle { handle, .. } => {
+                use windows::Win32::Foundation::WAIT_TIMEOUT;
+                use windows::Win32::System::Threading::WaitForSingleObject;
+                let wait = unsafe { WaitForSingleObject(*handle, 0) };
+                Ok(wait == WAIT_TIMEOUT)
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CodexProcess {
+    fn drop(&mut self) {
+        if let Self::Handle { handle, .. } = self {
+            use windows::Win32::Foundation::CloseHandle;
+            unsafe {
+                let _ = CloseHandle(*handle);
+            }
+        }
+    }
+}
+
+pub fn resolve_codex_target() -> anyhow::Result<CodexAppTarget> {
     if let Some(explicit) = std::env::var_os("CODEX_PLUS_APP_PATH")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return normalize_app_candidate(&explicit)
-            .ok_or_else(|| anyhow::anyhow!("CODEX_PLUS_APP_PATH 中未找到 ChatGPT.exe/Codex.exe"));
+        let executable = normalize_app_candidate(&explicit)
+            .ok_or_else(|| anyhow::anyhow!("CODEX_PLUS_APP_PATH 中未找到 ChatGPT.exe/Codex.exe"))?;
+        return Ok(CodexAppTarget::Executable(executable));
     }
 
     #[cfg(windows)]
@@ -240,7 +307,7 @@ pub fn resolve_codex_executable() -> anyhow::Result<PathBuf> {
         let script = r#"
 $names = @('OpenAI.Codex','OpenAI.CodexBeta','OpenAI.ChatGPT-Desktop')
 $packages = foreach ($name in $names) { Get-AppxPackage -Name $name -ErrorAction SilentlyContinue }
-$packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocation }
+$packages | Sort-Object Version -Descending | ForEach-Object { "$($_.PackageFamilyName)|$($_.InstallLocation)" }
 "#;
         let mut command = background_command("powershell.exe");
         let output = command
@@ -251,8 +318,19 @@ $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocatio
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
             for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-                if let Some(executable) = normalize_app_candidate(Path::new(line)) {
-                    return Ok(executable);
+                let parts = line.split('|').collect::<Vec<_>>();
+                if parts.len() == 2 {
+                    let family_name = parts[0].trim();
+                    let install_location = Path::new(parts[1].trim());
+                    if let Some(executable) = normalize_app_candidate(install_location) {
+                        return Ok(CodexAppTarget::Appx {
+                            aumid: format!("{family_name}!App"),
+                            install_location: install_location.to_path_buf(),
+                            executable,
+                        });
+                    }
+                } else if let Some(executable) = normalize_app_candidate(Path::new(line)) {
+                    return Ok(CodexAppTarget::Executable(executable));
                 }
             }
         }
@@ -270,7 +348,7 @@ $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocatio
             .collect::<Vec<_>>();
         for candidate in candidates {
             if let Some(executable) = normalize_app_candidate(&candidate) {
-                return Ok(executable);
+                return Ok(CodexAppTarget::Executable(executable));
             }
         }
     }
@@ -292,7 +370,7 @@ $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocatio
                 .join("Codex.app"),
         ] {
             if let Some(executable) = normalize_app_candidate(&candidate) {
-                return Ok(executable);
+                return Ok(CodexAppTarget::Executable(executable));
             }
         }
     }
@@ -300,19 +378,119 @@ $packages | Sort-Object Version -Descending | ForEach-Object { $_.InstallLocatio
     bail!("未找到官方 OpenAI Codex/ChatGPT 桌面应用")
 }
 
-pub fn launch_codex(executable: &Path, debug_port: u16) -> anyhow::Result<Child> {
-    let mut command = codex_command(executable);
-    #[cfg(target_os = "macos")]
-    apply_codex_desktop_proxy(&mut command);
-    command
-        .arg(format!("--remote-debugging-port={debug_port}"))
-        .arg(format!(
-            "--remote-allow-origins=http://127.0.0.1:{debug_port}"
-        ));
-    let child = command
-        .spawn()
-        .with_context(|| format!("无法启动 {}", executable.display()))?;
-    Ok(child)
+#[allow(dead_code)]
+pub fn resolve_codex_executable() -> anyhow::Result<PathBuf> {
+    resolve_codex_target().map(|target| target.executable_path().to_path_buf())
+}
+
+pub fn launch_codex(target: &CodexAppTarget, debug_port: u16) -> anyhow::Result<CodexProcess> {
+    match target {
+        #[cfg(windows)]
+        CodexAppTarget::Appx { aumid, .. } => launch_codex_appx(aumid, debug_port),
+        CodexAppTarget::Executable(executable) => {
+            let mut command = codex_command(executable);
+            #[cfg(target_os = "macos")]
+            apply_codex_desktop_proxy(&mut command);
+            command
+                .arg(format!("--remote-debugging-port={debug_port}"))
+                .arg(format!(
+                    "--remote-allow-origins=http://127.0.0.1:{debug_port}"
+                ));
+            let child = command
+                .spawn()
+                .with_context(|| format!("无法启动 {}", executable.display()))?;
+            Ok(CodexProcess::Child(child))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn launch_codex_appx(aumid: &str, debug_port: u16) -> anyhow::Result<CodexProcess> {
+    use windows::Win32::Foundation::{S_FALSE, S_OK};
+    use windows::Win32::System::Com::{
+        CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_CREATION_FLAGS, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_INFORMATION, PROCESS_SYNCHRONIZE, SetPriorityClass,
+    };
+    use windows::Win32::UI::Shell::{
+        AO_NONE, ApplicationActivationManager, IApplicationActivationManager,
+    };
+    use windows::core::PCWSTR;
+
+    struct ComGuard(bool);
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    let init_res = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let _com_guard = ComGuard(init_res == S_OK || init_res == S_FALSE);
+
+    let manager: IApplicationActivationManager = unsafe {
+        CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)
+            .context("无法创建 ApplicationActivationManager COM 实例")?
+    };
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let aumid_wide = wide(aumid);
+    let args_str = format!(
+        "--remote-debugging-port={debug_port} --remote-allow-origins=http://127.0.0.1:{debug_port}"
+    );
+    let args_wide = wide(&args_str);
+
+    let process_id: u32 = unsafe {
+        manager
+            .ActivateApplication(
+                PCWSTR(aumid_wide.as_ptr()),
+                PCWSTR(args_wide.as_ptr()),
+                AO_NONE,
+            )
+            .context("通过 ApplicationActivationManager 激活 OpenAI Codex 失败")?
+    };
+
+    if process_id == 0 {
+        bail!("ApplicationActivationManager 返回的进程 PID 为 0");
+    }
+
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            process_id,
+        )
+    };
+
+    if let Ok(handle) = handle {
+        unsafe {
+            let _ = SetPriorityClass(handle, PROCESS_CREATION_FLAGS(BELOW_NORMAL_PRIORITY_CLASS));
+        }
+        Ok(CodexProcess::Handle {
+            pid: process_id,
+            handle,
+        })
+    } else {
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                process_id,
+            )
+            .context("无法打开 Codex 进程句柄")?
+        };
+        Ok(CodexProcess::Handle {
+            pid: process_id,
+            handle,
+        })
+    }
 }
 
 pub fn queue_switch(paths: &AccountPaths, record_id: &str) -> anyhow::Result<()> {
@@ -540,16 +718,15 @@ fn refresh_process_discovery(system: &mut System) {
 }
 
 pub async fn wait_until_codex_stops(
-    mut root_process: Child,
+    mut root_process: CodexProcess,
     debug_port: u16,
 ) -> anyhow::Result<()> {
     let mut missing = 0_u8;
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
         if root_process
-            .try_wait()
+            .is_running()
             .context("无法查询 Codex 主进程状态")?
-            .is_none()
         {
             missing = 0;
             continue;
