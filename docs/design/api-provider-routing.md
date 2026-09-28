@@ -25,6 +25,8 @@ renderer 只使用 `/api-providers/list|discover|save|delete|catalog`。`list` �
 
 启动顺序是：`stop → lock → broker → config → launch → inject`。broker 只监听 `127.0.0.1`，只接受 codex-plus 配置的本机 Bearer token。首选稳定端口为 43121，刻意避开 Windows 默认动态客户端端口范围 49152–65535；若该端口仍因普通占用、Windows 保留范围或 WSL mirrored networking/FSE 端口跟踪而无法绑定，必须直接绑定系统分配的空闲本机端口，并在保持该 listener 的同时把实际端口写入 Codex 配置。不能先探测再释放端口，也不能因一个固定端口失败而终止整个接管生命周期。
 
+登录自启会在同一 launcher 进程内反复接管 Codex。每轮受管生命周期结束时必须取消并等待该轮 broker 任务退出、释放 listener，再进入下一轮；仅丢弃 `JoinHandle` 会让服务器继续运行并占住旧端口。
+
 用户级 `config.toml` 只增量维护：
 
 ```toml

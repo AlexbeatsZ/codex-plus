@@ -18,6 +18,7 @@
     diagnostics: [],
     requestClients: 0,
     nativeModelQueries: 0,
+    clickListenerInstalled: false,
   };
   const clientOriginals = new WeakMap();
   const installedManagers = new WeakSet();
@@ -557,19 +558,22 @@
       };
       window.__codexPlusResponsePatch = VERSION;
     }
-    document.addEventListener("click", (event) => {
-      const option = event.target?.closest?.('[role="option"],[role="menuitemradio"],[data-value]');
-      if (!option) return;
-      const value = String(option.getAttribute("data-value") || "").trim();
-      const label = String(option.textContent || "").replace(/\s+/g, " ").trim();
-      const api = state.catalog.find((model) => value === model.routeId || label === String(model.displayName || "").trim() || label.startsWith(`${String(model.displayName || "").trim()} `));
-      if (api) setSelectedModel(api.routeId);
-      else {
-        const officialByLabel = state.officialNames.get(label) || [...state.officialNames].find(([name]) => label.startsWith(`${name} `))?.[1] || "";
-        const official = state.officialModels.has(value) || /^(gpt-|codex-|o[1-9](?:-|$))/i.test(value) ? value : officialByLabel;
-        if (official) setSelectedOfficialModel(official);
-      }
-    }, true);
+    if (!state.clickListenerInstalled) {
+      document.addEventListener("click", (event) => {
+        const option = event.target?.closest?.('[role="option"],[role="menuitemradio"],[data-value]');
+        if (!option) return;
+        const value = String(option.getAttribute("data-value") || "").trim();
+        const label = String(option.textContent || "").replace(/\s+/g, " ").trim();
+        const api = state.catalog.find((model) => value === model.routeId || label === String(model.displayName || "").trim() || label.startsWith(`${String(model.displayName || "").trim()} `));
+        if (api) setSelectedModel(api.routeId);
+        else {
+          const officialByLabel = state.officialNames.get(label) || [...state.officialNames].find(([name]) => label.startsWith(`${name} `))?.[1] || "";
+          const official = state.officialModels.has(value) || /^(gpt-|codex-|o[1-9](?:-|$))/i.test(value) ? value : officialByLabel;
+          if (official) setSelectedOfficialModel(official);
+        }
+      }, true);
+      state.clickListenerInstalled = true;
+    }
     void loadCatalog().catch((error) => diagnostic("catalog-failed", { message: String(error?.message || error) }));
     void installAppServer().then((installed) => {
       if (!installed && document.getElementById("root") && !installTimer) {

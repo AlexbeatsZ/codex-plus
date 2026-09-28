@@ -115,13 +115,15 @@ async fn run_attach_existing(paths: AccountPaths, debug_port: u16) -> anyhow::Re
         "launcher.attach_existing",
         json!({"port": debug_port}),
     );
-    let broker = broker::start(paths.clone()).await?;
+    let mut broker = broker::start(paths.clone()).await?;
     log_broker_port_selection(&paths, &broker);
     config::reconcile_codex_config(&paths, broker.port())?;
-    tokio::select! {
+    let result = tokio::select! {
         result = cdp::run_watchdog(debug_port, service) => result,
         result = broker.wait() => result.context("API broker 意外结束"),
-    }
+    };
+    broker.shutdown().await;
+    result
 }
 
 async fn run_login_startup(paths: AccountPaths) -> anyhow::Result<()> {
@@ -173,7 +175,7 @@ async fn run_managed_codex(
     );
     runtime::stop_existing_runtime(&paths)?;
     let _guard = runtime::acquire_launcher_guard(&paths)?;
-    let broker = broker::start(paths.clone()).await?;
+    let mut broker = broker::start(paths.clone()).await?;
     log_broker_port_selection(&paths, &broker);
     config::reconcile_codex_config(&paths, broker.port())?;
     let debug_port = runtime::select_debug_port(DEBUG_PORT)?;
@@ -200,11 +202,13 @@ async fn run_managed_codex(
         tokio::spawn(runtime::capture_web_login(paths.clone()));
     }
 
-    tokio::select! {
+    let result = tokio::select! {
         result = cdp::run_watchdog(debug_port.port, service) => result.context("注入监测意外结束"),
         result = broker.wait() => result.context("API broker 意外结束"),
         result = runtime::wait_until_codex_stops(codex_process, debug_port.port) => result.context("Codex 退出监测意外结束"),
-    }
+    };
+    broker.shutdown().await;
+    result
 }
 
 fn log_broker_port_selection(paths: &AccountPaths, broker: &broker::BrokerHandle) {

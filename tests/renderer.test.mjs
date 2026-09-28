@@ -101,6 +101,23 @@ test("menu observers ignore unrelated DOM churn and react to a new profile menu"
   );
 });
 
+test("reinjecting model routing does not add document click listeners", async () => {
+  const dom = setup(async () => ({ status: "ok", models: [] }));
+  await flush();
+  const original = dom.window.document.addEventListener.bind(dom.window.document);
+  let added = 0;
+  dom.window.document.addEventListener = (type, ...args) => {
+    if (type === "click") added += 1;
+    return original(type, ...args);
+  };
+
+  dom.window.eval(routingScript);
+  dom.window.eval(routingScript);
+  await flush();
+  assert.equal(added, 0);
+  dom.window.close();
+});
+
 test("discovers models, edits aliases, and saves without receiving a key", async () => {
   const calls = [];
   const dom = setup(async (path, payload) => {

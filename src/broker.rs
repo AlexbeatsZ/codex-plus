@@ -31,7 +31,7 @@ struct BrokerState {
 pub struct BrokerHandle {
     port: u16,
     preferred_bind_error: Option<String>,
-    task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    task: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
 }
 
 impl BrokerHandle {
@@ -43,8 +43,29 @@ impl BrokerHandle {
         self.preferred_bind_error.as_deref()
     }
 
-    pub async fn wait(self) -> anyhow::Result<()> {
-        self.task.await.map_err(anyhow::Error::from)?
+    pub async fn wait(&mut self) -> anyhow::Result<()> {
+        let result = self
+            .task
+            .as_mut()
+            .expect("broker task already consumed")
+            .await;
+        self.task.take();
+        result.map_err(anyhow::Error::from)?
+    }
+
+    pub async fn shutdown(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for BrokerHandle {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.as_ref() {
+            task.abort();
+        }
     }
 }
 
@@ -87,7 +108,7 @@ async fn start_on_port(paths: AccountPaths, preferred_port: u16) -> anyhow::Resu
     Ok(BrokerHandle {
         port,
         preferred_bind_error,
-        task,
+        task: Some(task),
     })
 }
 
@@ -263,14 +284,14 @@ mod tests {
         drop(candidate);
         let temp = TempDir::new().unwrap();
 
-        let handle = start_on_port(test_paths(&temp), preferred_port)
+        let mut handle = start_on_port(test_paths(&temp), preferred_port)
             .await
             .unwrap();
 
         assert_eq!(handle.port(), preferred_port);
         assert!(handle.preferred_bind_error().is_none());
         assert!(StdTcpListener::bind((Ipv4Addr::LOCALHOST, handle.port())).is_err());
-        handle.task.abort();
+        handle.shutdown().await;
     }
 
     #[tokio::test]
@@ -279,13 +300,32 @@ mod tests {
         let preferred_port = occupied.local_addr().unwrap().port();
         let temp = TempDir::new().unwrap();
 
-        let handle = start_on_port(test_paths(&temp), preferred_port)
+        let mut handle = start_on_port(test_paths(&temp), preferred_port)
             .await
             .unwrap();
 
         assert_ne!(handle.port(), preferred_port);
         assert!(handle.preferred_bind_error().is_some());
         assert!(StdTcpListener::bind((Ipv4Addr::LOCALHOST, handle.port())).is_err());
-        handle.task.abort();
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_broker_wait_releases_its_listener() {
+        let temp = TempDir::new().unwrap();
+        let mut handle = start_on_port(test_paths(&temp), 0).await.unwrap();
+        let port = handle.port();
+
+        tokio::select! {
+            _ = handle.wait() => panic!("broker ended before the managed lifecycle"),
+            _ = std::future::ready(()) => {},
+        }
+        handle.shutdown().await;
+
+        assert!(StdTcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok());
+        let mut next = start_on_port(test_paths(&temp), port).await.unwrap();
+        assert_eq!(next.port(), port);
+        assert!(next.preferred_bind_error().is_none());
+        next.shutdown().await;
     }
 }
