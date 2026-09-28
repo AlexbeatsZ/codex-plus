@@ -14,6 +14,7 @@
 - 一次受管 Codex 生命周期结束后，登录模式必须重新获取等待锁并回到静默监测；官方应用更新或自重启产生的新根进程也要再次接管。根进程发现必须排除带 `--type=` 的 Electron 子进程和 `codex app-server`，避免残留 crashpad/renderer 触发无意义重启。
 - 用户直接双击无参数 EXE 时，仍立即执行普通启动；它会停止等待中的登录实例，因此不会被后台 monitor 阻塞。
 - macOS LaunchAgent 必须设置 `AbandonProcessGroup=true`。账户 helper 是 launcher 的子进程，但切换事务会主动停止父 launcher；若由 `launchd` 默认管理整个进程组，父进程退出时 helper 也会被清理，事务会停在 `runtime.stop.started`，留下 `pending-action.json` 且无法重新拉起 launcher。
+- macOS LaunchAgent 必须使用 `ProcessType=Interactive`：登录模式虽然多数时间只是后台等待，但它会直接派生官方 Codex GUI 进程。`Background` 资源策略会继承到子进程，令官方应用以后台优先级运行；不能只把启动器按后台任务分类。修改已安装 plist 后须等下次登录或重新加载该 job 才会影响 `launchd` 已持有的配置。
 
 ## 普通启动
 

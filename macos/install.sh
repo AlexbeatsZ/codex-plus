@@ -42,7 +42,7 @@ cat > "$PLIST" <<PLIST
   <key>KeepAlive</key>
   <false/>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>AbandonProcessGroup</key>
   <true/>
   <key>StandardOutPath</key>
