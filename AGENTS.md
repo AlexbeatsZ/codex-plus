@@ -38,6 +38,10 @@
 
 # Active Work
 
+- 同次 ROG 启动验收还发现 `.codex/config.toml` 的 `[windows] sandbox="restricted-token"` 不被官方 `26.924.6891.0` 接受，app-server 明确报只接受 `elevated`、`unelevated`、`mxc`，页面停在“正在加载登录要求…”。已仅改为非提权 `unelevated`，原配置备份与旧 EXE 同目录；不要通过删除凭据或重装解决此解析错误。
+
+- 2026-10-01 ROG (`192.168.31.32`) 的 `26.924.6891.0` 官方包被 9 月 11 日旧 launcher 直接作为 EXE 启动，报进程没有程序包标识符。已部署 OMEN 上 `6055c3c` 对应的 9 月 25 日 Windows release；ROG 原 EXE 保存在 `.codex-plus/release-backups/20261001-package-identity/codex-plus.exe`。实测交互 Session 1 的根进程 `GetPackageFullName` 返回完整 `OpenAI.Codex_26.924.6891.0_x64__2p2nqsd0c76g0`，优先级 `BelowNormal`、主窗口 1280×820、CDP 主页面和 bridge 均可响应。ROG 源码仍停在 `c6dba7e` 且有用户未提交改动，后续重建前必须同步包激活修复，不能用旧源码覆盖已部署 EXE；GitHub HTTPS fetch 在 SSH 会话下因 wincredman 凭据访问失败，未修改凭据设置。
+
 - 2026-09-12 mac 账户切换可靠性：已完成并部署 CDP 桥假存活修复（心跳需回包 + 写超时 + 页面桥兜底超时）与 LaunchAgent plist 漂移修复，设计见 `docs/design/account-switch-lifecycle.md`。第三项“切换后对话历史消失”经复核推翻早先结论：UI 历史来自 `$CODEX_HOME/thread_history_1.sqlite` 的物化投影，投影在 rollout 出现 `ordinal` 回退后永久停在断点，与账户切换的硬停止无因果关系（切换当秒 rollout 写入的是正常 `turn_aborted`；未结束的 turn 本身不会破坏投影）。官方无重建投影入口（`codex migrate-rollouts` 跳过已 paginated 的 thread），故未改代码，结论见 `docs/design/account-switch-lifecycle.md` 的“对话历史与投影”。任务日志：`~/.agents/macos--codex-plus-account-switch/AGENTS.md`。
 
 - 2026-09-25 Windows Store MSIX 启动拦截与 COM 激活修复：定位并彻底解决 Windows 11 下 Store 版 Codex/ChatGPT（`OpenAI.Codex_...`）更新后启动弹窗报 `无法启动 C:\Program Files\WindowsApps\...\app\ChatGPT.exe: 拒绝访问。(os error 5)` 的故障。根因为 WindowsApps 下二进制具有 NTFS Conditional ACE（`WIN://SYSAPPID Contains ...`），普通 Win32 进程没有 AppX 身份 Claim 导致内核拦截直接创建。已重构 `src/runtime.rs`：新增 `CodexAppTarget`（区分 `Appx` 与 `Executable`）和 `CodexProcess`（统一 `Child` 与 `Handle` 抽象），通过 PowerShell 查询 `PackageFamilyName` 构造 AUMID（`OpenAI.Codex_2p2nqsd0c76g0!App`），调用 Shell COM `IApplicationActivationManager::ActivateApplication` 传入 `--remote-debugging-port` 与 `--remote-allow-origins` 进行包激活，并利用 `OpenProcess` 对返回 PID 设置 `BelowNormal` 优先级并做生命周期监测。50 项 Rust 单元测试、18 项渲染器测试与 14 项 local-tools 测试全通，实机 release 启动成功注入 CDP 9229。
