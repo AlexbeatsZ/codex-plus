@@ -3,9 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
+import { localMachineId } from "./machine-operations.js";
 
 // Optional private bridge. No new daemon, model runtime, secrets in schemas, or state owner.
 export function registerAiDecisionTools(server: McpServer): void {
+  // This adapter belongs to ROG; even a copied bridge config cannot enable it on OMEN.
+  if (localMachineId() !== "rog") return;
   const configPath = process.env.AI_DECISION_BRIDGE_CONFIG
     || path.join(os.homedir(), "AppData", "Local", "AI-Decision", "bridge.json");
   if (!fs.existsSync(configPath)) return;
