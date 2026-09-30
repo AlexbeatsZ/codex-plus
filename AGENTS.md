@@ -38,7 +38,7 @@
 
 # Active Work
 
-- 同次 ROG 启动验收还发现 `.codex/config.toml` 的 `[windows] sandbox="restricted-token"` 不被官方 `26.924.6891.0` 接受，app-server 明确报只接受 `elevated`、`unelevated`、`mxc`，页面停在“正在加载登录要求…”。已仅改为非提权 `unelevated`，原配置备份与旧 EXE 同目录；不要通过删除凭据或重装解决此解析错误。
+- 同次 ROG 启动验收还发现 `.codex/config.toml` 的 `[windows] sandbox="restricted-token"` 不被官方 `26.924.6891.0` 接受，app-server 明确报只接受 `elevated`、`unelevated`、`mxc`，页面停在“正在加载登录要求…”。已仅改为非提权 `unelevated`，原配置备份与旧 EXE 同目录；不要通过删除凭据或重装解决此解析错误。重新启动后 `config/read`、`account/read`、`getAuthStatus` 均正常回包，页面进入 “Continue signing in with your browser”，浏览器登录由用户完成。
 
 - 2026-10-01 ROG (`192.168.31.32`) 的 `26.924.6891.0` 官方包被 9 月 11 日旧 launcher 直接作为 EXE 启动，报进程没有程序包标识符。已部署 OMEN 上 `6055c3c` 对应的 9 月 25 日 Windows release；ROG 原 EXE 保存在 `.codex-plus/release-backups/20261001-package-identity/codex-plus.exe`。实测交互 Session 1 的根进程 `GetPackageFullName` 返回完整 `OpenAI.Codex_26.924.6891.0_x64__2p2nqsd0c76g0`，优先级 `BelowNormal`、主窗口 1280×820、CDP 主页面和 bridge 均可响应。ROG 源码仍停在 `c6dba7e` 且有用户未提交改动，后续重建前必须同步包激活修复，不能用旧源码覆盖已部署 EXE；GitHub HTTPS fetch 在 SSH 会话下因 wincredman 凭据访问失败，未修改凭据设置。
 
