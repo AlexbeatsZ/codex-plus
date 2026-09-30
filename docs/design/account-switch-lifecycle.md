@@ -38,6 +38,8 @@ macOS 睡眠唤醒后，launcher 已建立的 CDP WebSocket 会长期保持 `EST
 
 ## 对话历史与投影
 
+CDP 初次安装模型路由会立即调用页面 bridge。必须在接收 session 消息的循环开始后异步执行该脚本；同步 setup command 等待回包时会忽略 `Runtime.bindingCalled`，造成首次 catalog 请求丢失和 30 秒超时。`injection.renderer.ready` 仅表示账户/API 界面已安装；只有心跳得到模型路由的真实 `health.ready`（包含 `model/list` 往返）才写 `injection.ready`。健康时不重新遍历 React/DOM，未就绪时有界重试。
+
 UI 显示的历史不直接读 rollout，而是读 `$CODEX_HOME/thread_history_1.sqlite` 的物化投影（`thread_turns` / `thread_items` / `thread_history_projection_state`）。投影按 `rollout_ordinal` 增量推进；一旦某个 rollout 里出现 ordinal 回退（同一文件被第二个 writer 以重新开始的序号追加），投影会停在断点，**断点之后的 turn 不会再投影**。此时 UI 表现为“对话历史消失 / 只剩最早一段”，而原始 rollout 仍然完整（所以模型仍记得内容）。`codex migrate-rollouts` 对已经是 paginated 的 thread 直接跳过，官方没有提供重建投影的入口。
 
 2026-09-12 复核结论（thread `01a08474-445e-7370-a1a1-a9af071f0325`）：

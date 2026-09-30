@@ -3,7 +3,7 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 16;
+  const VERSION = 17;
   const PROVIDER = "codex-plus-api";
   const SELECTED_KEY = "codex-plus:selected-model";
   const state = {
@@ -18,6 +18,8 @@
     diagnostics: [],
     requestClients: 0,
     nativeModelQueries: 0,
+    modelProbe: false,
+    forkReady: false,
     clickListenerInstalled: false,
   };
   const clientOriginals = new WeakMap();
@@ -27,11 +29,15 @@
   let originalSendMessageFromView = null;
   let activeRequestClient = null;
   let activeConversationManager = null;
-  let appServerDispatch = null;
+  let nativeFork = null;
   let appServerHost = null;
   let queryClient = null;
   let installTimer = null;
   let pendingThreadNavigation = null;
+  let installing = null;
+  const managersByHost = new Map();
+  const clientsByHost = new Map();
+  const installedHosts = new WeakSet();
 
   if (window.__codexPlusModelRouting?.version === VERSION) {
     window.__codexPlusModelRouting.install();
@@ -167,12 +173,10 @@
     const looksLikeModels = (allowEmpty && array.length === 0) || array.some((item) => typeof item.model === "string" || (typeof item.id === "string" && Array.isArray(item.supportedReasoningEfforts)));
     if (!looksLikeModels) return false;
     rememberOfficialModels(array);
-    const ids = new Set(array.flatMap((item) => [item.model, item.id]).filter(Boolean).map(String));
-    let changed = false;
-    for (const model of state.catalog) {
-      if (!ids.has(String(model.routeId))) { array.push(descriptor(model)); changed = true; }
-    }
-    return changed;
+    // Replace our descriptors so aliases, visibility and deletions reach cached lists.
+    const official = array.filter((item) => !/^cp-/.test(String(item.model || item.id || "")));
+    array.splice(0, array.length, ...official, ...state.catalog.map(descriptor));
+    return true;
   }
 
   function patchStringArray(array) {
@@ -205,6 +209,7 @@
     const id = String(model || "");
     if (!id) return "";
     if (state.byRoute.has(id)) return PROVIDER;
+    if (/^cp-/.test(id)) throw new Error("该 API 模型已删除、隐藏或停用，请重新选择模型");
     if (state.officialModels.has(id) || /^(gpt-|codex-|o[1-9](?:-|$))/i.test(id)) return "openai";
     return "";
   }
@@ -336,15 +341,17 @@
     const ui = threadUiInfo(threadId);
     try {
       let childId = "";
-      if (appServerDispatch) {
-        childId = String(await appServerDispatch("fork-conversation-from-latest", {
-          hostId: ui.hostId,
-          conversationId: threadId,
+      if (nativeFork && appServerHost) {
+        const forked = await nativeFork(appServerHost, String(client.hostId || ui.hostId), {
+          sourceConversationId: threadId,
           model: targetModel,
-        }) || "");
+        });
+        if (forked?.status !== "created" || forked?.synchronization?.status !== "complete") {
+          throw new Error(forked?.synchronization?.message || forked?.reason || "原生任务分支未完成同步");
+        }
+        childId = String(forked.conversationId || "");
       } else {
-        const forked = await original.call(client, "thread/fork", { threadId, model: targetModel, modelProvider: targetProvider });
-        childId = String(forked?.thread?.id || forked?.threadId || forked?.id || "");
+        throw new Error("当前版本的原生历史分支接口尚未就绪");
       }
       if (!childId) throw new Error("fork 未返回新任务 ID");
       const read = await original.call(client, "thread/read", { threadId: childId, includeTurns: false });
@@ -352,10 +359,10 @@
       if (verified !== targetProvider) throw new Error(`provider 验证失败：${verified || "未返回 provider"}`);
       threadProviders.set(childId, targetProvider);
       threadModels.set(childId, targetModel);
-      if (appServerDispatch && ui.title) {
-        try { await appServerDispatch("set-thread-title", { hostId: ui.hostId, conversationId: childId, title: ui.title }); } catch {}
+      if (ui.title) {
+        try { await managersByHost.get(String(client.hostId || ui.hostId))?.setThreadTitle?.(childId, ui.title); } catch {}
       }
-      pendingThreadNavigation = appServerDispatch ? { threadId: childId, hostId: ui.hostId } : null;
+      pendingThreadNavigation = { threadId: childId, hostId: String(client.hostId || ui.hostId) };
       diagnostic("provider-fork-complete", { sourceThreadId: threadId, targetThreadId: childId, currentProvider, targetProvider });
       return { status: "ok", provider: targetProvider, threadId: childId };
     } catch (error) {
@@ -443,17 +450,19 @@
       return result;
     };
     activeRequestClient = client;
+    clientsByHost.set(String(client.hostId || "local"), client);
     state.requestClients += 1;
     diagnostic("app-server-client-installed", { count: state.requestClients });
     return true;
   }
 
   function installConversationManager(manager) {
-    if (!manager || !isRequestClient(manager.requestClient)) return false;
+    if (!manager || !isRequestClient(manager.requestClient) || typeof manager.clearPrewarmedThreads !== "function" || typeof manager.forkConversationFromLatest !== "function") return false;
     installRequestClient(manager.requestClient);
     if (installedManagers.has(manager)) return false;
     installedManagers.add(manager);
     activeConversationManager = manager;
+    managersByHost.set(String(manager.hostId || manager.requestClient.hostId || "local"), manager);
     discardPrewarmedThreads("routing-installed");
     diagnostic("conversation-manager-installed");
     return true;
@@ -468,28 +477,51 @@
     return null;
   }
 
-  function findAppServerHost() {
+  function discoverRuntime() {
     const root = reactRootFiber();
-    if (!root) return null;
+    if (!root) return false;
     const queue = [root];
     const seen = new Set();
     while (queue.length && seen.size < 100000) {
-      const fiber = queue.shift();
+      const fiber = queue.pop();
       if (!fiber || seen.has(fiber)) continue;
       seen.add(fiber);
-      let source = "";
-      try { source = String(fiber.type || ""); } catch {}
-      if (source.includes("setMessageHandler")) {
-        const host = fiber.memoizedState?.memoizedState?.current;
-        if (host && typeof host.get === "function" && host.node?.queryClient) return host;
+      inspectRuntimeValue(fiber.memoizedProps?.value);
+      const hooks = new Set();
+      for (let hook = fiber.memoizedState; hook && !hooks.has(hook) && hooks.size < 80; hook = hook.next) {
+        hooks.add(hook);
+        inspectRuntimeValue(hook.memoizedState);
+        inspectRuntimeValue(hook.memoizedState?.current);
+        if (Array.isArray(hook.memoizedState)) inspectRuntimeValue(hook.memoizedState[0]);
       }
       if (fiber.child) queue.push(fiber.child);
       if (fiber.sibling) queue.push(fiber.sibling);
     }
-    return null;
+    activeRequestClient = clientsByHost.get("local") || activeRequestClient;
+    activeConversationManager = managersByHost.get("local") || activeConversationManager;
+    return !!activeRequestClient;
   }
 
-  async function primeRequestClient() {
+  function inspectRuntimeValue(value) {
+    if (!value || typeof value !== "object") return;
+    installRequestClient(value);
+    installConversationManager(value);
+    const cache = value.node?.queryClient || value.queryClient;
+    if (typeof value.get !== "function" || !cache?.getQueryCache || !cache?.setQueryData) return;
+    if (!appServerHost) { appServerHost = value; queryClient = cache; }
+    if (installedHosts.has(value)) return;
+    installedHosts.add(value);
+    const originalGet = value.get;
+    value.get = function (...args) {
+      const resolved = originalGet.apply(this, args);
+      installRequestClient(resolved);
+      installConversationManager(resolved);
+      return resolved;
+    };
+  }
+
+  async function resolveNativeFork() {
+    if (nativeFork) return true;
     const urls = [...new Set([
       ...[...document.scripts].map((node) => node.src),
       ...[...document.querySelectorAll("link[href]")].map((node) => node.href),
@@ -498,42 +530,44 @@
     const url = urls.find((candidate) => candidate.includes("/assets/app-initial-"));
     if (!url) return false;
     const module = await import(url);
-    const dispatch = typeof module.Txt === "function" ? module.Txt : Object.values(module).find((value) => {
+    // Match the native helper's contract, never its version-specific export alias.
+    const candidates = Object.values(module).filter((value) => {
       if (typeof value !== "function") return false;
       try {
         const source = functionToString.call(value);
-        return source.includes("sendRequest(e,t)") && source.includes("sendRequest(e,t,n)");
+        return source.includes(".forkConversationFromLatest(") && source.includes(".forkConversationFromTurn(") && source.includes("readResumeInputs") && source.includes("sourceConversationId");
       } catch {
         return false;
       }
     });
-    if (!dispatch) { diagnostic("app-server-dispatch-not-found"); return false; }
-    appServerDispatch = dispatch;
-    await dispatch("list-models-for-host", { hostId: "local", includeHidden: true, cursor: null, limit: 100 });
+    if (candidates.length !== 1) { diagnostic("native-fork-helper-not-found", { candidates: candidates.length }); return false; }
+    nativeFork = candidates[0];
+    state.forkReady = true;
     return true;
   }
 
-  async function installAppServer() {
-    if (!appServerHost) appServerHost = findAppServerHost();
-    if (!appServerHost) return false;
-    queryClient = appServerHost.node?.queryClient || appServerHost.queryClient || null;
-    const originalGet = appServerHost.__codexPlusOriginalGet || appServerHost.get;
-    if (!appServerHost.__codexPlusOriginalGet) {
-      Object.defineProperty(appServerHost, "__codexPlusOriginalGet", { value: originalGet, configurable: true });
-    }
-    appServerHost.get = function (...args) {
-      const value = originalGet.apply(this, args);
-      installRequestClient(value);
-      installConversationManager(value);
-      return value;
-    };
-    try { await primeRequestClient(); } catch (error) { diagnostic("app-server-prime-failed", { message: String(error?.message || error) }); }
-    if (!state.loaded || state.catalog.length === 0) {
-      try { await loadCatalog(true); } catch (error) { diagnostic("catalog-retry-failed", { message: String(error?.message || error) }); }
-    }
-    refreshNativeModelQueries();
-    diagnostic("app-server-routing-installed", { requestClients: state.requestClients, nativeModelQueries: state.nativeModelQueries });
-    return state.requestClients > 0;
+  function health() {
+    return { ready: state.loaded && state.modelProbe && clientsByHost.has("local") && managersByHost.has("local"), requestClients: state.requestClients, nativeModelQueries: state.nativeModelQueries, modelProbe: state.modelProbe, forkReady: state.forkReady };
+  }
+
+  function installAppServer() {
+    if (installing) return installing;
+    installing = (async () => {
+      if (!discoverRuntime()) return false;
+      try {
+        await loadCatalog();
+        if (!state.modelProbe) {
+          const models = await activeRequestClient.sendRequest("model/list", { includeHidden: true, cursor: null, limit: 100 }, { priority: "background", timeoutMs: 8000 });
+          if (!Array.isArray(models?.data)) throw new Error("model/list 返回格式不兼容");
+          state.modelProbe = true;
+          diagnostic("model-probe-succeeded", { count: models.data.length });
+        }
+        await resolveNativeFork();
+        refreshNativeModelQueries();
+      } catch (error) { diagnostic("app-server-prime-failed", { message: String(error?.message || error) }); }
+      return health().ready;
+    })().finally(() => { installing = null; });
+    return installing;
   }
 
   async function experimentalSwitchThread({ threadId, currentModel, currentProvider, targetModel, targetProvider, idle }) {
@@ -549,15 +583,7 @@
   }
 
   function install() {
-    if (window.__codexPlusResponsePatch !== VERSION) {
-      const original = Response.prototype.json;
-      Response.prototype.json = async function (...args) {
-        const result = await original.apply(this, args);
-        if (!state.loaded) { try { await loadCatalog(); } catch {} }
-        return patchModelResult(result);
-      };
-      window.__codexPlusResponsePatch = VERSION;
-    }
+    if (health().ready) return Promise.resolve(true);
     if (!state.clickListenerInstalled) {
       document.addEventListener("click", (event) => {
         const option = event.target?.closest?.('[role="option"],[role="menuitemradio"],[data-value]');
@@ -574,8 +600,7 @@
       }, true);
       state.clickListenerInstalled = true;
     }
-    void loadCatalog().catch((error) => diagnostic("catalog-failed", { message: String(error?.message || error) }));
-    void installAppServer().then((installed) => {
+    return installAppServer().then((installed) => {
       if (!installed && document.getElementById("root") && !installTimer) {
         let attempts = 0;
         installTimer = setInterval(() => {
@@ -583,12 +608,14 @@
           void installAppServer().then((ok) => { if (ok || attempts >= 40) { clearInterval(installTimer); installTimer = null; } });
         }, 250);
       }
+      return installed;
     });
   }
 
   window.__codexPlusModelRouting = {
     version: VERSION,
     install,
+    health,
     loadCatalog,
     patchModelResult,
     patchRoutingMessage,
@@ -600,7 +627,7 @@
     installConversationManagerForTest: installConversationManager,
     refreshNativeModelQueries,
     setTransportForTest: (send) => { originalSendMessageFromView = send; },
-    setAppDispatchForTest: (dispatch) => { appServerDispatch = dispatch; },
+    setNativeForkForTest: (fork, host = {}) => { nativeFork = fork; appServerHost = host; },
     state,
   };
   install();

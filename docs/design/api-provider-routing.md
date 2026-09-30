@@ -49,7 +49,11 @@ broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 mod
 - `displayName` 使用用户 alias；
 - `description` 显示 API 名称和真实 model ID。
 
-Codex `26.803.5235.0` 的模型目录和任务请求直接经过内部 app-server dispatcher，不经过冻结的 `window.electronBridge`。注入器必须从 React host runtime 获取真实 `AppServerRequestClient`，包装其最低层 `enqueueRequest`，并同步更新 `models/list` Query 缓存；只修改 fetch、DOM、window dispatch 或上层 `sendRequest` 不构成有效路由。特别是新任务预热使用 `prewarmThreadStart → enqueueRequest("thread/start")`，会完全绕过 `sendRequest`。
+模型目录和任务请求经过 React runtime 中的真实 `AppServerRequestClient`，不经过冻结的 `window.electronBridge`。注入器必须包装最低层 `enqueueRequest`，完整保留 scheduler 的 options、dispatch 和 trace 参数，并同步更新 `models/list` Query 缓存。预热使用 `prewarmThreadStart → enqueueRequest("thread/start")`，绕过上层 `sendRequest`。
+
+Codex `26.928.2636.0`（Windows）/`26.928.21956`（macOS）已不含旧 `setMessageHandler` host 特征，`app-initial` 的 `Txt` 导出也已对应无关函数。v17 从 React context、hook/ref/useMemo 值的能力形状发现 scope、request client 与 conversation manager，不再依赖组件源代码或压缩变量名。真实 `model/list` 成功回包、provider catalog 加载和本地 manager/client 接入后才报告模型就绪。跨 provider 分支的原生 helper 通过唯一的 `forkConversationFromLatest`/`forkConversationFromTurn`/`readResumeInputs` 合同特征识别；匹配不唯一则禁用该操作并阻止发送，不能猜一个导出调用。
+
+缓存刷新必须先移除 codex-plus 的 `cp-` descriptor 再按当前目录重建，使 alias、visibility、provider 删除立即生效。已删除或隐藏的 routeId 不得被当作未知官方模型透传。不得全局包装 `Response.json`，以免污染无关 HTTP 响应。
 
 安装路由包装时必须清除安装前已经创建的预热任务；原生选择器改变模型时也必须再次清除缓存。之后的普通创建、预热创建和首轮发送都从同一 `enqueueRequest` 包装进入，保证 routeId 与 `codex-plus-api` 同时提交，不能出现 routeId 搭配 `openai` 的混合状态。
 
@@ -57,7 +61,9 @@ Codex `26.803.5235.0` 的模型目录和任务请求直接经过内部 app-serve
 
 同 provider 的 API→API 切换只覆盖下一次 `turn/start.model`。Codex `26.803.10989.0` 的 provider 在任务 ID 创建时固定：`thread/resume` 不能改变 provider，`thread/shutdown` 已移除，二者都不得用于跨 provider 切换。
 
-跨 provider 发送仅允许空闲或上一轮失败的任务，并采用明确确认的历史分支流程：发送前说明当前限制、会继承完整历史创建新任务分支且保留原任务；用户取消时不 fork、不发送并恢复原选择。用户确认后，通过应用原生 `fork-conversation-from-latest` 命令触发 `thread/fork`，由最低层路由包装同时写入目标 `model` 与 `modelProvider`；随后 `thread/read` 验证新任务 provider，验证成功才把本轮 `turn/start.threadId` 改为新任务 ID。完成发送后复制原标题并自动导航到新分支。任何 fork、验证或导航前置步骤失败都必须保留原任务、恢复选择并阻止消息，绝不能把 GPT 模型名送入 API broker，或把 routeId 送入 `openai`。普通历史分支不得传 `excludeTurns: true`；该字段在当前应用原生实现中只用于 side conversation，会隐藏继承的 turns。
+跨 provider 发送仅允许空闲或上一轮失败的任务，并采用明确确认的历史分支流程。确认后调用新版原生 helper（scope、hostId、sourceConversationId/model），由它提供原生 resume inputs、历史投影和任务注册；最低层路由同时写入目标 model/provider。必须确认返回 `status=created`、`synchronization.status=complete`，再 `thread/read` 验证 provider，最后才发送到新 threadId、复制原标题并导航。用户取消或任一步失败时恢复选择并阻止发送，保留原任务。v17 不再用裸 `thread/fork` fallback 创建未被 UI 注册的任务。
+
+旧版 `26.810.4967.0` 的 `excludeTurns` 限制不能直接套在新版上：`26.928` 原生普通 fork 为分页历史也会提交 `excludeTurns:true`，并通过自己的 history projection/resume 处理继承内容。保持原生 helper 的历史流程；不要自行添加该字段或靠返回的 turns 是否为空判断持久历史是否丢失。
 
 ## 验收不变量
 

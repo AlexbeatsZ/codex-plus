@@ -212,7 +212,7 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.version, 16);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 17);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option \{ color:var\(--cp-text\); background:var\(--cp-bg\); \}/);
 });
@@ -259,13 +259,12 @@ test("patches the real app-server client for native models and provider routing"
   addThreadRow("new-thread", "API source");
   const apiChildRow = addThreadRow("api-child", "API child");
   const gptChildRow = addThreadRow("gpt-child", "GPT child");
-  routing.setAppDispatchForTest(async (method, params) => {
-    calls.push({ method: `dispatch:${method}`, params });
-    if (method === "fork-conversation-from-latest") return params.conversationId === "existing" ? "api-child" : "gpt-child";
-    return {};
+  routing.setNativeForkForTest(async (host, hostId, params) => {
+    calls.push({ method: "native-fork", params });
+    return { status: "created", conversationId: params.sourceConversationId === "existing" ? "api-child" : "gpt-child", synchronization: { status: "complete" } };
   });
   let prewarmClears = 0;
-  assert.equal(routing.installConversationManagerForTest({ requestClient: client, clearPrewarmedThreads: () => { prewarmClears += 1; } }), true);
+  assert.equal(routing.installConversationManagerForTest({ requestClient: client, forkConversationFromLatest() {}, setThreadTitle: async (id, title) => { calls.push({ method: "native-title", id, title }); }, clearPrewarmedThreads: () => { prewarmClears += 1; } }), true);
   assert.equal(prewarmClears, 1);
   routing.setSelectedModel("cp-route");
   assert.equal(prewarmClears, 2);
@@ -279,7 +278,7 @@ test("patches the real app-server client for native models and provider routing"
   await client.sendRequest("thread/list", { modelProviders: ["openai"] });
   assert.equal(calls.find((call) => call.method === "thread/list").params.modelProviders, null);
   await client.sendRequest("turn/start", { threadId: "existing", model: "cp-route" });
-  assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "dispatch:fork-conversation-from-latest", "thread/read", "dispatch:set-thread-title", "turn/start"]);
+  assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "native-fork", "thread/read", "native-title", "turn/start"]);
   assert.equal(calls.at(-4).params.model, "cp-route");
   assert.equal(calls.at(-1).params.threadId, "api-child");
   await flush();
@@ -291,7 +290,7 @@ test("patches the real app-server client for native models and provider routing"
   dom.window.document.body.append(officialOption);
   officialOption.click();
   await client.sendRequest("turn/start", { threadId: "new-thread", modelProvider: "openai" });
-  assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "dispatch:fork-conversation-from-latest", "thread/read", "dispatch:set-thread-title", "turn/start"]);
+  assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "native-fork", "thread/read", "native-title", "turn/start"]);
   assert.equal(calls.at(-4).params.model, "gpt-5");
   assert.equal(calls.at(-1).params.threadId, "gpt-child");
   assert.equal(calls.at(-1).params.model, "gpt-5");
@@ -358,10 +357,9 @@ test("blocks the turn when a provider fork cannot be verified", async () => {
     },
   };
   routing.installRequestClientForTest(client);
-  routing.setAppDispatchForTest(async (method, params) => {
-    calls.push({ method: `dispatch:${method}`, params });
-    if (method === "fork-conversation-from-latest") return "bad-child";
-    return {};
+  routing.setNativeForkForTest(async (host, hostId, params) => {
+    calls.push({ method: "native-fork", params });
+    return { status: "created", conversationId: "bad-child", synchronization: { status: "complete" } };
   });
   await client.sendRequest("list-models", {});
   await client.sendRequest("thread/start", { model: "cp-route" });
@@ -374,6 +372,61 @@ test("blocks the turn when a provider fork cannot be verified", async () => {
   await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread" }), /provider 验证失败：codex-plus-api/);
   assert.equal(calls.some((call) => call.method === "turn/start"), false);
   assert.equal(routing.selectedModel(), "cp-route");
+});
+
+test("discovers modern React scopes and clients without minified names", async () => {
+  let catalog = [{ routeId: "cp-route", modelId: "upstream", displayName: "Before" }];
+  const dom = setup(async () => ({ status: "ok", models: catalog }));
+  await flush();
+  const routing = dom.window.__codexPlusModelRouting;
+  assert.equal(routing.health().ready, false);
+  const queries = [{ queryKey: ["models", "list", "local"], state: { data: { data: [{ model: "gpt-test", displayName: "Native" }] } } }];
+  const queryClient = {
+    getQueryCache: () => ({ getAll: () => queries }),
+    setQueryData: (key, update) => { queries[0].state.data = update(queries[0].state.data); },
+  };
+  const calls = [];
+  const client = {
+    hostId: "local", requestPromises: new dom.window.Map(),
+    sendRequest(method, params, options) { return this.enqueueRequest(method, params, options); },
+    async enqueueRequest(...args) { calls.push(args); return { data: [{ model: "gpt-test", displayName: "Native" }] }; },
+  };
+  let cleared = 0;
+  const manager = { requestClient: client, clearPrewarmedThreads() { cleared += 1; }, forkConversationFromLatest() {} };
+  const scope = { node: { queryClient }, get: () => client };
+  const root = dom.window.document.createElement("div");
+  root.id = "root";
+  root.__reactContainer$modern = { memoizedState: { memoizedState: { current: scope }, next: { memoizedState: [manager, []] } } };
+  dom.window.document.body.append(root);
+  routing.install();
+  await flush();
+  assert.equal(routing.health().ready, true);
+  assert.equal(routing.health().modelProbe, true);
+  assert.equal(cleared, 1);
+  assert.equal(calls[0][0], "model/list");
+  assert.deepEqual(Array.from(queries[0].state.data.data, m => m.model), ["gpt-test", "cp-route"]);
+  catalog = [{ ...catalog[0], displayName: "After" }];
+  await routing.loadCatalog(true);
+  assert.equal(queries[0].state.data.data[1].displayName, "After");
+  catalog = [];
+  await routing.loadCatalog(true);
+  assert.deepEqual(Array.from(queries[0].state.data.data, m => m.model), ["gpt-test"]);
+  await assert.rejects(client.sendRequest("thread/start", { model: "cp-route" }), /已删除/);
+  const dispatch = () => {}, trace = {};
+  await client.enqueueRequest("thread/start", { model: "gpt-test" }, {}, dispatch, trace);
+  assert.equal(calls.at(-1)[3], dispatch);
+  assert.equal(calls.at(-1)[4], trace);
+  routing.install();
+  await flush();
+  assert.equal(cleared, 1);
+  dom.window.close();
+});
+
+test("does not mutate unrelated HTTP response JSON", async () => {
+  const dom = setup(async () => ({ status: "ok", models: [{ routeId: "cp-route" }] }));
+  await dom.window.__codexPlusModelRouting.loadCatalog(true);
+  assert.deepEqual(await new dom.window.Response().json(), {});
+  dom.window.close();
 });
 
 test("renders account buttons before independent usage requests finish", async () => {

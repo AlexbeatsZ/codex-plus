@@ -38,6 +38,8 @@
 
 # Active Work
 
+- 2026-10-01 新版兼容修复正在部署：Windows 两机官方包均为 `26.928.2636.0`。路由 v17 已移除旧 React 源码特征、固定 `Txt` dispatcher 和全局 `Response.json` 包装；改为能力发现 + 真实 `model/list` 往返 + 唯一原生 fork helper，更新/删除 API 同步清理 Query 缓存，失效 routeId 明确拒绝。CDP 初次模型脚本移入接收循环，避免首次 catalog binding 被 setup 等待丢弃；界面 ready 与模型 ready 分开记录。ROG 候选已验证 client/cache/model probe/fork helper 接入，OMEN/ROG 正式二进制构建部署与真实请求验收待完成。设计详见 `docs/design/api-provider-routing.md`、`docs/design/account-switch-lifecycle.md`。
+
 - 同次 ROG 启动验收还发现 `.codex/config.toml` 的 `[windows] sandbox="restricted-token"` 不被官方 `26.924.6891.0` 接受，app-server 明确报只接受 `elevated`、`unelevated`、`mxc`，页面停在“正在加载登录要求…”。已仅改为非提权 `unelevated`，原配置备份与旧 EXE 同目录；不要通过删除凭据或重装解决此解析错误。重新启动后 `config/read`、`account/read`、`getAuthStatus` 均正常回包，页面进入 “Continue signing in with your browser”，浏览器登录由用户完成。
 
 - 2026-10-01 ROG (`192.168.31.32`) 的 `26.924.6891.0` 官方包被 9 月 11 日旧 launcher 直接作为 EXE 启动，报进程没有程序包标识符。已部署 OMEN 上 `6055c3c` 对应的 9 月 25 日 Windows release；ROG 原 EXE 保存在 `.codex-plus/release-backups/20261001-package-identity/codex-plus.exe`。实测交互 Session 1 的根进程 `GetPackageFullName` 返回完整 `OpenAI.Codex_26.924.6891.0_x64__2p2nqsd0c76g0`，优先级 `BelowNormal`、主窗口 1280×820、CDP 主页面和 bridge 均可响应。ROG 源码仍停在 `c6dba7e` 且有用户未提交改动，后续重建前必须同步包激活修复，不能用旧源码覆盖已部署 EXE；GitHub HTTPS fetch 在 SSH 会话下因 wincredman 凭据访问失败，未修改凭据设置。

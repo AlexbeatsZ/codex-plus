@@ -25,7 +25,7 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
 /// 对端完全停止读取时 socket 写缓冲最终会写满，写入本身也必须有时限。
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-const HEARTBEAT_SCRIPT: &str = "(() => { const health = window.__codexPlusAccounts?.health?.(); if (!health?.ready || !health?.observerReady) window.__codexPlusAccounts?.install?.(); return true; })()";
+const HEARTBEAT_SCRIPT: &str = "(() => { const accounts = window.__codexPlusAccounts?.health?.(); if (!accounts?.ready || !accounts?.observerReady) window.__codexPlusAccounts?.install?.(); const routing = window.__codexPlusModelRouting; const models = routing?.health?.() || null; if (!models?.ready) routing?.install?.(); return {accounts,api:!!window.__codexPlusApi,models}; })()";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -182,11 +182,10 @@ async fn run_target_session_with_tuning(
     evaluate(&mut socket, &mut next_id, &bridge_script).await?;
     evaluate(&mut socket, &mut next_id, RENDERER_SCRIPT).await?;
     evaluate(&mut socket, &mut next_id, API_PROVIDERS_SCRIPT).await?;
-    evaluate(&mut socket, &mut next_id, MODEL_ROUTING_SCRIPT).await?;
     let health = evaluate(
         &mut socket,
         &mut next_id,
-        "({accounts:window.__codexPlusAccounts?.health?.()||null,api:!!window.__codexPlusApi,models:!!window.__codexPlusModelRouting})",
+        "({accounts:window.__codexPlusAccounts?.health?.()||null,api:!!window.__codexPlusApi})",
     )
     .await?;
     if !health
@@ -206,18 +205,21 @@ async fn run_target_session_with_tuning(
                     .and_then(Value::as_bool)
                     == Some(true)
                 && value.get("api").and_then(Value::as_bool) == Some(true)
-                && value.get("models").and_then(Value::as_bool) == Some(true)
         })
     {
         bail!("renderer 注入健康检查失败：{health}");
     }
-    crate::runtime::append_log(service.paths(), "injection.ready", json!({}));
+    crate::runtime::append_log(service.paths(), "injection.renderer.ready", json!({}));
+    // Model installation starts bridge requests. Receive those in the session loop,
+    // rather than discarding bindingCalled events while waiting for setup replies.
+    send_evaluate_async(&mut socket, &mut next_id, MODEL_ROUTING_SCRIPT).await?;
 
     let (responses_tx, mut responses_rx) = mpsc::unbounded_channel::<(String, Value)>();
     let mut heartbeat = tokio::time::interval(tuning.heartbeat);
     let mut liveness = tokio::time::interval(tuning.liveness);
     let mut pending_heartbeat: Option<u64> = None;
     let mut heartbeat_deadline = Instant::now() + tuning.heartbeat_timeout;
+    let mut routing_ready = false;
     loop {
         tokio::select! {
             next = socket.next() => {
@@ -227,6 +229,12 @@ async fn run_target_session_with_tuning(
                 let value: Value = serde_json::from_str(text.as_str()).context("CDP 消息不是 JSON")?;
                 if value.get("id").and_then(Value::as_u64) == pending_heartbeat {
                     pending_heartbeat = None;
+                    let models = value.pointer("/result/result/value/models");
+                    let ready = models.and_then(|model| model.get("ready")).and_then(Value::as_bool) == Some(true);
+                    if ready != routing_ready {
+                        crate::runtime::append_log(service.paths(), if ready { "injection.ready" } else { "injection.models.pending" }, json!({"models": models}));
+                        routing_ready = ready;
+                    }
                 }
                 if value.get("method").and_then(Value::as_str) == Some("Runtime.bindingCalled") {
                     let name = value.pointer("/params/name").and_then(Value::as_str);
@@ -459,11 +467,83 @@ mod tests {
                     "value": {
                         "accounts": {"ready": true, "observerReady": true},
                         "api": true,
-                        "models": true,
+                        "models": {"ready": true, "modelProbe": true, "requestClients": 1},
                     }
                 }
             }
         })
+    }
+
+    #[tokio::test]
+    async fn model_setup_bridge_request_is_serviced_before_full_readiness() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut answered = false;
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(text.as_str()).unwrap();
+                let expression = request
+                    .pointer("/params/expression")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if expression == MODEL_ROUTING_SCRIPT {
+                    let binding = json!({"method":"Runtime.bindingCalled", "params": {
+                        "name": BINDING_NAME,
+                        "payload": json!({"id":"initial-catalog", "path":"/api-providers/catalog", "payload":{}}).to_string()
+                    }});
+                    socket
+                        .send(Message::Text(binding.to_string().into()))
+                        .await
+                        .unwrap();
+                }
+                if expression.starts_with("window.__codexPlusBridgeResolve") {
+                    assert!(expression.contains("initial-catalog"));
+                    assert!(expression.contains("\"status\":\"ok\""));
+                    answered = true;
+                }
+                let complete = answered && expression == HEARTBEAT_SCRIPT;
+                let mut response = healthy_health_payload(request["id"].clone());
+                if !complete {
+                    // A script object alone must never imply functional readiness.
+                    response["result"]["result"]["value"]["models"] = json!(true);
+                }
+                socket
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .unwrap();
+                if complete {
+                    socket.close(None).await.unwrap();
+                    return;
+                }
+            }
+            panic!("model catalog bridge request was never answered");
+        });
+        let state_dir = tempfile::tempdir().unwrap();
+        let mut injected_target = target("app://-/index.html", "page");
+        injected_target.web_socket_debugger_url =
+            Some(format!("ws://127.0.0.1:{port}/devtools/page/1"));
+        let tuning = SessionTuning {
+            heartbeat: Duration::from_millis(50),
+            heartbeat_timeout: Duration::from_secs(1),
+            liveness: Duration::from_millis(50),
+        };
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_target_session_with_tuning(
+                &injected_target,
+                test_service(state_dir.path()),
+                tuning,
+            ),
+        )
+        .await
+        .expect("setup request must be answered without a retry timeout");
+        server.await.unwrap();
+        let log = std::fs::read_to_string(state_dir.path().join("codex-plus.log")).unwrap();
+        assert!(log.contains("injection.renderer.ready"));
+        assert_eq!(log.matches("\"event\":\"injection.ready\"").count(), 1);
+        assert!(log.contains("modelProbe"));
     }
 
     /// 模拟 macOS 睡眠唤醒后的真实故障：CDP socket 仍然 ESTABLISHED、握手命令也成功，
