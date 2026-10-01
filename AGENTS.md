@@ -6,6 +6,8 @@
 
 # Current State
 
+- 当前维护分支为 `codex/omen`，发布版本 `0.3.2-omen`；AI Decision/Todoist 适配层在本分支及发布产物中不存在。
+
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.2`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.2-omen` / `0.3.2-rog`；分支及组件边界见 `docs/design/host-releases.md`。本机 Mac release 不在本次部署范围。
 - 2026-09-08 持久状态已从平台用户数据目录迁入仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`pending-action.json`、`launcher.lock` 与 `codex-plus.log` 均随项目目录移动，不再使用 Windows `%LOCALAPPDATA%\codex-plus`、macOS `~/Library/Application Support/codex-plus` 或 Linux `~/.local/state/codex-plus`。Windows 现有状态已完成原位迁移并以 `--attach-existing` 在 Session 1 验证账户状态、broker 与 CDP 注入继续正常。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-05 当前安装/进程识别验证版本为 `26.901.4073.0`，实际进程名为 `ChatGPT.exe`。

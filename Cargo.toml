@@ -1,6 +1,6 @@
 [package]
 name = "codex-plus"
-version = "0.3.2"
+version = "0.3.2-omen"
 edition = "2024"
 license = "MIT"
 description = "A Windows launcher for OpenAI Codex with account, provider, and local MCP tools"
