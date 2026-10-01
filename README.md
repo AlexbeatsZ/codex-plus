@@ -76,3 +76,5 @@ cargo build --release
 当前支持 Windows 11 上的 Microsoft Store `OpenAI.Codex`，并兼容可发现的 `OpenAI.CodexBeta`、`OpenAI.ChatGPT-Desktop` 与常见独立安装目录。第三方仅支持 OpenAI 兼容的 Responses 与 Chat Completions，不支持厂商专有协议。
 
 同属 `codex-plus-api` 的模型可在下一轮原地切换。`openai ↔ codex-plus-api` 的已有任务切换属于实验功能：只允许空闲任务执行 shutdown/resume，并验证 provider；失败时阻止发送并尝试恢复原 provider。
+
+Windows host releases are maintained separately: `codex/omen` has no AI Decision/Todoist adapter; `codex/rog` contains it. Shared fixes originate on `main`. See [host release maintenance](docs/design/host-releases.md).

@@ -8,7 +8,8 @@
     "local-tools:install": "npm --prefix local-tools install",
     "local-tools:build": "npm --prefix local-tools run build",
     "local-tools:test": "npm --prefix local-tools run check",
-    "verify": "npm run check && npm test && npm run local-tools:test"
+    "verify": "npm run check && npm test && npm run local-tools:test",
+    "release:verify": "node scripts/verify-release.mjs"
   },
   "devDependencies": {
     "jsdom": "^29.1.1"

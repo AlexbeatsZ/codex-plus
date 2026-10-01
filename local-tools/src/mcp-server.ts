@@ -1,4 +1,3 @@
-import { registerAiDecisionTools } from "./ai-decision-tools.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import { actionAnnotations, approvalModeFromEnvironment, approvalModeInstruction } from "./approval-policy.js";
@@ -43,7 +42,6 @@ export function createMcpServer(registry: WorkspaceRegistry, codexContext: Codex
   );
 
   registerMachineTools(server, registry, approvalMode);
-  registerAiDecisionTools(server);
 
   server.registerTool(
     "workspace_info",
