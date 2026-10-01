@@ -1,6 +1,9 @@
 {
-  "channel": "base",
-  "branch": "main",
-  "version": "0.3.2",
-  "components": ["local-tools"]
+  "channel": "rog",
+  "branch": "codex/rog",
+  "version": "0.3.2-rog",
+  "components": [
+    "local-tools",
+    "ai-decision-todoist"
+  ]
 }
