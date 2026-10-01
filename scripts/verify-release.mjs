@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const read = (relative) => readFileSync(path.join(root, relative), "utf8");
+const read = (relative) => readFileSync(path.join(root, relative), "utf8").replace(/\r\n/g, "\n");
 const release = JSON.parse(read("release-channel.json"));
 assert.ok(["base", "omen", "rog"].includes(release.channel), "Unknown release channel");
 const expectedBranch = release.channel === "base" ? "main" : `codex/${release.channel}`;
