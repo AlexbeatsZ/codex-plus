@@ -8,14 +8,15 @@
 
 - 当前维护分支为 `codex/rog`，发布版本 `0.3.2-rog`；本分支保留 AI Decision/Todoist MCP 适配层，仍只允许 ROG 主机注册。
 
-- Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.2`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.2-omen` / `0.3.2-rog`；分支及组件边界见 `docs/design/host-releases.md`。本机 Mac release 不在本次部署范围。
+- Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.2`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.2-omen` / `0.3.2-rog`；分支及组件边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版，2026-10-05 已更新本机签名 release 到 `0.3.2`。
 - 2026-09-08 持久状态已从平台用户数据目录迁入仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`pending-action.json`、`launcher.lock` 与 `codex-plus.log` 均随项目目录移动，不再使用 Windows `%LOCALAPPDATA%\codex-plus`、macOS `~/Library/Application Support/codex-plus` 或 Linux `~/.local/state/codex-plus`。Windows 现有状态已完成原位迁移并以 `--attach-existing` 在 Session 1 验证账户状态、broker 与 CDP 注入继续正常。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-05 当前安装/进程识别验证版本为 `26.901.4073.0`，实际进程名为 `ChatGPT.exe`。
 - 2026-09-07 已验证 macOS 26.6.1 Apple Silicon：官方应用 `/Applications/ChatGPT.app` 版本 1.2026.238.5，可直接以 `Contents/MacOS/ChatGPT --remote-debugging-port=...` 启动并完成 CDP 注入；Mac release 位于 `/Users/meta/Project/Workspaces/codex-plus/target/release/codex-plus`，登录后台入口使用 LaunchAgent `com.codex-plus.launcher`，不会主动打开 ChatGPT 窗口。
 - 2026-09-07 已实现双机独立 Tunnel 架构：`src/local_tools.rs` 支持从 `.env.local` 动态加载 `TUNNEL_ID` 与 `TUNNEL_ALIAS`（Windows 默认 alias `codex-chat-local-tools-win` / Tunnel ID `tunnel_6a971ae4c9c0819192f1a813a4120a88`；macOS 默认 alias `codex-chat-local-tools-mac` / Tunnel ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`）。两端不再共享单一 Tunnel，彻底避免 OpenAI control plane 随机分流；同时保留免密 SSH 远程 `host-rpc` 双向通信作为后备。
 - Windows 桌面端启动闪退与 `无法停止旧 Codex/codex-plus 实例` 根因解决：此前通过 OpenSSH 后台启动的 `codex-plus` 与子进程 `ChatGPT.exe` 运行在 Windows Session 0（非交互会话），导致桌面交互会话（Session 1）用户启动时因权限不足（0x80070005 Access Denied）无法终止 Session 0 实例而报错退出。已使用提权 taskkill 清理全部 Session 0 孤儿进程，恢复在交互式 Session 1 中正常启动与附加（CDP 9229 / broker 43121 均正常）。
 - 2026-09-07 已在 Platform 复核 Windows 与 macOS 两个独立 Tunnel 都同时关联默认工作区与 `Xia`。macOS `.env.local` 已改用 Platform 显示的真实 ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`，managed runtime 重新连接后远端 metadata 与本地 health/ready 均成功，不再出现原错误 ID 导致的 `401 tunnel_use_forbidden`。
-- 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`；MCP 的上下文同步设计见 `local-tools/docs/design/codex-context-sync.md`。
+- 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`、`docs/design/macos-release.md`；MCP 的上下文同步设计见 `local-tools/docs/design/codex-context-sync.md`。
+- 2026-10-05 Mac 复核：Windows 的 v17/CDP 公共兼容修复已在 `main`，两条 Windows 分支没有额外待提升的公共修复。Mac 发布入口现先 clean-build MCP 并核对 base 边界，在 `target/macos-build` 构建，通过 Cargo artifact 定位产物，签名后原子替换固定入口并记录 `.codex-plus/release.json`；构建或签名失败保留旧入口。签名幂等核对 identifier、证书与签名有效性。原生隔离实例验证官方 `26.930.51102` 的账户桥返回、实际 `model/list` 回包、request client 与原生 fork helper 接入；不发送对话、不切换生产账户。已加载 LaunchAgent 为 Interactive 且 abandon process group；当前用户官方应用保持原 PID，正式 launcher 未启动，测试拉起的 sidecar 已恢复原先的停止状态。56 Rust、21 renderer、13 本机 MCP 测试（1 Windows-only skip）及 1 原生签名/失败恢复集成测试通过。完整生产账户/API 对话验收仍待下一次正式启动。
 - 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
 - 2026-09-28 macOS Codex 界面卡顿排查发现 `--login-startup` 的旧 broker 任务跨 Codex 生命周期残留：09:49 首轮绑定 43121，10:36 再接管回退到 60263；`tokio::select!` 丢弃等待中的 `JoinHandle` 不会停止 Axum 服务。现每轮结束显式 abort/await broker，并避免同页面重注入时重复注册模型选择点击监听。2026-09-29 自启动与显式启动均使用含此修复的 release，仍报告自启动卡顿，说明 broker 残留不是充分解释。
 - 2026-09-29 macOS 自启动路径另发现 LaunchAgent `ProcessType=Background` 会把低调度优先级继承给它启动的 Codex：同机隔离 Agent 对照的子进程 `PRI` 为 Background 4、Standard 20、Interactive 31。已把仓库安装脚本及本机已安装 plist 改为 `Interactive`，但未重载 job 或重启当前 Codex；下次登录后的真实 Codex 界面流畅度仍待验收。设计约束见 `docs/design/account-switch-lifecycle.md`。
@@ -40,7 +41,7 @@
 
 # Active Work
 
-- 2026-10-01 用户进一步明确 OMEN 与 ROG 分两个版本维护，OMEN 文件中不能包含 AI Decision/Todoist 组件。正在建立 `codex/omen` / `codex/rog`，公共修复保留在无扩展的 `main`。`release-channel.json` 与 `npm run release:verify` 核对版本及源码/编译组件边界。独立版本文件部署与测试待完成；不启动、停止或重启当前进程。设计索引：`docs/design/host-releases.md`。
+- 2026-10-01 OMEN/ROG 独立分支与 `0.3.2-omen` / `0.3.2-rog` 文件部署、测试已完成；公共修复保留在无扩展的 `main`。`release-channel.json` 与 `npm run release:verify` 核对版本及源码/编译组件边界。部署保持两机 Codex、launcher、Tunnel 进程不变，正式运行验收等待用户自行启动。设计索引：`docs/design/host-releases.md`。
 
 - 2026-10-01 新版兼容修复已完成文件部署：Windows 两机官方包均为 `26.928.2636.0`。路由 v17 已移除旧 React 源码特征、固定 `Txt` dispatcher 和全局 `Response.json` 包装；改为能力发现 + 真实 `model/list` 往返 + 唯一原生 fork helper，更新/删除 API 同步清理 Query 缓存，失效 routeId 明确拒绝。CDP 初次模型脚本移入接收循环，避免首次 catalog binding 被 setup 等待丢弃；界面 ready 与模型 ready 分开记录。ROG 候选已验证 client/cache/model probe/fork helper 接入，自动化 56 Rust/21 renderer 通过。用户明确只配置升级，不启动/重启 Codex 或 launcher；两机标准 `target/release/codex-plus.exe` 均为 0.3.1、6,928,896 bytes（代码 commit `5a59435`）；部署前后 ROG launcher PID 22412、OMEN launcher PID 30916/Codex PID 3460 均保持不变。运行中的 launcher 仍是原映像，仅在用户自行启动新版 codex-plus 或下次登录时正式生效；不承诺只重开官方应用会更换常驻 launcher。用户随后明确要求按独立版本维护：公共主线与 OMEN 分支物理移除 AI Decision/Todoist 适配层的源码、导入、测试和编译输出，ROG 分支保留。原先仅做主机注册限制的方案已被替代。独立 AI Decision 核心和 Todoist 执行仍在 ROG 原项目，不在本次安装或启动。设计详见 `docs/design/api-provider-routing.md`、`docs/design/account-switch-lifecycle.md`。
 
@@ -103,6 +104,7 @@ macOS 构建、签名与部署（**必须先签名**，否则已授予的 TCC �
 
 ```bash
 bash macos/release.sh                # 构建 + 签名一步到位；macOS 上用它代替 cargo build --release
+npm run macos:test                   # 原生签名、幂等与发布失败恢复集成测试
 bash macos/sign.sh                   # 只签名；幂等，已用目标身份签过就跳过
 bash macos/install.sh                # 部署 LaunchAgent（内部也会调用 sign.sh）
 open "macos/Codex Plus.app"          # 显式启动；启动前会自动补一次签名
@@ -119,6 +121,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 
 # Durable Lessons
 
+- macOS 不能直接在登录任务的固定入口上编译后再补签：这会给登录/手动启动留下 adhoc 身份窗口，签名失败时还会丢失旧入口。先在隔离 target 构建，再签名并同文件系统原子替换；Cargo 的实际 artifact 路径必须作为签名输入，避免 `--target` 构建后误签旧产物。详见 `docs/design/macos-release.md`。
 - CDP 心跳必须要求回包：macOS 睡眠唤醒后旧 WebSocket 可以长期保持 `ESTABLISHED` 却不再处理消息（发送队列与对端接收队列持续增长）。单向写入式 `Runtime.evaluate` 心跳永远拿不到失效信号，watchdog 也就永不重连，UI 会永久卡在加载态。心跳要记录命令 id 并等待同 id 回包，超时即丢弃连接重新发现 target；socket 写入同样要有上限，否则对端停止读取写满缓冲后连失活检测都运行不到。页面侧请求还需要自己的兜底超时，并在脚本重新注入时让上一轮挂起的请求立即失败。
 - **`codesign --verify --strict` 通过 ≠ 签名身份正确。** 每次 `cargo build --release` 重新链接都会把已有签名换成链接器的 adhoc 签名，此时 `--verify` 依然报 valid（adhoc 签名自洽），但 designated requirement 已经退回 `cdhash H"..."`，TCC 授权随即失效。判断"是否还是目标身份"**只能看 `codesign -d -r-`** 的 `designated` 行，或比 `codesign -dvv` 的 `Authority`。构建后不签名 = 白干，且症状会延迟到下一次权限请求才暴露。
 - **签名的失效是"静默且延迟"的，必须主动把它暴露出来。** 破坏签名的动作（一次重新链接）与症状出现（下一次 TCC 权限请求）之间隔着很久，靠人记住"构建后要签名"不可靠。三层兜底缺一不可：构建入口把构建与签名绑在一起（`macos/release.sh`，取代裸 `cargo build --release`）；每条启动路径在拉起二进制前补签（`Codex Plus.app` 的脚本，幂等）；运行时对自身 requirement 做自检并写 `launcher.signature.unstable` 告警。凡是"某一步必须记得做、否则很久以后才出问题"的流程，都该照这个思路处理，而不是只写在文档里。
