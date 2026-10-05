@@ -44,7 +44,10 @@ fi
 identity_hash="$(printf '%s\n' "$identity_line" | awk '{print tolower($2)}')"
 
 # 已经是目标身份就不要再碰文件：就地替换会让正在运行的 launcher 映射到旧 inode。
-if codesign -d -r- "$BIN" 2>&1 | grep -qF "certificate leaf = H\"$identity_hash\""; then
+requirement="$(codesign -d -r- "$BIN" 2>&1 || true)"
+if [[ "$requirement" == *"identifier \"$IDENTIFIER\""* &&
+      "$requirement" == *"certificate leaf = H\"$identity_hash\""* ]] &&
+   codesign --verify --strict "$BIN" >/dev/null 2>&1; then
   echo "already signed: $BIN"
   exit 0
 fi
