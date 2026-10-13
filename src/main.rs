@@ -6,6 +6,7 @@ mod cdp;
 mod config;
 mod desktop;
 mod local_tools;
+mod pdf_preview;
 #[allow(dead_code)]
 mod protocol_proxy;
 mod providers;

@@ -6,6 +6,7 @@
 
 # Current State
 
+- 2026-10-13：新增 PDF 预览 CMap 资源加载修复，目标为官方 `26.1007.30912`。在原生主窗口及独立窗口的 PDF.js worker 通道按需提供 168 份本地映射，覆盖普通 PDF 与 LaTeX 预览；不修改文档或官方签名包。设计及验收入口见 `docs/design/pdf-preview-cmaps.md`。57 Rust / 25 JS 测试通过，已签名发布并以 `--attach-existing` 更新运行实例，Codex PID 保持不变；主/独立窗口均 ready。部署后实际 PDF.js 读取六页中文成功，普通预览的最终目视验收待用户重开预览确认。
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.2`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.2-omen` / `0.3.2-rog`；分支及组件边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版，2026-10-05 已更新本机签名 release 到 `0.3.2`。
 - 2026-09-08 持久状态已从平台用户数据目录迁入仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`pending-action.json`、`launcher.lock` 与 `codex-plus.log` 均随项目目录移动，不再使用 Windows `%LOCALAPPDATA%\codex-plus`、macOS `~/Library/Application Support/codex-plus` 或 Linux `~/.local/state/codex-plus`。Windows 现有状态已完成原位迁移并以 `--attach-existing` 在 Session 1 验证账户状态、broker 与 CDP 注入继续正常。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-05 当前安装/进程识别验证版本为 `26.901.4073.0`，实际进程名为 `ChatGPT.exe`。
@@ -39,6 +40,8 @@
 
 # Active Work
 
+- [done] 2026-10-13：发布并附加 PDF CMap 修复到本机 codex-plus；部署后真实应用 PDF.js 读取未改动 PDF 已恢复六页中文，首页 435 字，资源计数 `loaded=1 / served=1`。内置 LaTeX 编译 success。
+- [pending] 当前普通 PDF/LaTeX 预览界面需关闭后重新打开，等待用户目视验收；界面控制工具禁止操作 Codex 自身窗口。
 - 2026-10-01 OMEN/ROG 独立分支与 `0.3.2-omen` / `0.3.2-rog` 文件部署、测试已完成；公共修复保留在无扩展的 `main`。`release-channel.json` 与 `npm run release:verify` 核对版本及源码/编译组件边界。部署保持两机 Codex、launcher、Tunnel 进程不变，正式运行验收等待用户自行启动。设计索引：`docs/design/host-releases.md`。
 
 - 2026-10-01 新版兼容修复已完成文件部署：Windows 两机官方包均为 `26.928.2636.0`。路由 v17 已移除旧 React 源码特征、固定 `Txt` dispatcher 和全局 `Response.json` 包装；改为能力发现 + 真实 `model/list` 往返 + 唯一原生 fork helper，更新/删除 API 同步清理 Query 缓存，失效 routeId 明确拒绝。CDP 初次模型脚本移入接收循环，避免首次 catalog binding 被 setup 等待丢弃；界面 ready 与模型 ready 分开记录。ROG 候选已验证 client/cache/model probe/fork helper 接入，自动化 56 Rust/21 renderer 通过。用户明确只配置升级，不启动/重启 Codex 或 launcher；两机标准 `target/release/codex-plus.exe` 均为 0.3.1、6,928,896 bytes（代码 commit `5a59435`）；部署前后 ROG launcher PID 22412、OMEN launcher PID 30916/Codex PID 3460 均保持不变。运行中的 launcher 仍是原映像，仅在用户自行启动新版 codex-plus 或下次登录时正式生效；不承诺只重开官方应用会更换常驻 launcher。用户随后明确要求按独立版本维护：公共主线与 OMEN 分支物理移除 AI Decision/Todoist 适配层的源码、导入、测试和编译输出，ROG 分支保留。原先仅做主机注册限制的方案已被替代。独立 AI Decision 核心和 Todoist 执行仍在 ROG 原项目，不在本次安装或启动。设计详见 `docs/design/api-provider-routing.md`、`docs/design/account-switch-lifecycle.md`。
@@ -84,6 +87,7 @@
 
 # Build / Run / Test
 
+- PDF 预览修改额外执行 `node --test tests/pdf-preview.test.mjs`，并按 `docs/design/pdf-preview-cmaps.md` 用官方应用自己的 PDF.js 做实际渲染验证；TeX 编译成功不能替代预览验收。
 ```powershell
 npm install
 npm run local-tools:install
