@@ -6,6 +6,7 @@
 
 # Current State
 
+- 2026-10-15：新增未登录状态下的账户入口。原生登录页没有个人资料菜单，渲染器（账户脚本 VERSION 9）在原生 ChatGPT 登录按钮组末尾插入“切换账户 / 导入 auth.json”，打开同一账户弹窗（隐藏网页登录），可直接切换已保存账户或导入 `auth.json` 后切换。设计见 `docs/design/account-switch-lifecycle.md`。28 JS / 50 Rust（Linux）测试通过；登录页按钮文本按“ChatGPT + 登录动词”匹配，尚未在真实 Codex 登录页目视验收。
 - 2026-10-13：新增 PDF 预览 CMap 资源加载修复，目标为官方 `26.1007.30912`。在原生主窗口及独立窗口的 PDF.js worker 通道按需提供 168 份本地映射，覆盖普通 PDF 与 LaTeX 预览；不修改文档或官方签名包。设计及验收入口见 `docs/design/pdf-preview-cmaps.md`。57 Rust / 25 JS 测试通过，已签名发布并以 `--attach-existing` 更新运行实例，Codex PID 保持不变；主/独立窗口均 ready。部署后实际 PDF.js 读取六页中文成功，普通预览的最终目视验收待用户重开预览确认。
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.2`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.2-omen` / `0.3.2-rog`；分支及组件边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版，2026-10-05 已更新本机签名 release 到 `0.3.2`。
 - 2026-09-08 持久状态已从平台用户数据目录迁入仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`pending-action.json`、`launcher.lock` 与 `codex-plus.log` 均随项目目录移动，不再使用 Windows `%LOCALAPPDATA%\codex-plus`、macOS `~/Library/Application Support/codex-plus` 或 Linux `~/.local/state/codex-plus`。Windows 现有状态已完成原位迁移并以 `--attach-existing` 在 Session 1 验证账户状态、broker 与 CDP 注入继续正常。
