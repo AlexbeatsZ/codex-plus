@@ -1,5 +1,7 @@
 # Optional AI Decision MCP facade
 
+2026-10-16 UpTimer history integration: `commit_decision.proposal.uptimer_changes` forwards bounded fill_gap/correct_record/restore actions with evidence references to the independent controller. `query_uptimer` now returns current native IDs/revisions (cloud-enabled Node), and `query_workreview` has timezone-aware same-date from_at/to_at for historical evidence. The controller validates references/coverage, the fixed Windows adapter owns credentials and cloud CAS/idempotency, and confirmed correction/undo notifications are deterministic QQ outbox writes. No new mutation endpoint, state owner or app permission was added here. ROG runtime reloaded, app/launcher unchanged; ChatGPT's separate cached schema refresh has not been observed in this run.
+
 This component exists only on `codex/rog` (`0.3.2-rog`). The shared `main` and
 `codex/omen` branches physically omit its source, registration and build modules.
 Read `../../../docs/design/host-releases.md` before changing release boundaries.
