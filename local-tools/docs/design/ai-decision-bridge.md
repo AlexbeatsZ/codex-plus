@@ -1,5 +1,7 @@
 # Optional AI Decision MCP facade
 
+2026-10-16 main-brain agy tools: ask_agy accepts current run_id, a stable request_key, task and necessary context; read_agy_result paginates results and cancel_agy stops work. ROG now exposes15 AI Decision tools. These forward to the existing controller; accounts, CLI execution, idempotency, completion wakeups and cancellation stay in ai-decision. Dispatch/cancel remain truthfully non-read-only. The independent Codex invocation explicitly authorizes only these narrow actions; no server-wide approval change is made here. OMEN/Mac host gating is unchanged.
+
 2026-10-16 UpTimer history integration: `commit_decision.proposal.uptimer_changes` forwards bounded fill_gap/correct_record/restore actions with evidence references to the independent controller. `query_uptimer` now returns current native IDs/revisions (cloud-enabled Node), and `query_workreview` has timezone-aware same-date from_at/to_at for historical evidence. The controller validates references/coverage, the fixed Windows adapter owns credentials and cloud CAS/idempotency, and confirmed correction/undo notifications are deterministic QQ outbox writes. No new mutation endpoint, state owner or app permission was added here. ROG runtime reloaded, app/launcher unchanged; ChatGPT's separate cached schema refresh has not been observed in this run.
 
 This component exists only on `codex/rog` (`0.3.2-rog`). The shared `main` and

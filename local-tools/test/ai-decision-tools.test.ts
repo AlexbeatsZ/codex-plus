@@ -28,8 +28,9 @@ test("AI Decision tools are registered only on ROG, never read OMEN config", asy
     process.env.CODEX_PLUS_MACHINE_ID = "rog";
     await writeFile(configPath, JSON.stringify({ url: "http://127.0.0.1:1", token: "test-only" }));
     registerAiDecisionTools(server);
-    assert.equal(names.length, 12);
+    assert.equal(names.length, 15);
     assert.ok(names.includes("commit_decision"));
+    assert.ok(names.includes("ask_agy") && names.includes("read_agy_result") && names.includes("cancel_agy"));
     const history = {kind:"fill_gap",item_id:"study",start_at:"2026-10-15T11:00:00+08:00",end_at:"2026-10-15T11:01:00+08:00",reason:"Test",evidence:[{source:"user",reference_id:"m"}]};
     assert.doesNotThrow(() => schemas.get("commit_decision")!.proposal.parse({uptimer_changes:[history]}));
     assert.throws(() => schemas.get("commit_decision")!.proposal.parse({uptimer_changes:[{...history,url:"https://example.com"}]}));

@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-10-16: ROG AI Decision adds ask_agy/read_agy_result/cancel_agy (15 tools total). The primary brain can submit bounded analysis to the existing Windows agy account, read paginated output and cancel; controller owns async recovery and all business writes. TypeScript build/schema/host gating and rog release checks pass. Primary Codex real dispatch/result/cancellation accepted in the independent ai-decision system. No launcher/app restart.
+
 - 2026-10-16 ROG AI Decision UpTimer schema updated: commit_decision accepts bounded uptimer_changes (fill/correct/restore plus evidence); query_workreview supports same-date timezone-aware from_at/to_at; query_uptimer describes native current IDs/revisions. Fixed protocol execution, account/session storage and notifications remain owned by the separate ai-decision service. Build/schema/host-gate tests and rog release check pass; MCP/Tunnel reloaded without app/launcher restart. Optional ChatGPT cached catalog refresh remains unverified; primary WSL Codex uses its own current gateway.
 
 - 2026-10-16 ROG AI Decision 课件工具已部署：`query_course_materials` / `read_course_material` 通过现有私有 bridge 查询固定 eLearning 目录；ROG 共12项决策工具。TypeScript 构建、工具测试及 rog release 检查通过，按本次用户要求仅重载 MCP/Tunnel 并刷新 ChatGPT 工具目录；实际 Web 对话查到量子化学 week02_notes.pdf 并读取第2页。Codex app/launcher 未重启，agy 自动提取仍由 ai-decision 独立服务负责。见 `local-tools/docs/design/ai-decision-bridge.md`。
