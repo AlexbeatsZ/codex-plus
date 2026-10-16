@@ -35,6 +35,8 @@ test("AI Decision tools are registered only on ROG, never read OMEN config", asy
     assert.doesNotThrow(() => schemas.get("commit_decision")!.proposal.parse({uptimer_changes:[history]}));
     assert.throws(() => schemas.get("commit_decision")!.proposal.parse({uptimer_changes:[{...history,url:"https://example.com"}]}));
     assert.equal(schemas.get("query_workreview")!.from_at.parse("2026-10-15T11:00:00+08:00"), "2026-10-15T11:00:00+08:00");
+    assert.equal(schemas.get("query_workreview")!.source.parse("phone"), "phone");
+    assert.throws(() => schemas.get("query_workreview")!.device_id.parse("../private"));
     for (const name of ["get_decision_evidence", "query_todo_tasks", "query_uptimer", "query_workreview", "read_evidence_query", "query_course_materials", "read_course_material"]) {
       assert.ok(names.includes(name));
     }

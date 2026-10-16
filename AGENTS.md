@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-10-16: ROG AI Decision query_workreview supports Android ActivityWatch source=phone, device_id and offset pagination; default desktop includes mobile summary. Existing read-only forwarding/host boundaries retained. Build/schema/release checks and real stdio phone history/page query passed. ROG MCP/Tunnel reloaded ready; app/launcher retained.
+
 - 2026-10-16: ROG AI Decision adds ask_agy/read_agy_result/cancel_agy (15 tools total). The primary brain can submit bounded analysis to the existing Windows agy account, read paginated output and cancel; controller owns async recovery and all business writes. TypeScript build/schema/host gating and rog release checks pass. Primary Codex real dispatch/result/cancellation accepted in the independent ai-decision system. No launcher/app restart.
 
 - 2026-10-16 ROG AI Decision UpTimer schema updated: commit_decision accepts bounded uptimer_changes (fill/correct/restore plus evidence); query_workreview supports same-date timezone-aware from_at/to_at; query_uptimer describes native current IDs/revisions. Fixed protocol execution, account/session storage and notifications remain owned by the separate ai-decision service. Build/schema/host-gate tests and rog release check pass; MCP/Tunnel reloaded without app/launcher restart. Optional ChatGPT cached catalog refresh remains unverified; primary WSL Codex uses its own current gateway.
