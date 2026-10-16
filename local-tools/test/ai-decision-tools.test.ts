@@ -33,6 +33,8 @@ test("AI Decision tools are registered only on ROG, never read OMEN config", asy
     assert.ok(names.includes("ask_agy") && names.includes("read_agy_result") && names.includes("cancel_agy"));
     const history = {kind:"fill_gap",item_id:"study",start_at:"2026-10-15T11:00:00+08:00",end_at:"2026-10-15T11:01:00+08:00",reason:"Test",evidence:[{source:"user",reference_id:"m"}]};
     assert.doesNotThrow(() => schemas.get("commit_decision")!.proposal.parse({uptimer_changes:[history]}));
+    assert.doesNotThrow(() => schemas.get("commit_decision")!.proposal.parse({uptimer_review:{status:"partial",query_ids:["query1"],confirmed_action_ids:[],summary:"Read a bounded window; remaining history pending"}}));
+    assert.throws(() => schemas.get("commit_decision")!.proposal.parse({uptimer_review:{status:"success_without_receipt",summary:"Done"}}));
     assert.throws(() => schemas.get("commit_decision")!.proposal.parse({uptimer_changes:[{...history,url:"https://example.com"}]}));
     assert.equal(schemas.get("query_workreview")!.from_at.parse("2026-10-15T11:00:00+08:00"), "2026-10-15T11:00:00+08:00");
     assert.equal(schemas.get("query_workreview")!.source.parse("phone"), "phone");

@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-10-16 afternoon: ROG AI Decision Proposal adds uptimer_review bookkeeping/confirmed receipt IDs. Controller owns required history checks and rejects unconfirmed success wording; primary WSL Codex loads this per run. Facade schema build/test and rog release verification passed. Files prepared for the optional Web facade's next normal reload; no app/launcher/Tunnel restart performed.
+
 - 2026-10-16: ROG AI Decision query_workreview supports Android ActivityWatch source=phone, device_id and offset pagination; default desktop includes mobile summary. Existing read-only forwarding/host boundaries retained. Build/schema/release checks and real stdio phone history/page query passed. ROG MCP/Tunnel reloaded ready; app/launcher retained.
 
 - 2026-10-16: ROG AI Decision adds ask_agy/read_agy_result/cancel_agy (15 tools total). The primary brain can submit bounded analysis to the existing Windows agy account, read paginated output and cancel; controller owns async recovery and all business writes. TypeScript build/schema/host gating and rog release checks pass. Primary Codex real dispatch/result/cancellation accepted in the independent ai-decision system. No launcher/app restart.
