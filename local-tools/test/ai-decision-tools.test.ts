@@ -24,8 +24,11 @@ test("AI Decision tools are registered only on ROG, never read OMEN config", asy
     process.env.CODEX_PLUS_MACHINE_ID = "rog";
     await writeFile(configPath, JSON.stringify({ url: "http://127.0.0.1:1", token: "test-only" }));
     registerAiDecisionTools(server);
-    assert.equal(names.length, 5);
+    assert.equal(names.length, 10);
     assert.ok(names.includes("commit_decision"));
+    for (const name of ["get_decision_evidence", "query_todo_tasks", "query_uptimer", "query_workreview", "read_evidence_query"]) {
+      assert.ok(names.includes(name));
+    }
   } finally {
     if (previousMachine === undefined) delete process.env.CODEX_PLUS_MACHINE_ID;
     else process.env.CODEX_PLUS_MACHINE_ID = previousMachine;
