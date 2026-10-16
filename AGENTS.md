@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-10-16 ROG AI Decision 课件工具已部署：`query_course_materials` / `read_course_material` 通过现有私有 bridge 查询固定 eLearning 目录；ROG 共12项决策工具。TypeScript 构建、工具测试及 rog release 检查通过，按本次用户要求仅重载 MCP/Tunnel 并刷新 ChatGPT 工具目录；实际 Web 对话查到量子化学 week02_notes.pdf 并读取第2页。Codex app/launcher 未重启，agy 自动提取仍由 ai-decision 独立服务负责。见 `local-tools/docs/design/ai-decision-bridge.md`。
+
 - 当前维护分支为 `codex/rog`，发布版本 `0.3.2-rog`；本分支保留 AI Decision/Todoist MCP 适配层，仍只允许 ROG 主机注册。
 
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.2`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.2-omen` / `0.3.2-rog`；分支及组件边界见 `docs/design/host-releases.md`。本机 Mac release 不在本次部署范围。
