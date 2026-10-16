@@ -5,7 +5,7 @@ check that merely skips registration does not satisfy the OMEN component boundar
 
 | Branch | Release | Contents | Deployment |
 | --- | --- | --- | --- |
-| `main` | `0.3.2` | Shared launcher and ordinary local-tools; no AI Decision/Todoist adapter | Common development; Mac checkout only, no Mac deployment in this change |
+| `main` | `0.3.2` | Shared launcher and ordinary local-tools; no AI Decision/Todoist adapter | Common development and macOS base release |
 | `codex/omen` | `0.3.2-omen` | Shared functionality; adapter source, imports, tests and compiled modules are absent | OMEN |
 | `codex/rog` | `0.3.2-rog` | Shared functionality plus AI Decision/Todoist forwarding adapter | ROG |
 
@@ -35,8 +35,12 @@ Windows launcher. Verify the release manifest before copying the binary to the
 standard release path. Record its version, branch and source commit in ignored
 `.codex-plus/release.json`. No private bridge configuration is copied to OMEN.
 
-The user forbids starting, stopping or restarting Codex, its launcher and Tunnel
-for this deployment. Replacing files does not change a running process; actual
+For the 2026-10-01 Windows deployment, the user forbids starting, stopping or
+restarting Codex, its launcher and Tunnel. Replacing files does not change a running process; actual
 acceptance waits for the user's own next launcher start or Windows login. Keep
 an old mapped EXE in the prescribed temporary directory when Windows refuses
 deletion, and remove it only after its process naturally exits.
+
+Mac release publication uses `bash macos/release.sh` and preserves the same
+component boundary. It signs before replacing the fixed entry point and records
+the source revision without restarting processes; see `macos-release.md`.

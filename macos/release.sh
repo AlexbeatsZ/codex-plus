@@ -16,5 +16,6 @@ cd "$ROOT"
 # 否则链接阶段 xcrun 会失败。
 export PATH="$HOME/.cargo/bin:$PATH"
 
-arch -arm64 cargo build --release "$@"
-bash "$ROOT/macos/sign.sh"
+# 不在固定启动入口上直接链接：构建/签名失败或登录发生在补签之前时，
+# 旧入口仍须保持原有的稳定身份。发布脚本在隔离 target 内构建再原子替换。
+exec node "$ROOT/macos/release.mjs" "$@"
