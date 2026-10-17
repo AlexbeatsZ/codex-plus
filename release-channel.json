@@ -3,7 +3,6 @@
   "branch": "codex/rog",
   "version": "0.3.2-rog",
   "components": [
-    "local-tools",
-    "ai-decision-todoist"
+    "local-tools"
   ]
 }

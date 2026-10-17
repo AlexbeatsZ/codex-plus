@@ -12,8 +12,6 @@ import { makeAgentTemp } from "./support.js";
 
 test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", async () => {
   const temporary = await makeAgentTemp("codex-chat-http");
-  const previousBridgeConfig = process.env.AI_DECISION_BRIDGE_CONFIG;
-  process.env.AI_DECISION_BRIDGE_CONFIG = path.join(temporary.directory, "missing-ai-decision-bridge.json");
   const registry = new WorkspaceRegistry([temporary.directory]);
   const codexHome = path.join(temporary.directory, ".codex");
   const skillRoot = path.join(codexHome, "skills", "transport-skill");
@@ -136,7 +134,5 @@ test("Streamable HTTP performs MCP handshake, lists tools, and reads a file", as
     await transport.close().catch(() => undefined);
     await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
     await temporary.cleanup();
-    if (previousBridgeConfig === undefined) delete process.env.AI_DECISION_BRIDGE_CONFIG;
-    else process.env.AI_DECISION_BRIDGE_CONFIG = previousBridgeConfig;
   }
 });

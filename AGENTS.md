@@ -6,17 +6,9 @@
 
 # Current State
 
-- 2026-10-16 afternoon: ROG AI Decision Proposal adds uptimer_review bookkeeping/confirmed receipt IDs. Controller owns required history checks and rejects unconfirmed success wording; primary WSL Codex loads this per run. Facade schema build/test and rog release verification passed. Files prepared for the optional Web facade's next normal reload; no app/launcher/Tunnel restart performed.
+- 2026-10-17: AI Decision business tools moved to the independent ai-decision/connector package (AI-decison). All release channels now contain only 41 generic development tools. ROG source/build/release checks updated; new business app and native task migration are owned by ai-decision. See docs/design/business-tool-boundary.md.
 
-- 2026-10-16: ROG AI Decision query_workreview supports Android ActivityWatch source=phone, device_id and offset pagination; default desktop includes mobile summary. Existing read-only forwarding/host boundaries retained. Build/schema/release checks and real stdio phone history/page query passed. ROG MCP/Tunnel reloaded ready; app/launcher retained.
-
-- 2026-10-16: ROG AI Decision adds ask_agy/read_agy_result/cancel_agy (15 tools total). The primary brain can submit bounded analysis to the existing Windows agy account, read paginated output and cancel; controller owns async recovery and all business writes. TypeScript build/schema/host gating and rog release checks pass. Primary Codex real dispatch/result/cancellation accepted in the independent ai-decision system. No launcher/app restart.
-
-- 2026-10-16 ROG AI Decision UpTimer schema updated: commit_decision accepts bounded uptimer_changes (fill/correct/restore plus evidence); query_workreview supports same-date timezone-aware from_at/to_at; query_uptimer describes native current IDs/revisions. Fixed protocol execution, account/session storage and notifications remain owned by the separate ai-decision service. Build/schema/host-gate tests and rog release check pass; MCP/Tunnel reloaded without app/launcher restart. Optional ChatGPT cached catalog refresh remains unverified; primary WSL Codex uses its own current gateway.
-
-- 2026-10-16 ROG AI Decision 课件工具已部署：`query_course_materials` / `read_course_material` 通过现有私有 bridge 查询固定 eLearning 目录；ROG 共12项决策工具。TypeScript 构建、工具测试及 rog release 检查通过，按本次用户要求仅重载 MCP/Tunnel 并刷新 ChatGPT 工具目录；实际 Web 对话查到量子化学 week02_notes.pdf 并读取第2页。Codex app/launcher 未重启，agy 自动提取仍由 ai-decision 独立服务负责。见 `local-tools/docs/design/ai-decision-bridge.md`。
-
-- 当前维护分支为 `codex/rog`，发布版本 `0.3.2-rog`；本分支保留 AI Decision/Todoist MCP 适配层，仍只允许 ROG 主机注册。
+- 当前维护分支为 `codex/rog`，发布版本 `0.3.2-rog`；本分支只保留通用开发 MCP 工具；业务连接器由 ai-decision 独立维护。
 
 - Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.2`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.2-omen` / `0.3.2-rog`；分支及组件边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版，2026-10-05 已更新本机签名 release 到 `0.3.2`。
 - 2026-09-08 持久状态已从平台用户数据目录迁入仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`pending-action.json`、`launcher.lock` 与 `codex-plus.log` 均随项目目录移动，不再使用 Windows `%LOCALAPPDATA%\codex-plus`、macOS `~/Library/Application Support/codex-plus` 或 Linux `~/.local/state/codex-plus`。Windows 现有状态已完成原位迁移并以 `--attach-existing` 在 Session 1 验证账户状态、broker 与 CDP 注入继续正常。
