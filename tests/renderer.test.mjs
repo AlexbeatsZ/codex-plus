@@ -101,6 +101,65 @@ test("menu observers ignore unrelated DOM churn and react to a new profile menu"
   );
 });
 
+function setupSignedOut(invoke, body) {
+  const dom = new JSDOM(`<!doctype html><html><head></head><body>${body}</body></html>`, {
+    runScripts: "dangerously",
+    url: "app://-/index.html",
+  });
+  dom.window.codexPlusInvoke = invoke;
+  dom.window.eval(script);
+  return dom;
+}
+
+test("signed-out login screen gets one account entry beside the native login buttons", async () => {
+  const calls = [];
+  const dom = setupSignedOut(async (path) => {
+    calls.push(path);
+    return { status: "ok", accounts: [{ recordId: "a".repeat(64), email: "saved@example.com", active: false }] };
+  }, '<main><div id="login-actions"><button class="primary">使用 ChatGPT 登录</button><button class="secondary">使用 API 密钥</button></div><button>Continue in ChatGPT</button></main>');
+  await flush();
+  const actions = dom.window.document.getElementById("login-actions");
+  assert.deepEqual([...actions.children].map((node) => node.textContent.trim()), ["使用 ChatGPT 登录", "使用 API 密钥", "切换账户 / 导入 auth.json"]);
+  const entry = actions.querySelector("[data-codex-plus-signed-out-account]");
+  assert.equal(entry.type, "button");
+  assert.ok(entry.classList.contains("secondary"));
+  assert.equal(dom.window.document.querySelectorAll("[data-codex-plus-signed-out-account]").length, 1);
+
+  dom.window.__codexPlusAccounts.install();
+  await flush();
+  assert.equal(actions.querySelectorAll("[data-codex-plus-signed-out-account]").length, 1);
+
+  entry.click();
+  await flush();
+  const modal = dom.window.document.getElementById("codex-plus-account-modal");
+  assert.match(modal.querySelector(".cp-account-subtitle").textContent, /当前未登录/);
+  assert.ok(modal.querySelector("[data-cp-add]"));
+  assert.equal(modal.querySelector("[data-cp-web-login]"), null);
+  assert.ok(modal.querySelector("[data-cp-switch]"));
+  assert.deepEqual(calls.slice(0, 1), ["/accounts/list"]);
+});
+
+test("signed-out entry appears when React renders the login screen later", async () => {
+  const dom = setupSignedOut(async () => ({ status: "ok", accounts: [] }), '<div id="root"></div>');
+  await flush();
+  assert.equal(dom.window.document.querySelector("[data-codex-plus-signed-out-account]"), null);
+  const root = dom.window.document.getElementById("root");
+  root.innerHTML = '<div><button>Sign in with ChatGPT</button></div>';
+  await flush();
+  const group = root.firstElementChild;
+  assert.deepEqual([...group.children].map((node) => node.textContent.trim()), ["Sign in with ChatGPT", "切换账户 / 导入 auth.json"]);
+});
+
+test("logged-in profile menu modal still offers web login", async () => {
+  const dom = setup(async () => ({ status: "ok", accounts: [] }));
+  await flush();
+  assert.equal(dom.window.document.querySelector("[data-codex-plus-signed-out-account]"), null);
+  dom.window.document.querySelector("[data-codex-plus-account-item]").click();
+  await flush();
+  assert.ok(dom.window.document.querySelector("[data-cp-web-login]"));
+  assert.match(dom.window.document.querySelector(".cp-account-subtitle").textContent, /切换 ChatGPT 账户/);
+});
+
 test("reinjecting model routing does not add document click listeners", async () => {
   const dom = setup(async () => ({ status: "ok", models: [] }));
   await flush();

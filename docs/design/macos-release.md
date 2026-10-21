@@ -32,3 +32,8 @@ The loaded LaunchAgent must retain `ProcessType=Interactive` and
 Release publication does not run `install.sh`: that script reloads the job.
 Validate renderer compatibility against the installed official application
 separately; a successful release build is not evidence of a live model request.
+
+The manual `macos/Codex Plus.app` wrapper declares `app-icon.icns`, copied from
+the installed official application's declared icon file. Updating the wrapper
+icon does not require reloading the LaunchAgent or changing the launcher's stable
+signing identity. Keep the wrapper version aligned with the shared base release.

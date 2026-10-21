@@ -15,8 +15,9 @@ assert.equal(read("Cargo.lock").match(/name = "codex-plus"\nversion = "([^"]+)"/
 
 const expectedChannel = process.argv[process.argv.indexOf("--channel") + 1];
 if (process.argv.includes("--channel")) assert.equal(release.channel, expectedChannel, "Wrong release channel for this host");
-const includesAdapter = release.channel === "rog";
-assert.deepEqual(release.components, includesAdapter ? ["local-tools", "ai-decision-todoist"] : ["local-tools"]);
+// Every host ships only generic development tools. Business connectors own their releases.
+const includesAdapter = false;
+assert.deepEqual(release.components, ["local-tools"]);
 for (const relative of [
   "local-tools/src/ai-decision-tools.ts",
   "local-tools/test/ai-decision-tools.test.ts",

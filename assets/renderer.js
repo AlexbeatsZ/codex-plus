@@ -2,10 +2,11 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 8;
+  const VERSION = 9;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
+  const SIGNED_OUT_ATTR = "data-codex-plus-signed-out-account";
 
   if (window.__codexPlusAccounts?.version === VERSION) {
     window.__codexPlusAccounts.install();
@@ -16,6 +17,9 @@
   const state = {
     observer: null,
     scanQueued: false,
+    scanMenus: false,
+    scanSignedOut: false,
+    signedOut: false,
     modal: null,
     opener: null,
     view: "accounts",
@@ -48,6 +52,8 @@
       .codex-plus-account-menu-item .cp-menu-row { display:flex!important; width:100%!important; min-width:0; flex-direction:row!important; align-items:center!important; justify-content:flex-start!important; gap:8px!important; white-space:nowrap!important; }
       .codex-plus-account-menu-item .cp-menu-row svg { flex:0 0 auto; width:16px; height:16px; opacity:.72; }
       .codex-plus-account-menu-item .cp-menu-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .codex-plus-signed-out-account { display:inline-flex!important; align-items:center!important; justify-content:center!important; gap:8px!important; white-space:nowrap!important; }
+      .codex-plus-signed-out-account svg { flex:0 0 auto; width:16px; height:16px; opacity:.72; }
       .cp-account-overlay { position:fixed; inset:0; z-index:2147483000; display:grid; place-items:center; padding:20px; background:rgba(0,0,0,.56); }
       .cp-account-dialog { --cp-bg:#1f1f20; --cp-surface:#242425; --cp-surface-hover:#2a2a2c; --cp-border:#38383a; --cp-divider:#303032; --cp-text:#f0f0f1; --cp-muted:#9c9ca3; --cp-button:#29292b; --cp-accent:#339cff; --cp-accent-hover:#2d8fe8; width:min(680px,calc(100vw - 28px)); max-height:min(720px,calc(100vh - 28px)); display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--cp-border); border-radius:12px; color:var(--cp-text); background:var(--cp-bg); box-shadow:0 24px 64px rgba(0,0,0,.48); color-scheme:dark; font-family:inherit; }
       .cp-account-header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:20px 20px 12px; }
@@ -116,6 +122,22 @@
     return /^(退出登录|登出|Sign out(?:\s|$)|Log out(?:\s|$))/i.test(normalizedText(node));
   }
 
+  // 未登录时 Codex 只显示原生登录页，没有个人资料菜单；以“ChatGPT + 登录动词”的原生按钮作为锚点。
+  function isChatGptLogin(node) {
+    if (!node || node.hasAttribute?.(SIGNED_OUT_ATTR) || node.getAttribute?.("role") === "menuitem") return false;
+    const text = normalizedText(node);
+    if (text.length > 48) return false;
+    return /(Sign\s*in|Log\s*in|Login|Continue)\s+(with|using|via)\s+(your\s+)?ChatGPT/i.test(text)
+      || /(使用|通过|用)\s*ChatGPT\s*(账户|帐户|账号|帳號)?\s*(登录|登入|继续)/.test(text)
+      || /(登录|登入)\s*ChatGPT|ChatGPT\s*(账户|帐户|账号)?\s*(登录|登入)/.test(text);
+  }
+
+  function isApiKeyLogin(node) {
+    if (!node || node.hasAttribute?.(SIGNED_OUT_ATTR)) return false;
+    const text = normalizedText(node);
+    return text.length <= 48 && /API\s*(key|密钥|金钥)/i.test(text);
+  }
+
   function profileMenuContext(settingsItem) {
     const parent = settingsItem.parentElement;
     if (!parent) return null;
@@ -145,6 +167,36 @@
     return item;
   }
 
+  function createSignedOutButton(template) {
+    const button = document.createElement("button");
+    button.type = "button";
+    if (template?.className) button.className = template.className;
+    button.classList.add("codex-plus-signed-out-account");
+    button.setAttribute(SIGNED_OUT_ATTR, "true");
+    button.setAttribute("aria-label", "切换账户或导入 auth.json");
+    button.innerHTML = `${svgIcon()}<span>切换账户 / 导入 auth.json</span>`;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      openModal(button, { signedOut: true });
+    }, true);
+    return button;
+  }
+
+  function scanSignedOutScreen() {
+    const buttons = Array.from(document.querySelectorAll('button,[role="button"]'));
+    for (const login of buttons.filter(isChatGptLogin)) {
+      const parent = login.parentElement;
+      if (!parent || parent.querySelector(`:scope > [${SIGNED_OUT_ATTR}]`)) continue;
+      const siblings = Array.from(parent.children);
+      // 优先沿用“API key”次要按钮的样式，并放在同组原生登录按钮之后。
+      const apiKey = siblings.find(isApiKeyLogin);
+      const last = siblings.filter((node) => node === login || node === apiKey).pop();
+      parent.insertBefore(createSignedOutButton(apiKey || login), last.nextSibling);
+    }
+  }
+
   function scanMenus() {
     const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
     for (const settingsItem of items.filter(isSettings)) {
@@ -169,13 +221,35 @@
     });
   }
 
+  function mutationMayContainChatGptLogin(records) {
+    if (!records) return true;
+    return records.some((record) => {
+      const target = record.target;
+      if (target?.nodeType === 1 && isChatGptLogin(target.closest?.('button,[role="button"]'))) return true;
+      return Array.from(record.addedNodes || []).some((node) => {
+        if (node.nodeType !== 1 && node.nodeType !== 11) return false;
+        if (node.matches?.('button,[role="button"]') && isChatGptLogin(node)) return true;
+        return Array.from(node.querySelectorAll?.('button,[role="button"]') || []).some(isChatGptLogin);
+      });
+    });
+  }
+
   function queueScan(records) {
-    if (!mutationMayContainMenu(records)) return;
+    const menus = mutationMayContainMenu(records);
+    const signedOut = mutationMayContainChatGptLogin(records);
+    if (!menus && !signedOut) return;
+    state.scanMenus ||= menus;
+    state.scanSignedOut ||= signedOut;
     if (state.scanQueued) return;
     state.scanQueued = true;
     queueMicrotask(() => {
+      const scanMenusNow = state.scanMenus;
+      const scanSignedOutNow = state.scanSignedOut;
       state.scanQueued = false;
-      scanMenus();
+      state.scanMenus = false;
+      state.scanSignedOut = false;
+      if (scanMenusNow) scanMenus();
+      if (scanSignedOutNow) scanSignedOutScreen();
     });
   }
 
@@ -253,7 +327,9 @@
       ? `<div class="cp-account-list">${state.accounts.map(accountMarkup).join("")}</div>`
       : '<div class="cp-account-empty">暂无已保存账户。可导入 auth.json，或通过官方登录页面添加。</div>';
     const busy = state.switching || state.deleting || state.webLoginStarting;
-    body.innerHTML = `${messageMarkup()}${list}<div class="cp-account-list-actions"><button type="button" class="cp-account-button" data-cp-add ${busy ? "disabled" : ""}>导入 auth.json</button><button type="button" class="cp-account-button" data-primary="true" data-cp-web-login ${busy ? "disabled" : ""}>${state.webLoginStarting ? "正在重启…" : "网页登录新账户"}</button></div>`;
+    // 未登录时原生登录页已在背后，无需再重启到登录页。
+    const webLogin = state.signedOut ? "" : `<button type="button" class="cp-account-button" data-primary="true" data-cp-web-login ${busy ? "disabled" : ""}>${state.webLoginStarting ? "正在重启…" : "网页登录新账户"}</button>`;
+    body.innerHTML = `${messageMarkup()}${list}<div class="cp-account-list-actions"><button type="button" class="cp-account-button" data-cp-add ${busy ? "disabled" : ""}>导入 auth.json</button>${webLogin}</div>`;
     body.querySelectorAll("[data-cp-switch]").forEach((button) => {
       button.addEventListener("click", () => void switchAccount(button.dataset.cpSwitch, button));
     });
@@ -441,7 +517,7 @@
       state.sourceName = "";
       state.importing = false;
       state.view = "accounts";
-      setMessage("账户导入成功。", "success");
+      setMessage(state.signedOut ? "账户导入成功，点击“切换”即可使用该账户。" : "账户导入成功。", "success");
       await loadAccounts();
     } catch (error) {
       state.importing = false;
@@ -461,10 +537,11 @@
     return Array.from(root.querySelectorAll('button:not(:disabled),textarea:not(:disabled),input:not(:disabled),[tabindex]:not([tabindex="-1"])')).filter((node) => node.getClientRects().length > 0 || typeof node.focus === "function");
   }
 
-  function openModal(opener = null) {
+  function openModal(opener = null, options = {}) {
     closeModal();
     installStyle();
     state.opener = opener instanceof HTMLElement ? opener : document.activeElement;
+    state.signedOut = options?.signedOut === true;
     state.view = "accounts";
     state.accounts = [];
     state.usage.clear();
@@ -479,7 +556,7 @@
     overlay.id = ROOT_ID;
     overlay.className = "cp-account-overlay";
     overlay.innerHTML = `<section class="cp-account-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-account-title">
-      <header class="cp-account-header"><div><h2 class="cp-account-title" id="cp-account-title">账户管理</h2><p class="cp-account-subtitle">切换 ChatGPT 账户并查看额度状态</p></div><button type="button" class="cp-account-close" aria-label="关闭">${closeIcon()}</button></header>
+      <header class="cp-account-header"><div><h2 class="cp-account-title" id="cp-account-title">账户管理</h2><p class="cp-account-subtitle">${state.signedOut ? "当前未登录：选择已保存账户，或导入 auth.json 后切换" : "切换 ChatGPT 账户并查看额度状态"}</p></div><button type="button" class="cp-account-close" aria-label="关闭">${closeIcon()}</button></header>
       <div class="cp-account-body" data-cp-body aria-live="polite"></div>
     </section>`;
     overlay.addEventListener("click", (event) => {
@@ -510,7 +587,7 @@
   function destroy() {
     state.observer?.disconnect?.();
     state.observer = null;
-    document.querySelectorAll(`[${ITEM_ATTR}]`).forEach((node) => node.remove());
+    document.querySelectorAll(`[${ITEM_ATTR}],[${SIGNED_OUT_ATTR}]`).forEach((node) => node.remove());
     document.getElementById(ROOT_ID)?.remove();
     document.getElementById(STYLE_ID)?.remove();
   }

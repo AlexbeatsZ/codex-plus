@@ -6,8 +6,10 @@
 
 # Current State
 
+- 2026-10-21 三端公共发布更新到 `0.3.3`（Windows 分别为 `0.3.3-omen` / `0.3.3-rog`）：纳入已审查的未登录账户切换/导入入口、已有 PDF CMap 与 Mac 安全签名发布修复、Windows/Mac 官方图标。全部渠道仅含 generic local-tools；ROG 的 AI Decision 业务工具已在 10-17 迁到独立连接器，旧的“ROG 保留内嵌适配层”约束已失效。源码可先同步，实际部署记录以各端 `.codex-plus/release.json` 为准；本轮不重启当前 Codex/launcher/Tunnel。
+- 2026-10-15：新增未登录状态下的账户入口。原生登录页没有个人资料菜单，渲染器（账户脚本 VERSION 9）在原生 ChatGPT 登录按钮组末尾插入“切换账户 / 导入 auth.json”，打开同一账户弹窗（隐藏网页登录），可直接切换已保存账户或导入 `auth.json` 后切换。设计见 `docs/design/account-switch-lifecycle.md`。28 JS / 50 Rust（Linux）测试通过；登录页按钮文本按“ChatGPT + 登录动词”匹配，尚未在真实 Codex 登录页目视验收。
 - 2026-10-13：新增 PDF 预览 CMap 资源加载修复，目标为官方 `26.1007.30912`。在原生主窗口及独立窗口的 PDF.js worker 通道按需提供 168 份本地映射，覆盖普通 PDF 与 LaTeX 预览；不修改文档或官方签名包。设计及验收入口见 `docs/design/pdf-preview-cmaps.md`。57 Rust / 25 JS 测试通过，已签名发布并以 `--attach-existing` 更新运行实例，Codex PID 保持不变；主/独立窗口均 ready。部署后实际 PDF.js 读取六页中文成功，普通预览的最终目视验收待用户重开预览确认。
-- Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.2`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.2-omen` / `0.3.2-rog`；分支及组件边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版，2026-10-05 已更新本机签名 release 到 `0.3.2`。
+- Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.3`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.3-omen` / `0.3.3-rog`；分支及组件边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。
 - 2026-09-08 持久状态已从平台用户数据目录迁入仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`pending-action.json`、`launcher.lock` 与 `codex-plus.log` 均随项目目录移动，不再使用 Windows `%LOCALAPPDATA%\codex-plus`、macOS `~/Library/Application Support/codex-plus` 或 Linux `~/.local/state/codex-plus`。Windows 现有状态已完成原位迁移并以 `--attach-existing` 在 Session 1 验证账户状态、broker 与 CDP 注入继续正常。
 - 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-05 当前安装/进程识别验证版本为 `26.901.4073.0`，实际进程名为 `ChatGPT.exe`。
 - 2026-09-07 已验证 macOS 26.6.1 Apple Silicon：官方应用 `/Applications/ChatGPT.app` 版本 1.2026.238.5，可直接以 `Contents/MacOS/ChatGPT --remote-debugging-port=...` 启动并完成 CDP 注入；Mac release 位于 `/Users/meta/Project/Workspaces/codex-plus/target/release/codex-plus`，登录后台入口使用 LaunchAgent `com.codex-plus.launcher`，不会主动打开 ChatGPT 窗口。
@@ -123,6 +125,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 
 # Durable Lessons
 
+- Windows 发布构建必须在固定项目源码根目录执行，可另设 Cargo target-dir；不要把临时 worktree 构建的二进制部署后再删除 worktree。`desktop_codex_task` 等运行路径仍使用编译期 `CARGO_MANIFEST_DIR`，仅账户状态发现能从正式 target 路径反推仓库根；它不能保证所有模块都不依赖编译目录。
 - macOS 不能直接在登录任务的固定入口上编译后再补签：这会给登录/手动启动留下 adhoc 身份窗口，签名失败时还会丢失旧入口。先在隔离 target 构建，再签名并同文件系统原子替换；Cargo 的实际 artifact 路径必须作为签名输入，避免 `--target` 构建后误签旧产物。详见 `docs/design/macos-release.md`。
 - CDP 心跳必须要求回包：macOS 睡眠唤醒后旧 WebSocket 可以长期保持 `ESTABLISHED` 却不再处理消息（发送队列与对端接收队列持续增长）。单向写入式 `Runtime.evaluate` 心跳永远拿不到失效信号，watchdog 也就永不重连，UI 会永久卡在加载态。心跳要记录命令 id 并等待同 id 回包，超时即丢弃连接重新发现 target；socket 写入同样要有上限，否则对端停止读取写满缓冲后连失活检测都运行不到。页面侧请求还需要自己的兜底超时，并在脚本重新注入时让上一轮挂起的请求立即失败。
 - **`codesign --verify --strict` 通过 ≠ 签名身份正确。** 每次 `cargo build --release` 重新链接都会把已有签名换成链接器的 adhoc 签名，此时 `--verify` 依然报 valid（adhoc 签名自洽），但 designated requirement 已经退回 `cdhash H"..."`，TCC 授权随即失效。判断"是否还是目标身份"**只能看 `codesign -d -r-`** 的 `designated` 行，或比 `codesign -dvv` 的 `Authority`。构建后不签名 = 白干，且症状会延迟到下一次权限请求才暴露。
