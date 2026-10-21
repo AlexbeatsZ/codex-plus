@@ -25,6 +25,8 @@
 
 例如 DeepSeek 应填写 `https://api.deepseek.com` 并选择 Chat Completions；其模型发现地址为 `https://api.deepseek.com/models`。
 
+未登录时没有个人资料菜单，可直接点击原生登录页 ChatGPT 登录按钮旁的“切换账户 / 导入 auth.json”，选择已保存账户或先导入再切换。
+
 导入只保存账户，不会自动切换；切换账户会自动重启 Codex。当前有效 ChatGPT 登录会自动加入本地账户列表。
 
 ### Local tools 与 Secure MCP Tunnel

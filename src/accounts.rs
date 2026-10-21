@@ -862,6 +862,26 @@ mod tests {
     }
 
     #[test]
+    fn signed_out_home_can_list_import_and_switch_to_a_saved_account() {
+        let (_temp, vault) = fixture();
+        assert!(!vault.paths().live_auth().exists());
+        let target = vault
+            .import_auth(&auth("target", "target-token", "target@example.com"))
+            .unwrap();
+        assert!(!target.active);
+        let accounts = vault.list_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert!(!accounts[0].active);
+        vault.validate_switch(&target.record_id).unwrap();
+        vault.switch_after_shutdown(&target.record_id).unwrap();
+        assert_eq!(
+            fs::read(vault.paths().live_auth()).unwrap(),
+            auth("target", "target-token", "target@example.com")
+        );
+        assert!(vault.list_accounts().unwrap()[0].active);
+    }
+
+    #[test]
     fn deleting_removes_only_an_inactive_saved_account() {
         let (_temp, vault) = fixture();
         atomic_write(
