@@ -1,10 +1,11 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::{Context as _, bail};
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -59,6 +60,13 @@ pub async fn endpoint_available(port: u16) -> bool {
 }
 
 pub async fn run_watchdog(port: u16, service: AccountService) -> anyhow::Result<()> {
+    tokio::select! {
+        result = run_accounts_watchdog(port, service.clone()) => result,
+        result = run_pdf_watchdog(port, service) => result,
+    }
+}
+
+async fn run_accounts_watchdog(port: u16, service: AccountService) -> anyhow::Result<()> {
     loop {
         match discover_main_target(port).await {
             Ok(target) => {
@@ -88,7 +96,12 @@ pub async fn run_watchdog(port: u16, service: AccountService) -> anyhow::Result<
 }
 
 async fn discover_main_target(port: u16) -> anyhow::Result<Target> {
-    let targets = local_client()?
+    pick_main_target(discover_targets(port).await?)
+        .ok_or_else(|| anyhow::anyhow!("没有找到 Codex 主页面"))
+}
+
+async fn discover_targets(port: u16) -> anyhow::Result<Vec<Target>> {
+    local_client()?
         .get(format!("http://127.0.0.1:{port}/json"))
         .timeout(Duration::from_secs(2))
         .send()
@@ -98,8 +111,127 @@ async fn discover_main_target(port: u16) -> anyhow::Result<Target> {
         .context("CDP target 列表不可用")?
         .json::<Vec<Target>>()
         .await
-        .context("CDP target 列表无效")?;
-    pick_main_target(targets).ok_or_else(|| anyhow::anyhow!("没有找到 Codex 主页面"))
+        .context("CDP target 列表无效")
+}
+
+fn is_pdf_preview_target(target: &Target) -> bool {
+    target.kind == "page"
+        && target.web_socket_debugger_url.is_some()
+        && !target.url.contains("avatar-overlay")
+        && matches!(
+            target.url.split('?').next(),
+            Some("app://-/index.html" | "app://-/detached-window.html")
+        )
+}
+
+async fn run_pdf_watchdog(port: u16, service: AccountService) -> anyhow::Result<()> {
+    let mut attached = HashSet::new();
+    // Dropping the JoinSet cancels every window session when this Codex
+    // lifecycle ends; no task remains attached to a previous debugging port.
+    let mut sessions = JoinSet::new();
+    let mut discover = tokio::time::interval(HEARTBEAT_INTERVAL);
+    loop {
+        tokio::select! {
+            _ = discover.tick() => {
+                if let Ok(targets) = discover_targets(port).await {
+                    for target in targets.into_iter().filter(is_pdf_preview_target) {
+                        if attached.insert(target.id.clone()) {
+                            let service = service.clone();
+                            sessions.spawn(async move {
+                                let result = run_pdf_target_session(&target, &service).await;
+                                (target.id, result)
+                            });
+                        }
+                    }
+                }
+            }
+            Some(result) = sessions.join_next(), if !sessions.is_empty() => {
+                let (target_id, result) = result.context("PDF preview session task failed")?;
+                attached.remove(&target_id);
+                if let Err(error) = result {
+                    crate::runtime::append_log(service.paths(), "pdf_preview.session.failed",
+                        json!({"targetId": target_id, "message": error.to_string()}));
+                }
+            }
+        }
+    }
+}
+
+async fn run_pdf_target_session(target: &Target, service: &AccountService) -> anyhow::Result<()> {
+    let url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("PDF preview target has no WebSocket URL"))?;
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await?;
+    let mut next_id = 1;
+    command(&mut socket, &mut next_id, "Runtime.enable", json!({})).await?;
+    let previous = evaluate(
+        &mut socket,
+        &mut next_id,
+        "window.__codexPlusPdfPreview?.registrationId || null",
+    )
+    .await?;
+    let registered = command(
+        &mut socket,
+        &mut next_id,
+        "Page.addScriptToEvaluateOnNewDocument",
+        json!({"source": crate::pdf_preview::browser_script()}),
+    )
+    .await?;
+    let identifier = registered
+        .pointer("/result/identifier")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("PDF preview preload registration failed"))?;
+    if let Some(old) = previous
+        .pointer("/result/result/value")
+        .and_then(Value::as_str)
+    {
+        let _ = command(
+            &mut socket,
+            &mut next_id,
+            "Page.removeScriptToEvaluateOnNewDocument",
+            json!({"identifier": old}),
+        )
+        .await;
+    }
+    evaluate(
+        &mut socket,
+        &mut next_id,
+        crate::pdf_preview::browser_script(),
+    )
+    .await?;
+    evaluate(
+        &mut socket,
+        &mut next_id,
+        &format!(
+            "window.__codexPlusPdfPreview.registrationId={}",
+            serde_json::to_string(identifier)?
+        ),
+    )
+    .await?;
+    crate::runtime::append_log(
+        service.paths(),
+        "pdf_preview.ready",
+        json!({"targetId": target.id}),
+    );
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    loop {
+        heartbeat.tick().await;
+        let health = evaluate(
+            &mut socket,
+            &mut next_id,
+            "window.__codexPlusPdfPreview?.health() || null",
+        )
+        .await?;
+        if health
+            .pointer("/result/result/value/ready")
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
+            // A navigation or a later Worker replacement needs a fresh preload.
+            bail!("PDF preview resource loader is no longer installed");
+        }
+    }
 }
 
 fn pick_main_target(targets: Vec<Target>) -> Option<Target> {
@@ -425,6 +557,26 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(picked.url, "app://-/index.html");
+    }
+
+    #[test]
+    fn pdf_preview_targets_include_native_detached_windows_only() {
+        assert!(is_pdf_preview_target(&target("app://-/index.html", "page")));
+        assert!(is_pdf_preview_target(&target(
+            "app://-/detached-window.html?initialRoute=%2Fdetached-window",
+            "page"
+        )));
+        for url in [
+            "app://-/index.html?initialRoute=%2Favatar-overlay",
+            "app://-/other.html",
+            "https://chatgpt.com/",
+        ] {
+            assert!(!is_pdf_preview_target(&target(url, "page")));
+        }
+        assert!(!is_pdf_preview_target(&target(
+            "app://-/index.html",
+            "webview"
+        )));
     }
 
     #[test]
