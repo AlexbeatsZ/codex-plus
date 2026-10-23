@@ -4,18 +4,20 @@ use anyhow::Context as _;
 use serde_json::{Value, json};
 
 use crate::accounts::{AccountPaths, AccountVault};
-use crate::providers::{
-    DiscoverRequest, ProviderStore, SaveRequest, discover_models, discover_view,
-};
+use crate::integrations::ApiIntegrations;
+use crate::providers::{DiscoverRequest, SaveRequest};
+use crate::subscription::SubscriptionConfig;
 
 #[derive(Clone)]
-pub struct AccountService {
+pub struct BridgeService {
     paths: Arc<AccountPaths>,
+    pub apis: ApiIntegrations,
 }
 
-impl AccountService {
+impl BridgeService {
     pub fn new(paths: AccountPaths) -> Self {
         Self {
+            apis: ApiIntegrations::new(paths.clone()),
             paths: Arc::new(paths),
         }
     }
@@ -32,6 +34,19 @@ impl AccountService {
             "/accounts/delete" => self.delete(payload).await,
             "/accounts/switch" => self.switch(payload).await,
             "/accounts/web-login" => self.web_login().await,
+            "/api-providers/subscription/get" => self.apis.subscription.view(),
+            "/api-providers/subscription/save" => {
+                match serde_json::from_value::<SubscriptionConfig>(payload) {
+                    Ok(config) => self.apis.subscription.save(config),
+                    Err(_) => Err(anyhow::anyhow!("账户池配置参数无效")),
+                }
+            }
+            "/api-providers/subscription/discover" => {
+                match serde_json::from_value::<SubscriptionConfig>(payload) {
+                    Ok(config) => self.apis.subscription.discover(config).await,
+                    Err(_) => Err(anyhow::anyhow!("账户池模型发现参数无效")),
+                }
+            }
             "/api-providers/list" => self.api_list().await,
             "/api-providers/discover" => self.api_discover(payload).await,
             "/api-providers/save" => self.api_save(payload).await,
@@ -141,47 +156,29 @@ impl AccountService {
     }
 
     async fn api_list(&self) -> anyhow::Result<Value> {
-        let store = ProviderStore::load(self.paths())?;
-        Ok(json!({"status":"ok", "providers":store.summaries()}))
+        Ok(json!({"status":"ok", "providers":self.apis.list()?}))
     }
 
     async fn api_discover(&self, payload: Value) -> anyhow::Result<Value> {
         let request: DiscoverRequest =
             serde_json::from_value(payload).context("模型发现参数无效")?;
-        let store = ProviderStore::load(self.paths())?;
-        let existing = request
-            .provider_id
-            .as_deref()
-            .and_then(|id| store.providers.iter().find(|provider| provider.id == id));
-        let models = discover_models(self.paths(), request).await?;
-        let mut view = discover_view(existing, models);
-        view["status"] = Value::String("ok".to_string());
-        Ok(view)
+        self.apis.discover_external(request).await
     }
 
     async fn api_save(&self, payload: Value) -> anyhow::Result<Value> {
         let request: SaveRequest = serde_json::from_value(payload).context("API 保存参数无效")?;
-        let mut store = ProviderStore::load(self.paths())?;
-        let id = store.upsert(request)?;
-        store.save(self.paths())?;
-        Ok(json!({"status":"ok", "providerId":id, "providers":store.summaries()}))
+        let providers = self.apis.save_external(request)?;
+        Ok(json!({"status":"ok", "providers":providers}))
     }
 
     async fn api_delete(&self, payload: Value) -> anyhow::Result<Value> {
         let id = required_provider_id(&payload)?;
-        let mut store = ProviderStore::load(self.paths())?;
-        let before = store.providers.len();
-        store.providers.retain(|provider| provider.id != id);
-        if store.providers.len() == before {
-            anyhow::bail!("API 配置不存在");
-        }
-        store.save(self.paths())?;
-        Ok(json!({"status":"ok", "providers":store.summaries()}))
+        let providers = self.apis.delete_external(&id)?;
+        Ok(json!({"status":"ok", "providers":providers}))
     }
 
     async fn api_catalog(&self) -> anyhow::Result<Value> {
-        let store = ProviderStore::load(self.paths())?;
-        Ok(json!({"status":"ok", "providerId":"codex-plus-api", "models":store.catalog()}))
+        Ok(json!({"status":"ok", "models":self.apis.catalog()?}))
     }
 }
 

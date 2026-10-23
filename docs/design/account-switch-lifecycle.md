@@ -54,7 +54,7 @@ UI 显示的历史不直接读 rollout，而是读 `$CODEX_HOME/thread_history_1
 ## 账户数据
 
 - 实时凭据：`CODEX_HOME\auth.json`，未设置 `CODEX_HOME` 时为 `%USERPROFILE%\.codex\auth.json`。
-- 账户快照：`%LOCALAPPDATA%\codex-plus\accounts\<record_id>.json`。`record_id` 是不可逆本地散列，优先由 Business 工作区 `account_id` 与席位级 `chatgpt_account_user_id` 共同派生；旧 token 缺少该 claim 时依次回退 `chatgpt_user_id`、`user_id`、`sub`，再回退旧的工作区散列。这样同一 Business 工作区的不同席位不会互相覆盖。
+- 账户快照：`.codex-plus/accounts/<record_id>.json`。`record_id` 是不可逆本地散列，优先由 Business 工作区 `account_id` 与席位级 `chatgpt_account_user_id` 共同派生；旧 token 缺少该 claim 时依次回退 `chatgpt_user_id`、`user_id`、`sub`，再回退旧的工作区散列。这样同一 Business 工作区的不同席位不会互相覆盖。
 - 旧 `<sha256(account_id)>.json` 快照在首次列出账户时原子迁移到席位级文件名。迁移只改变 vault 文件名，不修改凭据内容。
 - 渲染器只获得 `recordId`、`accountId`、name、email、plan、active 等摘要。令牌与席位 claim 只由 Rust 读取。
 - 当前有效 ChatGPT auth 在列出账户前保存到 vault，因此当前账户永远可见且可在之后恢复。
@@ -71,7 +71,7 @@ UI 显示的历史不直接读 rollout，而是读 `$CODEX_HOME/thread_history_1
 
 ## 删除与网页登录
 
-- 删除只作用于 `%LOCALAPPDATA%\codex-plus\accounts` 中的已保存快照，不调用 ChatGPT 服务，也不删除远端账户。
+- 删除只作用于 `.codex-plus/accounts` 中的已保存快照，不调用 ChatGPT 服务，也不删除远端账户。
 - 当前正在使用的席位不能直接删除，因为实时 `auth.json` 仍会继续代表该席位；用户必须先切换到其他账户。Rust 层必须以席位级 `recordId` 再次检查，不能只依赖渲染器禁用按钮，也不能只比较 Business 工作区 ID。
 - “网页登录新账户”同样使用不含 token 的 pending action 和同一 EXE helper。helper 先验证 file credential store、停止旧运行时，再在 vault 锁内保存当前实时账户并移走 `auth.json`；随后以内部 `--web-login` 模式重新启动官方 Codex，使其显示原生登录页面。
 - 网页登录 launcher 轮询新生成的 ChatGPT `auth.json`，解析成功后立即保存到 vault 并结束捕获任务。用户取消登录或关闭 Codex 不会丢失旧账户，其快照已经在移走实时凭据前保存。
@@ -80,7 +80,7 @@ UI 显示的历史不直接读 rollout，而是读 `$CODEX_HOME/thread_history_1
 ## UI 与额度
 
 - 账户入口固定放在个人资料菜单“API 接入”和“退出登录”之间，图标为 `UsersRound`。注入前必须确认同一菜单容器内同时存在原生“设置”和“退出登录”；不能仅凭“设置”文字匹配，以免污染应用顶部“编辑”等菜单。
-- 未登录时 Codex 只显示原生登录页，没有个人资料菜单。渲染器在原生 ChatGPT 登录按钮（文本须同时含 ChatGPT 与“登录/继续/Sign in/Log in/Continue with”类动词，如“使用 ChatGPT 登录”“Sign in with ChatGPT”）所在按钮组末尾插入一个“切换账户 / 导入 auth.json”按钮；若同组有原生 API key 按钮，沿用其次要按钮样式。该按钮打开同一账户弹窗，副标题提示当前未登录，并隐藏“网页登录新账户”（原生登录页已在背后）。切换与导入走与已登录时相同的 bridge 路由，Rust 侧本就允许实时 `auth.json` 不存在。
+- 未登录时 Codex 只显示原生登录页，没有个人资料菜单。渲染器在原生 ChatGPT 登录按钮（兼容按钮完整文本“使用 ChatGPT 登录 / Sign in with ChatGPT”，也兼容附近 h1/h2 登录标题为“登录 ChatGPT / Sign in to ChatGPT”而按钮只写“继续登录 / Continue”的新版布局；普通聊天中的 Continue 不匹配）所在按钮组末尾插入一个“切换账户 / 导入 auth.json”按钮；若同组有原生 API key 按钮，沿用其次要按钮样式。该按钮打开同一账户弹窗，副标题提示当前未登录，并隐藏“网页登录新账户”（原生登录页已在背后）。切换与导入走与已登录时相同的 bridge 路由，Rust 侧本就允许实时 `auth.json` 不存在。
 - 未登录入口的 observer 只检查新增子树（或变化节点所在按钮）中是否出现上述登录按钮，命中后才做一次全页面按钮扫描；聊天流等无关 DOM 变化不会触发。
 - 菜单图标使用 16×16px，与 Codex 原生菜单图标保持相同视觉尺寸；仍须保留强制横向、nowrap 的内层，避免继承菜单项的 `flex-col` 后换行。
 - 弹窗默认显示账户列表，标题栏不提供页面切换；列表最下方同时提供“导入 auth.json”和“网页登录新账户”。前者进入导入界面并通过“返回”回到账户列表，后者经确认后执行上述受控重启。
@@ -90,3 +90,5 @@ UI 显示的历史不直接读 rollout，而是读 `$CODEX_HOME/thread_history_1
 - 页面侧 bridge（`assets/bridge.js`）对每次请求都有兜底超时，默认 30 秒，并可在调用时用 `timeoutMs` 覆盖；launcher 重新连接、脚本重新注入时，上一轮连接里挂起的请求必须立刻以“桥已重新连接”失败。launcher 侧的心跳失活检测最长约 45 秒，UI 不能依赖它来解锁，任何情况下账户弹窗都要在有限时间内给出错误并允许重试。
 - usage 超时或单账户失败仅改变该行状态。
 - 文件选择接受任意文本扩展名，只填入 textarea；“导入”负责最终解析和保存。失败保留原文，成功清空并返回账户页。
+
+2026-10-23 隔离原生登录页审查：正式 0.3.3 与运行中 renderer v9 均已含未登录入口，但新页面 h1 为“登录 ChatGPT”、按钮为“继续登录”，旧规则匹配不到。v11 已在同一隔离官方页面显示唯一入口，并监听 React 原地更新的文字与 aria-label；无关聊天文字变化不触发菜单扫描。新源码未注入当前生产实例。订阅账户轮换见 [account-pool.md](account-pool.md)，不通过手动切换事务完成。

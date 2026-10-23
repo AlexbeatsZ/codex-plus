@@ -1,12 +1,12 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 6;
+  const VERSION = 7;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
   const STYLE_ID = "codex-plus-api-style";
-  const state = { observer: null, scanQueued: false, providers: [], editing: null, models: [], loading: false, message: "", error: false };
+  const state = { observer: null, scanQueued: false, providers: [], editing: null, models: [], loading: false, message: "", error: false, subscription: null, subscriptionAccounts: [], subscriptionStates: [], subscriptionBusy: false };
 
   if (window.__codexPlusApi?.version === VERSION) { window.__codexPlusApi.install(); return; }
   window.__codexPlusApi?.destroy?.();
@@ -46,6 +46,12 @@
       .cp-api-button[data-primary="true"]:hover:not(:disabled) { border-color:var(--cp-accent-hover); background:var(--cp-accent-hover); }
       .cp-api-button[data-danger="true"] { color:#ff8b8b; }
       .cp-api-button:disabled { opacity:.5; cursor:not-allowed; }
+      .cp-sub-row { display:flex; gap:8px; align-items:center; padding:10px; border-bottom:1px solid var(--cp-divider); }
+      .cp-sub-row:last-child { border-bottom:0; }
+      .cp-sub-row label { flex:1; min-width:0; font-size:12px; overflow-wrap:anywhere; }
+      .cp-sub-note { color:var(--cp-muted); font-size:12px; line-height:1.6; margin:0; }
+      .cp-sub-row small { display:block; color:var(--cp-muted); margin-top:4px; }
+      .cp-sub-row .cp-api-button { min-width:32px; padding:0 8px; }
       .cp-api-form { display:grid; gap:12px; }
       .cp-api-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
       .cp-api-field { display:grid; gap:6px; color:var(--cp-text); font-size:12px; }
@@ -117,25 +123,103 @@
   function body() { return document.querySelector(`#${ROOT_ID} [data-api-body]`); }
   function renderList() {
     const root = body(); if (!root) return;
-    root.innerHTML = `${status()}<div class="cp-api-toolbar"><span>${state.loading ? "正在读取…" : `已配置 ${state.providers.length} 个 API`}</span><button class="cp-api-button" data-api-new data-primary="true">添加 API</button></div>${state.providers.length ? `<div class="cp-api-list">${state.providers.map((p) => `<div class="cp-api-row"><div><div class="cp-api-name">${esc(p.name)}${p.enabled ? "" : " · 已停用"}</div><div class="cp-api-meta">${esc(p.baseUrl)} · ${esc(p.protocol)} · ${p.models.filter((m) => m.visible).length} 个模型</div></div><div><button class="cp-api-button" data-api-edit="${esc(p.id)}">编辑</button> <button class="cp-api-button" data-danger="true" data-api-delete="${esc(p.id)}">删除</button></div></div>`).join("")}</div>` : '<div class="cp-api-empty">尚未接入 API。支持 OpenAI 兼容的 Responses 与 Chat Completions。</div>'}`;
+    root.innerHTML = `${status()}<div class="cp-api-toolbar"><span>${state.loading ? "正在读取…" : `已配置 ${state.providers.length} 个 API`}</span><button class="cp-api-button" data-api-new data-primary="true">添加 API</button></div>${state.providers.length ? `<div class="cp-api-list">${state.providers.map((p) => `<div class="cp-api-row"><div><div class="cp-api-name">${esc(p.name)}${p.enabled ? "" : " · 已停用"}</div><div class="cp-api-meta">${p.kind === "subscription" ? "复用已导入账户的订阅额度" : `${esc(p.baseUrl)} · ${esc(p.protocol)}`} · ${p.models.filter((m) => m.visible).length} 个模型</div></div><div><button class="cp-api-button" data-api-edit="${esc(p.id)}">${p.kind === "subscription" ? "配置" : "编辑"}</button>${p.kind === "subscription" ? "" : ` <button class="cp-api-button" data-danger="true" data-api-delete="${esc(p.id)}">删除</button>`}</div></div>`).join("")}</div>` : '<div class="cp-api-empty">尚未接入 API。支持 OpenAI 兼容的 Responses 与 Chat Completions。</div>'}`;
     root.querySelector("[data-api-new]")?.addEventListener("click", () => edit(null));
     root.querySelectorAll("[data-api-edit]").forEach((button) => button.addEventListener("click", () => edit(state.providers.find((p) => p.id === button.dataset.apiEdit))));
     root.querySelectorAll("[data-api-delete]").forEach((button) => button.addEventListener("click", () => void removeProvider(button.dataset.apiDelete)));
   }
 
   function edit(provider) {
+    if (provider?.kind === "subscription") { void openSubscription(); return; }
     state.editing = provider || { id: null, name: "", baseUrl: "", protocol: "chatCompletions", enabled: true, hasApiKey: false, models: [] };
     state.models = (provider?.models || []).map((m) => ({ ...m })); state.message = ""; renderForm();
   }
 
+  function modelEditor() { return `<div class="cp-api-models">${state.models.map((m, i) => `<div class="cp-api-model"><input type="checkbox" data-model-visible="${i}" ${m.visible ? "checked" : ""}><span class="cp-api-model-id" title="${esc(m.modelId)}">${esc(m.modelId)}</span><input class="cp-api-input" data-model-name="${i}" value="${esc(m.displayName || m.modelId)}" aria-label="模型显示名称"></div>`).join("")}</div>`; }
+
   function renderForm(draft = null) {
     const root = body(), saved = state.editing; if (!root || !saved) return;
     const p = draft ? { ...saved, ...draft } : saved;
-    root.innerHTML = `${status()}<form class="cp-api-form" data-api-form><div class="cp-api-grid"><label class="cp-api-field">名称<input class="cp-api-input" name="name" value="${esc(p.name)}" required></label><label class="cp-api-field">协议<select class="cp-api-select" name="protocol"><option value="responses" ${p.protocol === "responses" ? "selected" : ""}>Responses</option><option value="chatCompletions" ${p.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option></select></label></div><label class="cp-api-field">API URL<input class="cp-api-input" name="baseUrl" value="${esc(p.baseUrl)}" placeholder="https://example.com/v1" required></label><label class="cp-api-field">API Key<input class="cp-api-input" name="apiKey" type="password" autocomplete="off" value="${esc(draft?.apiKey || "")}" placeholder="${p.hasApiKey ? "已保存；留空则保持不变" : "sk-…"}"></label><label class="cp-api-field"><span><input name="enabled" type="checkbox" ${p.enabled ? "checked" : ""}> 启用此 API</span></label><div class="cp-api-actions"><button type="button" class="cp-api-button" data-api-back>返回</button><button type="button" class="cp-api-button" data-api-discover>读取模型</button></div><div class="cp-api-models">${state.models.map((m, i) => `<div class="cp-api-model"><input type="checkbox" data-model-visible="${i}" ${m.visible ? "checked" : ""}><span class="cp-api-model-id" title="${esc(m.modelId)}">${esc(m.modelId)}</span><input class="cp-api-input" data-model-name="${i}" value="${esc(m.displayName || m.modelId)}" aria-label="模型显示名称"></div>`).join("")}</div><div class="cp-api-actions"><span></span><button class="cp-api-button" data-primary="true" type="submit">保存</button></div></form>`;
+    root.innerHTML = `${status()}<form class="cp-api-form" data-api-form><div class="cp-api-grid"><label class="cp-api-field">名称<input class="cp-api-input" name="name" value="${esc(p.name)}" required></label><label class="cp-api-field">协议<select class="cp-api-select" name="protocol"><option value="responses" ${p.protocol === "responses" ? "selected" : ""}>Responses</option><option value="chatCompletions" ${p.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option></select></label></div><label class="cp-api-field">API URL<input class="cp-api-input" name="baseUrl" value="${esc(p.baseUrl)}" placeholder="https://example.com/v1" required></label><label class="cp-api-field">API Key<input class="cp-api-input" name="apiKey" type="password" autocomplete="off" value="${esc(draft?.apiKey || "")}" placeholder="${p.hasApiKey ? "已保存；留空则保持不变" : "sk-…"}"></label><label class="cp-api-field"><span><input name="enabled" type="checkbox" ${p.enabled ? "checked" : ""}> 启用此 API</span></label><div class="cp-api-actions"><button type="button" class="cp-api-button" data-api-back>返回</button><button type="button" class="cp-api-button" data-api-discover>读取模型</button></div>${modelEditor()}<div class="cp-api-actions"><span></span><button class="cp-api-button" data-primary="true" type="submit">保存</button></div></form>`;
     const form = root.querySelector("[data-api-form]");
     root.querySelector("[data-api-back]").addEventListener("click", () => { state.editing = null; state.message = ""; renderList(); });
     root.querySelector("[data-api-discover]").addEventListener("click", () => void discover(form));
     form.addEventListener("submit", (event) => { event.preventDefault(); void save(form); });
+  }
+
+  async function openSubscription() {
+    state.subscriptionBusy = true;
+    state.message = "";
+    state.subscription = { enabled: false, accountOrder: [], models: [], proxyUrl: "" };
+    state.subscriptionAccounts = [];
+    state.models = [];
+    renderSubscription();
+    try {
+      const result = await invoke("/api-providers/subscription/get");
+      state.subscription = result.config;
+      state.models = (result.config?.models || []).map(m => ({ ...m }));
+      state.subscriptionAccounts = result.accounts || [];
+      state.subscriptionStates = [...(result.accountStates || []), ...(result.blockedAccounts || [])];
+    } catch (error) { state.message = error.message; state.error = true; }
+    finally { state.subscriptionBusy = false; renderSubscription(); }
+  }
+
+  function renderSubscription() {
+    const root = body(), config = state.subscription;
+    if (!root || !config) return;
+    const busy = state.subscriptionBusy;
+    const order = config.accountOrder;
+    const accounts = new Map(state.subscriptionAccounts.map(a => [String(a.recordId), a]));
+    const ids = [...order, ...accounts.keys()].filter((id, i, all) => all.indexOf(id) === i);
+    const rows = ids.map(id => {
+      const account = accounts.get(id), index = order.indexOf(id);
+      const health = state.subscriptionStates.filter(s => s.recordId === id).map(s => s.blocked ? s.reason : `${s.model === "*" ? "账户" : s.model}：${s.reason}，${new Date(s.retryAt * 1000).toLocaleTimeString()} 后重试`).join("；");
+      return `<div class="cp-sub-row"><label><input type="checkbox" data-sub-account="${esc(id)}" ${index >= 0 ? "checked" : ""} ${busy ? "disabled" : ""}> ${index >= 0 ? `${index + 1}. ` : ""}${esc(account?.email || account?.name || "账户已删除，请移出")}${account?.plan ? ` · ${esc(account.plan)}` : ""}${health ? `<small>${esc(health)}</small>` : ""}</label><button type="button" class="cp-api-button" data-sub-up="${esc(id)}" aria-label="上移账户" ${busy || index <= 0 ? "disabled" : ""}>↑</button><button type="button" class="cp-api-button" data-sub-down="${esc(id)}" aria-label="下移账户" ${busy || index < 0 || index === order.length - 1 ? "disabled" : ""}>↓</button></div>`;
+    }).join("");
+    root.innerHTML = `${status()}<div class="cp-api-form"><div class="cp-api-actions"><strong>ChatGPT 订阅 API</strong><label><input type="checkbox" data-sub-enabled ${config.enabled ? "checked" : ""} ${busy ? "disabled" : ""}> 启用</label></div><p class="cp-sub-note">直接使用“切换账户”中已导入的 auth.json。勾选允许使用额度的账户，再按优先顺序排列；未勾选的账户不会参与请求。</p><div class="cp-api-list">${rows || '<div class="cp-api-row">暂无导入账户，请先添加账户。</div>'}</div><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-accounts ${busy ? "disabled" : ""}>管理导入账户</button><span>失效凭据自动跳过，更新后恢复</span></div><label class="cp-api-field">HTTP 代理（可选）<input class="cp-api-input" data-sub-proxy value="${esc(config.proxyUrl)}" placeholder="留空使用环境或系统代理" ${busy ? "disabled" : ""}></label><div class="cp-api-actions"><span>模型与显示名称</span><button type="button" class="cp-api-button" data-sub-discover ${busy || !order.length ? "disabled" : ""}>${busy ? "处理中…" : "读取模型"}</button></div>${modelEditor()}<p class="cp-sub-note">已交付文本或工具调用后不会自动重放；所有参与账户不可用时明确报错。</p><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-back ${busy ? "disabled" : ""}>返回</button><button type="button" class="cp-api-button" data-primary="true" data-sub-save ${busy ? "disabled" : ""}>保存订阅 API</button></div></div>`;
+    root.querySelector("[data-sub-enabled]").addEventListener("change", e => { config.enabled = e.target.checked; });
+    root.querySelector("[data-sub-proxy]").addEventListener("input", e => { config.proxyUrl = e.target.value; });
+    root.querySelectorAll("[data-sub-account]").forEach(input => input.addEventListener("change", () => {
+      syncModels(root);
+      config.accountOrder = order.filter(id => id !== input.dataset.subAccount);
+      if (input.checked) config.accountOrder.push(input.dataset.subAccount);
+      renderSubscription();
+    }));
+    const move = (id, delta) => {
+      syncModels(root);
+      const index = order.indexOf(id);
+      if (index < 0 || index + delta < 0 || index + delta >= order.length) return;
+      [order[index], order[index + delta]] = [order[index + delta], order[index]];
+      renderSubscription();
+      root.querySelector(`[${delta < 0 ? "data-sub-up" : "data-sub-down"}="${id}"]`)?.focus();
+    };
+    root.querySelectorAll("[data-sub-up]").forEach(b => b.addEventListener("click", () => move(b.dataset.subUp, -1)));
+    root.querySelectorAll("[data-sub-down]").forEach(b => b.addEventListener("click", () => move(b.dataset.subDown, 1)));
+    root.querySelector("[data-sub-back]").addEventListener("click", () => { state.subscription = null; state.message = ""; renderList(); });
+    root.querySelector("[data-sub-accounts]").addEventListener("click", () => { close(); window.__codexPlusAccounts?.open?.(); });
+    root.querySelector("[data-sub-discover]").addEventListener("click", () => void subscriptionAction(false));
+    root.querySelector("[data-sub-save]").addEventListener("click", () => void subscriptionAction(true));
+  }
+
+  async function subscriptionAction(saveConfig) {
+    if (state.subscriptionBusy) return;
+    syncModels(body());
+    state.subscription.models = state.models.map(m => ({ modelId: m.modelId, displayName: m.displayName, visible: m.visible }));
+    state.subscriptionBusy = true; state.message = ""; renderSubscription();
+    try {
+      const result = await invoke(`/api-providers/subscription/${saveConfig ? "save" : "discover"}`, state.subscription);
+      if (saveConfig) {
+        state.subscription = result.config;
+        state.message = state.subscription.enabled ? "订阅 API 已保存，在模型列表选择“订阅”模型即可使用。" : "订阅 API 已停用。";
+        state.providers = (await invoke("/api-providers/list")).providers || [];
+        await window.__codexPlusModelRouting?.loadCatalog?.(true);
+      } else {
+        state.models = result.models || [];
+        state.message = `读取到 ${state.models.length} 个模型，保存后生效。`;
+      }
+      state.error = false;
+    } catch (error) { state.message = error.message; state.error = true; }
+    finally { state.subscriptionBusy = false; renderSubscription(); }
   }
 
   function syncModels(root) { state.models.forEach((model, i) => { model.visible = !!root.querySelector(`[data-model-visible="${i}"]`)?.checked; model.displayName = root.querySelector(`[data-model-name="${i}"]`)?.value || model.modelId; }); }

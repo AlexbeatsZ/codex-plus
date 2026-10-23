@@ -6,6 +6,7 @@ use toml_edit::{DocumentMut, Item, Table, value};
 use crate::accounts::{AccountPaths, atomic_write};
 
 pub const BROKER_PROVIDER_ID: &str = "codex-plus-api";
+pub const POOL_PROVIDER_ID: &str = "codex-plus-account-pool";
 pub const BROKER_TOKEN: &str = "codex-plus-loopback";
 
 pub fn reconcile_codex_config(paths: &AccountPaths, port: u16) -> anyhow::Result<()> {
@@ -35,6 +36,15 @@ pub fn reconcile_codex_config(paths: &AccountPaths, port: u16) -> anyhow::Result
     managed["wire_api"] = value("responses");
     managed["experimental_bearer_token"] = value(BROKER_TOKEN);
     providers[BROKER_PROVIDER_ID] = Item::Table(managed);
+    let mut pool = Table::new();
+    pool["name"] = value("codex-plus ChatGPT account pool");
+    pool["base_url"] = value(format!("http://127.0.0.1:{port}/v1"));
+    pool["wire_api"] = value("responses");
+    pool["experimental_bearer_token"] = value(BROKER_TOKEN);
+    pool["requires_openai_auth"] = value(false);
+    pool["supports_websockets"] = value(false);
+    pool["capabilities"]["remote_compaction"] = value("v2");
+    providers[POOL_PROVIDER_ID] = Item::Table(pool);
     let rendered = document.to_string();
     if rendered == original {
         return Ok(());
@@ -73,6 +83,17 @@ mod tests {
         assert!(output.contains("model_provider = \"openai\""));
         assert!(output.contains("[model_providers.other]"));
         assert!(output.contains("[model_providers.codex-plus-api]"));
+        let config: DocumentMut = output.parse().unwrap();
+        assert_eq!(
+            config["model_providers"][POOL_PROVIDER_ID]["capabilities"]["remote_compaction"]
+                .as_str(),
+            Some("v2")
+        );
+        assert!(
+            config["model_providers"][BROKER_PROVIDER_ID]
+                .get("capabilities")
+                .is_none()
+        );
         assert!(output.contains("wire_api = \"responses\""));
         assert!(output.contains("base_url = \"http://127.0.0.1:57321/v1\""));
         assert!(paths.codex_home.join("config.toml.codex-plus.bak").exists());

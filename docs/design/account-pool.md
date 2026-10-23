@@ -1,0 +1,71 @@
+# 固定订阅 API 与账户池
+
+## 目标与接入
+
+“API 接入”始终列出一个不可删除的“ChatGPT 订阅 API”（`chatgpt-subscription`），默认停用。
+它自动复用“切换账户”中已有的账户；勾选表示允许消耗该账户额度，上下移动决定优先顺序，
+不另建凭据管理。模型别名、可见性与普通 API 共用编辑器和重新发现规则。
+未勾选和后续新导入的账户都不自动参与。手动切换、导入、网页登录入口保持原有职责。
+
+配置在 `.codex-plus/subscription.json`，只保存启用、recordId 顺序、模型设置及可选 HTTP 代理；
+失效凭据版本在 `.codex-plus/subscription-rejected.json`，不含 token。真实凭据仍只有账户 vault 一份。
+模型使用稳定的 `cp-pool-` routeId，显示为“订阅 · 模型别名”。
+
+订阅复用现有单一 broker，不增加程序或管理页面。原生 provider 为 `codex-plus-account-pool`，
+声明 `capabilities.remote_compaction="v2"`、HTTP/SSE 和无需官方登录认证；普通 API 的
+`codex-plus-api` 能力不变，两者监听同一端口。目录明确区分 API profile 的 `providerId`
+与原生 Codex 的 `nativeProviderId`，不能让渲染器从 profile ID 猜测原生 provider。
+同一订阅 provider 内换实际账户不重启 Codex、不改实时 auth.json，不产生新 thread。
+从官方或普通 API provider 迁入仍遵循现有跨 provider 原生分支确认流程。
+
+## 模块职责
+
+- `AccountVault` / `accounts/credentials.rs`：凭据读取、席位身份、原生续期及跨进程互斥；手动切换与导入共享续期锁。
+- `ApiIntegrations`：外部 API 和固定订阅入口的统一列表、模型发现、目录、路由解析；bridge 和 broker 共享同一实例。
+- `subscription/`：有序调度和账户状态；`config.rs` 管配置与目录，`transport.rs` 管原生请求、SSE 和错误分类。
+- `broker.rs`：HTTP Adapter；`BridgeService`：页面 bridge Adapter。两者不重复读取和拼接两种 API 的目录。
+- `assets/api-providers.js`：普通 API 与订阅共用模型编辑器；`assets/renderer.js` 只管理账户 UI。
+
+## 原生凭据与验证
+
+2026-10-23，macOS 官方 Codex CLI `0.163.0-alpha.11` 的现有 auth.json 在
+`https://chatgpt.com/backend-api/codex/responses` 完成真实最小推理（HTTP 200、
+`response.completed`、预期文本完全一致）。只使用现有 access token，没有刷新或改变生产登录。
+这类 Codex 原生凭据与 SIWC 的 `chatgpt.tokens.use.direct` 授权不是同一种接入。
+不得把原生 token 任意改投 public API，也不把普通 API Key 当作订阅凭据。
+
+## 路由与失败边界
+
+- 每次按保存顺序选账户。凭据有效时优先继续使用排在前面的账户；该账户受限时跳过，再用后一个。
+- 401 最多续期后重试一次；第二次 401 或终止性 OAuth 错误按失败凭据版本阻断。
+  保存顺序、换模型、重建路由实例都不能解除阻断；实际 token 变化后恢复。记录精确失败版本，避免并发导入的新凭据被旧错误误封。
+- 模型发现与对话共用上述认证策略；已知坏 auth 不能因反复点击“读取模型”再次续期。
+- 额度和模型限制按账户、模型冷却，优先服务端 reset；未知 reset 使用短退避，不猜五小时。
+  暂时性凭据故障按账户短暂冷却。403、未知 429、网络故障明确报错，不伪装成额度耗尽。
+- SSE 在第一项输出前有界缓存，支持 HTTP 200 内的结构化额度失败；不会把两个账户的失败流和成功流拼起来。
+- 第一项文本、推理或工具输出交付后绝不透明重放；之后的失败更新冷却并报告失败，避免重复工具执行。
+- SSE 拆包、CRLF、UTF-8、缺少完成事件、超时及客户端断开都必须正确处理。
+- 原生 v2 压缩请求与结果同样经 `/responses`；`previous_response_id`、conversation 和 item 引用不允许跨账户使用。
+- 原生旧 `/compact` 和 `/responses/compact` 实测 404。订阅入口明确拒绝 legacy compact，不能伪造压缩结果。
+- 请求携带完整 input，保留工具调用、工具结果和推理结构；不删未知上下文来假装兼容。
+- 全部参与账户不可用时返回 `subscription_exhausted`；不自动调用未勾选账户或其他付费 API。
+
+## 凭据所有权
+
+只返回无令牌的配置、模型和账户状态给 renderer；错误不回显上游正文。
+池使用当前登录席位时，每次读取最新实时凭据，但不主动刷新该会话，避免与官方进程竞争。
+非当前席位续期使用原生 OAuth client/endpoint；每席位跨进程串行化，网络等待不占全局 vault 锁。
+刷新后在 vault 锁内校验原 refresh token 和席位身份再原子写入。手动切换和导入先取席位锁、
+再取 vault 锁；切换会等续期完成，使用最新 token。过期的当前席位等待官方客户端更新，池尝试后续账户。
+Unix 凭据临时文件以 0600 创建，替换使用原子 rename；Windows 延用现有替换实现。
+
+## 验收与部署
+
+79 Rust、33 JS 测试通过，覆盖顺序、停用、配额、SSE、并发续期、坏凭据跨请求跳过与导入竞态。
+`scripts/verify-account-pool.mjs` 在 `/tmp/.agents/` 独立 state/CODEX_HOME 中复制现有凭据，
+验证目录、A 账户工具调用、B 账户工具结果续接；实际官方 app-server 使用本项目生成的 provider 配置，
+完成原生 v2 压缩后换账户，在同一 thread 正确恢复压缩前标记。响应头的 opaque recordId 核对实际账户。
+配额耗尽和 OAuth 轮换通过 mock 验证，未人为耗尽真实额度或刷新生产 token。
+
+此次仅构建和签名 `target/account-pool-build/release/codex-plus` 候选，不替换固定正式入口、
+不附加生产 CDP、不改用户配置或登录、不重启当前 Codex、launcher 或 Tunnel。正式部署待后续明确执行。

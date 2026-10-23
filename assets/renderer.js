@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 9;
+  const VERSION = 11;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -123,13 +123,26 @@
   }
 
   // 未登录时 Codex 只显示原生登录页，没有个人资料菜单；以“ChatGPT + 登录动词”的原生按钮作为锚点。
+  function isLoginHeading(node) {
+    return /^(?:登录|登录到|登入|Sign\s*in\s*to|Log\s*in\s*to)\s*ChatGPT$/i.test(normalizedText(node));
+  }
+
+  function hasLoginContext(node) {
+    for (let parent = node?.parentElement, depth = 0; parent && depth < 6; parent = parent.parentElement, depth += 1) {
+      if (normalizedText(parent).length > 600) return false;
+      if (Array.from(parent.querySelectorAll('h1,h2,[role="heading"]')).some(isLoginHeading)) return true;
+    }
+    return false;
+  }
+
   function isChatGptLogin(node) {
     if (!node || node.hasAttribute?.(SIGNED_OUT_ATTR) || node.getAttribute?.("role") === "menuitem") return false;
-    const text = normalizedText(node);
+    const text = normalizedText(node) || String(node.getAttribute?.("aria-label") || "").trim();
     if (text.length > 48) return false;
     return /(Sign\s*in|Log\s*in|Login|Continue)\s+(with|using|via)\s+(your\s+)?ChatGPT/i.test(text)
       || /(使用|通过|用)\s*ChatGPT\s*(账户|帐户|账号|帳號)?\s*(登录|登入|继续)/.test(text)
-      || /(登录|登入)\s*ChatGPT|ChatGPT\s*(账户|帐户|账号)?\s*(登录|登入)/.test(text);
+      || /(登录|登入)\s*ChatGPT|ChatGPT\s*(账户|帐户|账号)?\s*(登录|登入)/.test(text)
+      || (/^(继续登录|继续|登录|Sign\s*in|Log\s*in|Continue)$/i.test(text) && hasLoginContext(node));
   }
 
   function isApiKeyLogin(node) {
@@ -224,11 +237,13 @@
   function mutationMayContainChatGptLogin(records) {
     if (!records) return true;
     return records.some((record) => {
-      const target = record.target;
+      const target = record.target?.nodeType === 3 ? record.target.parentElement : record.target;
+      if (isLoginHeading(target?.closest?.('h1,h2,[role="heading"]'))) return true;
       if (target?.nodeType === 1 && isChatGptLogin(target.closest?.('button,[role="button"]'))) return true;
       return Array.from(record.addedNodes || []).some((node) => {
         if (node.nodeType !== 1 && node.nodeType !== 11) return false;
         if (node.matches?.('button,[role="button"]') && isChatGptLogin(node)) return true;
+        if (node.matches?.('h1,h2,[role="heading"]') && isLoginHeading(node)) return true;
         return Array.from(node.querySelectorAll?.('button,[role="button"]') || []).some(isChatGptLogin);
       });
     });
@@ -257,7 +272,7 @@
     installStyle();
     if (!state.observer || !state.observer.takeRecords) {
       state.observer = new MutationObserver(queueScan);
-      state.observer.observe(document.documentElement, { childList: true, subtree: true });
+      state.observer.observe(document.documentElement, { childList: true, characterData: true, attributes: true, attributeFilter: ["aria-label"], subtree: true });
     }
     queueScan();
     return health();
