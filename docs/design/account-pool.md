@@ -73,3 +73,12 @@ release.json 记录源 commit `323b56a`、分支 `codex/account-pool`，base 版
 签名与候选文件一致性核对通过；broker/CDP 返回 200，Codex、launcher 与 Tunnel 的 PID/启动时间不变。
 没有附加生产 CDP、改变登录或用户配置；当前旧进程继续运行，新功能待下次启动新版 launcher 后加载。
 旧入口与发布记录保留在 `/tmp/.agents/codex-plus-deploy-subscription-W0LR6K/` 供本机回退。
+
+## 原生页面样式兼容
+
+2026-10-23 实机官方样式将 input/textarea/select/optgroup 的 appearance 设为 none，
+导致浏览器独立预览可见的默认 checkbox 在实际应用中完全不可见。API v8 在弹窗作用域内
+明确恢复 checkbox 的 appearance:auto、16px 尺寸、accent、焦点和禁用态，覆盖普通 API、
+订阅启用、账户参与和模型可见性；不修改官方全局样式。回归必须带同样的原生 reset。
+修复加载前，启用与账户参与仍可通过点击包裹 checkbox 的 label 文字切换；
+账户出现优先序号后才启用读取模型。用户自行选择参与账户，助手不代为勾选或启用额度。

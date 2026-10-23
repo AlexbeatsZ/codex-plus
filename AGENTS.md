@@ -6,8 +6,10 @@
 
 # Current State
 
-- 2026-10-23：分支 `codex/account-pool` 实现固定“ChatGPT 订阅 API”，复用 vault、可选参与账户/顺序/模型及代理；401 有界续期、坏凭据按版本持续跳过、额度冷却、SSE 输出后禁止重放。`ApiIntegrations` 统一目录/路由，`AccountVault` 独占凭据与续期；手动账户 UI 保留。79 Rust / 33 JS 与真实两账户工具续接、官方 app-server 压缩后跨账户同 thread 验证通过。用户随后授权正式部署，已将签名候选原子发布到 `target/release/codex-plus`；release.json 记录源 commit `323b56a`、分支 `codex/account-pool`，base 版本仍 0.3.3。生产配置未改，Codex/launcher/Tunnel 未重启；当前进程仍为旧映像，下次启动新版 launcher 后生效。设计：`docs/design/account-pool.md`。
-- 同次审查确认正式 renderer v9 已部署，但新版登录页“登录 ChatGPT”标题 +“继续登录”按钮使旧匹配失效；v11 增加标题上下文和 React 文字变化监听，在隔离真实官方登录页验证唯一入口。正式文件已包含 v11，但当前生产进程仍 v9，下次启动新版 launcher 后生效。
+- 2026-10-23 实机订阅页确认官方全局 `input { appearance:none }` 让未显式设外观的复选框不可见。API 脚本 v8 为订阅启用、账户参与、模型可见性及普通 API 勾选框统一恢复原生外观/16px尺寸、焦点与禁用态；34 JS 和带相同 reset 的浏览器目视验证通过。已重新签名发布正式入口，当前 launcher 54484/Codex54505 保持不动、仍加载 API v7；当前可直接点击“启用”文字和账户名称选择，显示修复待下次启动新版 launcher。
+
+- 2026-10-23：分支 `codex/account-pool` 实现固定“ChatGPT 订阅 API”，复用 vault、可选参与账户/顺序/模型及代理；401 有界续期、坏凭据按版本持续跳过、额度冷却、SSE 输出后禁止重放。`ApiIntegrations` 统一目录/路由，`AccountVault` 独占凭据与续期；手动账户 UI 保留。79 Rust / 33 JS 与真实两账户工具续接、官方 app-server 压缩后跨账户同 thread 验证通过。用户随后授权正式部署，已将签名候选原子发布到 `target/release/codex-plus`；release.json 记录源 commit `323b56a`、分支 `codex/account-pool`，base 版本仍 0.3.3。生产配置未改，Codex/launcher/Tunnel 未重启；用户已自行启动订阅版本；本次 API v8 显示修复待下次启动新版 launcher 后生效。设计：`docs/design/account-pool.md`。
+- 同次审查确认正式 renderer v9 已部署，但新版登录页“登录 ChatGPT”标题 +“继续登录”按钮使旧匹配失效；v11 增加标题上下文和 React 文字变化监听，在隔离真实官方登录页验证唯一入口。正式文件已包含 v11；当前实例已加载订阅版本，未登录页面不在当前界面，仍以隔离登录页验证为准。
 
 - 2026-10-21 三端公共发布更新到 `0.3.3`（Windows 分别为 `0.3.3-omen` / `0.3.3-rog`）：纳入已审查的未登录账户切换/导入入口、已有 PDF CMap 与 Mac 安全签名发布修复、Windows/Mac 官方图标。全部渠道仅含 generic local-tools；ROG 的 AI Decision 业务工具已在 10-17 迁到独立连接器，旧的“ROG 保留内嵌适配层”约束已失效。源码可先同步，实际部署记录以各端 `.codex-plus/release.json` 为准；本轮不重启当前 Codex/launcher/Tunnel。
 - 2026-10-15：新增未登录状态下的账户入口。原生登录页没有个人资料菜单，渲染器（账户脚本 VERSION 9）在原生 ChatGPT 登录按钮组末尾插入“切换账户 / 导入 auth.json”，打开同一账户弹窗（隐藏网页登录），可直接切换已保存账户或导入 `auth.json` 后切换。设计见 `docs/design/account-switch-lifecycle.md`。28 JS / 50 Rust（Linux）测试通过；登录页按钮文本按“ChatGPT + 登录动词”匹配，尚未在真实 Codex 登录页目视验收。
@@ -45,7 +47,7 @@
 
 # Active Work
 
-- 订阅 API 与未登录入口修复已在 `codex/account-pool` 完成，正式文件已在 2026-10-23 用户授权后部署；新版运行与生产 UI 验收等待下次启动新版 launcher。本轮不重启、不热附加当前 Codex/launcher/Tunnel。
+- 订阅 API 与未登录入口修复已在 `codex/account-pool` 完成，正式文件已在 2026-10-23 用户授权后部署；用户已运行订阅版本并反馈勾选框不可见，显示修复已发布；修复后的生产 UI 目视验收等待下次启动新版 launcher。本轮不重启、不热附加当前 Codex/launcher/Tunnel。
 
 - [done] 2026-10-13：发布并附加 PDF CMap 修复到本机 codex-plus；部署后真实应用 PDF.js 读取未改动 PDF 已恢复六页中文，首页 435 字，资源计数 `loaded=1 / served=1`。内置 LaTeX 编译 success。
 - [pending] 当前普通 PDF/LaTeX 预览界面需关闭后重新打开，等待用户目视验收；界面控制工具禁止操作 Codex 自身窗口。

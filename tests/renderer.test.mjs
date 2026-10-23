@@ -748,6 +748,44 @@ test("subscription account opt-out and failed saves preserve the complete API dr
   dom.window.close();
 });
 
+test("subscription controls survive the native input reset and labels enable discovery", async () => {
+  const id = "a".repeat(64), calls = [];
+  const dom = setup(async (path, payload) => {
+    calls.push({path, payload});
+    if (path === "/api-providers/list") return {status:"ok",providers:[{id:"chatgpt-subscription",kind:"subscription",name:"ChatGPT 订阅",models:[],enabled:false}]};
+    if (path === "/api-providers/subscription/get") return {status:"ok",config:{enabled:false,accountOrder:[],models:[],proxyUrl:""},accounts:[{recordId:id,email:"a@example.test"}]};
+    if (path === "/api-providers/subscription/discover") return {status:"ok",models:[{modelId:"gpt-test",displayName:"gpt-test",visible:true}]};
+    if (path === "/api-providers/subscription/save") return {status:"ok",config:payload};
+    return {status:"ok",models:[]};
+  });
+  const reset = dom.window.document.createElement("style");
+  reset.textContent = 'input,textarea,select,optgroup { appearance:none; background-color:transparent; border-radius:0; }';
+  dom.window.document.head.append(reset);
+  dom.window.__codexPlusApi.open(); await flush();
+  dom.window.document.querySelector('[data-api-edit="chatgpt-subscription"]').click(); await flush();
+  const document = dom.window.document;
+  assert.equal(document.querySelector('[data-sub-discover]').disabled, true);
+  for (const input of document.querySelectorAll('.cp-api-dialog input[type="checkbox"]')) {
+    const style = dom.window.getComputedStyle(input);
+    assert.equal(style.appearance, "auto");
+    assert.equal(style.width, "16px");
+    assert.equal(style.height, "16px");
+  }
+  document.querySelector('[data-sub-enabled]').closest('label').click();
+  document.querySelector('[data-sub-account]').closest('label').click();
+  assert.equal(document.querySelector('[data-sub-enabled]').checked, true);
+  assert.equal(document.querySelector('[data-sub-account]').checked, true);
+  assert.equal(document.querySelector('[data-sub-discover]').disabled, false);
+  document.querySelector('[data-sub-discover]').click(); await flush();
+  assert.equal(dom.window.getComputedStyle(document.querySelector('[data-model-visible]')).appearance, "auto");
+  document.querySelector('[data-sub-save]').click(); await flush();
+  const saved = calls.find(c => c.path === '/api-providers/subscription/save').payload;
+  assert.equal(saved.enabled, true);
+  assert.deepEqual(saved.accountOrder, [id]);
+  assert.equal(saved.models[0].visible, true);
+  dom.window.close();
+});
+
 test("account pool uses its native compaction provider for thread starts and subsequent turns", async () => {
   const model={routeId:'cp-pool-test',modelId:'gpt-test',displayName:'账户池 · gpt-test',providerId:'chatgpt-subscription',nativeProviderId:'codex-plus-account-pool'};
   const dom=setup(async()=>({status:'ok',models:[model]}));

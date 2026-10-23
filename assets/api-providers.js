@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 7;
+  const VERSION = 8;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
@@ -46,6 +46,9 @@
       .cp-api-button[data-primary="true"]:hover:not(:disabled) { border-color:var(--cp-accent-hover); background:var(--cp-accent-hover); }
       .cp-api-button[data-danger="true"] { color:#ff8b8b; }
       .cp-api-button:disabled { opacity:.5; cursor:not-allowed; }
+      .cp-api-dialog input[type="checkbox"] { appearance:auto; display:inline-block; box-sizing:border-box; flex:0 0 auto; width:16px; height:16px; margin:0 6px 0 0; padding:0; vertical-align:middle; accent-color:var(--cp-accent); cursor:pointer; }
+      .cp-api-dialog input[type="checkbox"]:focus-visible { outline:2px solid var(--cp-accent); outline-offset:2px; }
+      .cp-api-dialog input[type="checkbox"]:disabled { opacity:.5; cursor:default; }
       .cp-sub-row { display:flex; gap:8px; align-items:center; padding:10px; border-bottom:1px solid var(--cp-divider); }
       .cp-sub-row:last-child { border-bottom:0; }
       .cp-sub-row label { flex:1; min-width:0; font-size:12px; overflow-wrap:anywhere; }
