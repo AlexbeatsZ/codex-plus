@@ -55,11 +55,15 @@ Codex `26.928.2636.0`（Windows）/`26.928.21956`（macOS）已不含旧 `setMes
 
 缓存刷新必须先移除 codex-plus 的 `cp-` descriptor 再按当前目录重建，使 alias、visibility、provider 删除立即生效。已删除或隐藏的 routeId 不得被当作未知官方模型透传。不得全局包装 `Response.json`，以免污染无关 HTTP 响应。
 
+v19 在真实 `model/list` 探测成功后直接记录官方模型 ID 与显示名，不依赖 Query 缓存的键形状或 `enqueueRequest` 的返回值。`cp-` 前缀始终保留给 API 路由，旧缓存中的已删除 descriptor 也不得进入官方模型字典。点击只显示官方名称的选项时，应清除持久化的 API 选择并废弃旧预热任务。
+
 安装路由包装时必须清除安装前已经创建的预热任务；原生选择器改变模型时也必须再次清除缓存。之后的普通创建、预热创建和首轮发送都从同一 `enqueueRequest` 包装进入，保证 routeId 与 `codex-plus-api` 同时提交，不能出现 routeId 搭配 `openai` 的混合状态。
 
 创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用 `codex-plus-api`，不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为当前官方客户端使用的 `null` 全 provider 哨兵，同时原样保留 `sourceKinds`、`archived` 等目录范围参数；不得再使用旧的空数组语义扩大本地目录扫描范围。
 
 同 provider 的 API→API 切换只覆盖下一次 `turn/start.model`。Codex `26.803.10989.0` 的 provider 在任务 ID 创建时固定：`thread/resume` 不能改变 provider，`thread/shutdown` 已移除，二者都不得用于跨 provider 切换。
+
+`turn/start` 的目标模型只取本次原生请求：优先 `collaborationMode.settings.model`，其次顶层 `model`，与官方 `26.1013.3656.0` 的模型优先级一致。两处均为空时原样发送，让服务端沿用该会话设置；同步兼容入口和真实 client 包装都不得回退到全局 `selectedModel()`、localStorage 或尚未消费的官方点击状态。显式模型仍走同 provider 切换或确认后的跨 provider 历史分支，原生 collaboration 设置、调度参数和历史流程保持完整。模型选择缓存只用于界面状态，不能作为其他会话发送或分支的依据。
 
 跨 provider 发送仅允许空闲或上一轮失败的任务，并采用明确确认的历史分支流程。确认后调用新版原生 helper（scope、hostId、sourceConversationId/model），由它提供原生 resume inputs、历史投影和任务注册；最低层路由同时写入目标 model/provider。必须确认返回 `status=created`、`synchronization.status=complete`，再 `thread/read` 验证 provider，最后才发送到新 threadId、复制原标题并导航。用户取消或任一步失败时恢复选择并阻止发送，保留原任务。v17 不再用裸 `thread/fork` fallback 创建未被 UI 注册的任务。
 
