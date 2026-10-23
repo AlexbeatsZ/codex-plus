@@ -271,7 +271,7 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.version, 17);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 19);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option \{ color:var\(--cp-text\); background:var\(--cp-bg\); \}/);
 });
@@ -348,7 +348,7 @@ test("patches the real app-server client for native models and provider routing"
   officialOption.textContent = "GPT-5";
   dom.window.document.body.append(officialOption);
   officialOption.click();
-  await client.sendRequest("turn/start", { threadId: "new-thread", modelProvider: "openai" });
+  await client.sendRequest("turn/start", { threadId: "new-thread", model: null, collaborationMode: { mode: "default", settings: { model: "gpt-5", reasoning_effort: "high" } } });
   assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "native-fork", "thread/read", "native-title", "turn/start"]);
   assert.equal(calls.at(-4).params.model, "gpt-5");
   assert.equal(calls.at(-1).params.threadId, "gpt-child");
@@ -388,7 +388,7 @@ test("does not fork or send when the user cancels a provider branch", async () =
   officialOption.textContent = "GPT-5";
   dom.window.document.body.append(officialOption);
   officialOption.click();
-  await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread" }), /已取消跨 provider 历史分支/);
+  await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread", collaborationMode: { settings: { model: "gpt-5" } } }), /已取消跨 provider 历史分支/);
   assert.equal(calls.at(-1).method, "thread/read");
   assert.equal(calls.some((call) => call.method === "turn/start" || call.method === "thread/fork"), false);
   assert.equal(routing.selectedModel(), "cp-route");
@@ -428,9 +428,110 @@ test("blocks the turn when a provider fork cannot be verified", async () => {
   officialOption.textContent = "GPT-5";
   dom.window.document.body.append(officialOption);
   officialOption.click();
-  await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread" }), /provider 验证失败：codex-plus-api/);
+  await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread", collaborationMode: { settings: { model: "gpt-5" } } }), /provider 验证失败：codex-plus-api/);
   assert.equal(calls.some((call) => call.method === "turn/start"), false);
   assert.equal(routing.selectedModel(), "cp-route");
+});
+
+test("model-less turns preserve their thread settings despite global API or official selections", async (t) => {
+  const dom = setup(async () => ({ status: "ok", models: [{ routeId: "cp-route", displayName: "API Alias" }] }));
+  dom.reconfigure({ url: "https://codex.test" });
+  t.after(() => dom.window.close());
+  const routing = dom.window.__codexPlusModelRouting;
+  await routing.loadCatalog(true);
+  let confirmations = 0;
+  dom.window.confirm = () => { confirmations += 1; return false; };
+  const calls = [];
+  const client = {
+    requestPromises: new dom.window.Map(),
+    async enqueueRequest(method, params) { calls.push({ method, params }); return {}; },
+    sendRequest(method, params) { return this.enqueueRequest(method, params); },
+  };
+  routing.installRequestClientForTest(client);
+  // A persisted route can belong to another conversation or a previous app run.
+  dom.window.localStorage.setItem("codex-plus:selected-model", "cp-route");
+  for (const params of [{ threadId: "official-thread" }, { thread_id: "api-thread", model: null, collaborationMode: null }]) {
+    assert.equal(routing.routeParams("turn/start", params), params);
+    await client.sendRequest("turn/start", params);
+    assert.equal(calls.at(-1).params, params);
+  }
+  const official = dom.window.document.createElement("button");
+  official.setAttribute("role", "option"); official.setAttribute("data-value", "gpt-5");
+  dom.window.document.body.append(official); official.click();
+  const params = { threadId: "api-thread" };
+  await client.sendRequest("turn/start", params);
+  assert.equal(calls.at(-1).params, params);
+  // Even a route removed since the last selection cannot affect model-less sends.
+  dom.window.localStorage.setItem("codex-plus:selected-model", "cp-deleted");
+  await client.sendRequest("turn/start", { threadId: "official-thread" });
+  assert.deepEqual(calls.map(call => call.method), ["turn/start", "turn/start", "turn/start", "turn/start"]);
+  assert.equal(confirmations, 0);
+});
+
+test("native collaboration models override stale global and top-level models", async (t) => {
+  const dom = setup(async () => ({ status: "ok", models: [{ routeId: "cp-route", displayName: "API Alias" }] }));
+  dom.reconfigure({ url: "https://codex.test" });
+  t.after(() => dom.window.close());
+  const routing = dom.window.__codexPlusModelRouting;
+  await routing.loadCatalog(true);
+  routing.setSelectedModel("cp-route");
+  dom.window.confirm = () => { assert.fail("same-provider turns must not fork"); };
+  const calls = [];
+  const client = {
+    requestPromises: new dom.window.Map(),
+    async enqueueRequest(method, params) {
+      calls.push({ method, params });
+      if (method === "thread/read") return { thread: { id: params.threadId, modelProvider: params.threadId === "official" ? "openai" : "codex-plus-api" } };
+      return {};
+    },
+    sendRequest(method, params) { return this.enqueueRequest(method, params); },
+  };
+  routing.installRequestClientForTest(client);
+  for (const [threadId, model, fallback] of [["official", "gpt-6.1-sol", "cp-route"], ["api", "cp-route", "gpt-6.1-sol"]]) {
+    const collaborationMode = { mode: "default", settings: { model, reasoning_effort: "high", developer_instructions: null } };
+    const params = { threadId, model: fallback, collaborationMode, input: [] };
+    assert.equal(routing.routeParams("turn/start", params).model, model);
+    await client.sendRequest("turn/start", params);
+    assert.equal(calls.at(-1).params.model, model);
+    assert.equal(calls.at(-1).params.collaborationMode, collaborationMode);
+  }
+  assert.deepEqual(calls.map(call => call.method), ["thread/read", "turn/start", "thread/read", "turn/start"]);
+  assert.throws(() => routing.routeParams("turn/start", { collaborationMode: { settings: { model: "cp-deleted" } } }), /已删除/);
+});
+
+test("the model probe learns official labels without a matching Query cache or enqueue result", async (t) => {
+  const dom = setup(async () => ({ status: "ok", models: [{ routeId: "cp-route", displayName: "API Alias" }] }));
+  dom.reconfigure({ url: "https://codex.test" });
+  t.after(() => dom.window.close());
+  await flush();
+  const routing = dom.window.__codexPlusModelRouting;
+  routing.setSelectedModel("cp-route");
+  const client = {
+    hostId: "local", requestPromises: new dom.window.Map(),
+    enqueueRequest() {},
+    async sendRequest(method, params, options) {
+      await this.enqueueRequest(method, params, options);
+      return { data: [{ model: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" }, { model: "cp-removed", displayName: "Removed API" }] };
+    },
+  };
+  let clears = 0;
+  const manager = { requestClient: client, clearPrewarmedThreads() { clears += 1; }, forkConversationFromLatest() {} };
+  const queryClient = { getQueryCache: () => ({ getAll: () => [] }), setQueryData() { assert.fail("no model cache exists yet"); } };
+  const scope = { node: { queryClient }, get: () => client };
+  const root = dom.window.document.createElement("div"); root.id = "root";
+  root.__reactContainer$probe = { memoizedProps: { value: scope }, memoizedState: { memoizedState: manager } };
+  dom.window.document.body.append(root);
+  await routing.install();
+  assert.equal(routing.health().ready, true);
+  assert.equal(routing.state.officialModels.has("gpt-6.1-sol"), true);
+  assert.equal(routing.state.officialNames.get("GPT-6.1 Sol"), "gpt-6.1-sol");
+  assert.equal(routing.state.officialModels.has("cp-removed"), false);
+  const option = dom.window.document.createElement("button");
+  option.setAttribute("role", "option"); option.textContent = "GPT-6.1 Sol High";
+  dom.window.document.body.append(option); option.click();
+  assert.equal(dom.window.localStorage.getItem("codex-plus:selected-model"), null);
+  assert.equal(routing.selectedModel(), "gpt-6.1-sol");
+  assert.equal(clears, 2);
 });
 
 test("discovers modern React scopes and clients without minified names", async () => {

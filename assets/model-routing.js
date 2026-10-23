@@ -3,7 +3,7 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 17;
+  const VERSION = 19;
   const PROVIDER = "codex-plus-api";
   const SELECTED_KEY = "codex-plus:selected-model";
   const state = {
@@ -161,7 +161,7 @@
     for (const item of array) {
       if (!item || typeof item !== "object") continue;
       const id = String(item.model || item.id || "");
-      if (!id || state.byRoute.has(id)) continue;
+      if (!id || /^cp-/.test(id) || state.byRoute.has(id)) continue;
       state.officialModels.add(id);
       const name = String(item.displayName || "").trim();
       if (name) state.officialNames.set(name, id);
@@ -214,6 +214,12 @@
     return "";
   }
 
+  function turnModel(params) {
+    // Native collaboration settings take precedence over the legacy model field.
+    // A missing model inherits thread settings, never another composer's selection.
+    return String(params.collaborationMode?.settings?.model || params.model || "");
+  }
+
   function routeParams(method, params = {}) {
     if (method === "thread/list") return { ...params, modelProviders: null };
     if (method === "thread/start" || method === "thread/resume" || method === "thread/fork") {
@@ -221,7 +227,7 @@
       return targetProvider ? { ...params, modelProvider: targetProvider } : params;
     }
     if (method === "turn/start") {
-      const desiredModel = String(params.model || selectedModel() || "");
+      const desiredModel = turnModel(params);
       if (!desiredModel) return params;
       const targetProvider = providerForModel(desiredModel);
       const currentProvider = String(params.modelProvider || params.model_provider || "");
@@ -374,7 +380,7 @@
 
   async function prepareRequest(client, original, method, params = {}) {
     if (method !== "turn/start") return routeParams(method, params);
-    const desiredModel = String(params.model || selectedModel() || "");
+    const desiredModel = turnModel(params);
     const targetProvider = providerForModel(desiredModel);
     const threadId = String(params.threadId || params.thread_id || "");
     if (!desiredModel || !targetProvider || !threadId) return routeParams(method, params);
@@ -433,7 +439,7 @@
         });
       }
       const result = await originalEnqueue.call(this, method, nextParams, options, dispatch, trace);
-      if (normalizedMethod === "turn/start" && state.pendingOfficialModel && String(nextParams?.model || "") === state.pendingOfficialModel) {
+      if (normalizedMethod === "turn/start" && state.pendingOfficialModel && turnModel(nextParams) === state.pendingOfficialModel) {
         state.pendingOfficialModel = "";
         state.selectedProvider = "";
       }
@@ -559,6 +565,7 @@
         if (!state.modelProbe) {
           const models = await activeRequestClient.sendRequest("model/list", { includeHidden: true, cursor: null, limit: 100 }, { priority: "background", timeoutMs: 8000 });
           if (!Array.isArray(models?.data)) throw new Error("model/list 返回格式不兼容");
+          rememberOfficialModels(models.data);
           state.modelProbe = true;
           diagnostic("model-probe-succeeded", { count: models.data.length });
         }

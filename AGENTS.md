@@ -6,6 +6,7 @@
 
 # Current State
 
+- 2026-10-23：路由脚本 v19 修复全局 API 选择污染已有会话：真实 `model/list` 回包直接记录官方 ID/显示名；`turn/start` 仅从原生 `collaborationMode.settings.model` 或顶层 `model` 判断目标，两者均空时原样继承会话设置。旧 localStorage 和其他会话点击不再触发分支；明确选择后的分支、取消及失败阻发仍受回归保护。当前运行实例的生效状态以部署记录为准。
 - 2026-10-21 三端公共发布更新到 `0.3.3`（Windows 分别为 `0.3.3-omen` / `0.3.3-rog`）：纳入已审查的未登录账户切换/导入入口、已有 PDF CMap 与 Mac 安全签名发布修复、Windows/Mac 官方图标。全部渠道仅含 generic local-tools；ROG 的 AI Decision 业务工具已在 10-17 迁到独立连接器，旧的“ROG 保留内嵌适配层”约束已失效。源码可先同步，实际部署记录以各端 `.codex-plus/release.json` 为准；本轮不重启当前 Codex/launcher/Tunnel。
 - 2026-10-15：新增未登录状态下的账户入口。原生登录页没有个人资料菜单，渲染器（账户脚本 VERSION 9）在原生 ChatGPT 登录按钮组末尾插入“切换账户 / 导入 auth.json”，打开同一账户弹窗（隐藏网页登录），可直接切换已保存账户或导入 `auth.json` 后切换。设计见 `docs/design/account-switch-lifecycle.md`。28 JS / 50 Rust（Linux）测试通过；登录页按钮文本按“ChatGPT + 登录动词”匹配，尚未在真实 Codex 登录页目视验收。
 - 2026-10-13：新增 PDF 预览 CMap 资源加载修复，目标为官方 `26.1007.30912`。在原生主窗口及独立窗口的 PDF.js worker 通道按需提供 168 份本地映射，覆盖普通 PDF 与 LaTeX 预览；不修改文档或官方签名包。设计及验收入口见 `docs/design/pdf-preview-cmaps.md`。57 Rust / 25 JS 测试通过，已签名发布并以 `--attach-existing` 更新运行实例，Codex PID 保持不变；主/独立窗口均 ready。部署后实际 PDF.js 读取六页中文成功，普通预览的最终目视验收待用户重开预览确认。
