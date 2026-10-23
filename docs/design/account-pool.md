@@ -67,5 +67,9 @@ Unix 凭据临时文件以 0600 创建，替换使用原子 rename；Windows 延
 完成原生 v2 压缩后换账户，在同一 thread 正确恢复压缩前标记。响应头的 opaque recordId 核对实际账户。
 配额耗尽和 OAuth 轮换通过 mock 验证，未人为耗尽真实额度或刷新生产 token。
 
-此次仅构建和签名 `target/account-pool-build/release/codex-plus` 候选，不替换固定正式入口、
-不附加生产 CDP、不改用户配置或登录、不重启当前 Codex、launcher 或 Tunnel。正式部署待后续明确执行。
+首次实现时仅构建签名 `target/account-pool-build/release/codex-plus` 候选。用户随后于
+2026-10-23 明确授权部署，已通过 `publishRelease` 原子替换 `target/release/codex-plus`，
+release.json 记录源 commit `323b56a`、分支 `codex/account-pool`，base 版本仍为 0.3.3。
+签名与候选文件一致性核对通过；broker/CDP 返回 200，Codex、launcher 与 Tunnel 的 PID/启动时间不变。
+没有附加生产 CDP、改变登录或用户配置；当前旧进程继续运行，新功能待下次启动新版 launcher 后加载。
+旧入口与发布记录保留在 `/tmp/.agents/codex-plus-deploy-subscription-W0LR6K/` 供本机回退。
