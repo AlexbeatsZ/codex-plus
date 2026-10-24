@@ -1,4 +1,5 @@
 mod credentials;
+mod usage;
 pub(crate) use credentials::{AccountCredential, CredentialFailure, unix_now};
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -8,7 +9,6 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use fs2::FileExt as _;
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -64,12 +64,8 @@ pub enum AccountError {
     UnsupportedCredentialStore(String),
     #[error("Codex config.toml 无效")]
     InvalidConfig,
-    #[error("额度接口返回 HTTP {0}")]
-    UsageStatus(u16),
     #[error("额度响应无效")]
     InvalidUsage,
-    #[error("网络请求失败")]
-    Network,
     #[error("文件操作失败：{0}")]
     Io(#[from] io::Error),
 }
@@ -295,42 +291,6 @@ impl AccountVault {
         };
         self.store_unlocked(&current)?;
         Ok(Some(current.summary(true)))
-    }
-
-    pub async fn fetch_usage(&self, record_id: &str) -> Result<Usage> {
-        validate_record_id(record_id)?;
-        let auth = {
-            let _guard = self.lock_vault()?;
-            self.load_unlocked(record_id)?
-        };
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", auth.access_token))
-                .map_err(|_| AccountError::Network)?,
-        );
-        headers.insert(
-            "chatgpt-account-id",
-            HeaderValue::from_str(&auth.account_id).map_err(|_| AccountError::Network)?,
-        );
-        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|_| AccountError::Network)?;
-        let response = client
-            .get(&self.paths.usage_endpoint)
-            .headers(headers)
-            .send()
-            .await
-            .map_err(|_| AccountError::Network)?;
-        if !response.status().is_success() {
-            return Err(AccountError::UsageStatus(response.status().as_u16()));
-        }
-        response
-            .json::<Usage>()
-            .await
-            .map_err(|_| AccountError::InvalidUsage)
     }
 
     fn snapshot_live_unlocked(&self) -> Result<()> {
@@ -981,6 +941,271 @@ mod tests {
             vault.validate_switch(&target.record_id),
             Err(AccountError::UnsupportedCredentialStore(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn usage_honors_the_configured_subscription_proxy_even_when_pool_is_disabled() {
+        let proxy = MockServer::start().await;
+        let (_temp, mut vault) = fixture();
+        vault.paths.usage_endpoint = "http://usage.invalid/backend-api/wham/usage".into();
+        fs::create_dir_all(&vault.paths.state_dir).unwrap();
+        fs::write(
+            vault.paths.state_dir.join("subscription.json"),
+            json!({"proxyUrl": proxy.uri()}).to_string(),
+        )
+        .unwrap();
+        let account = vault
+            .import_auth(&auth("a", "secret", "a@example.test"))
+            .unwrap();
+        Mock::given(method("GET"))
+            .and(path("/backend-api/wham/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "rate_limit":{"primary_window":{"used_percent":25}}
+            })))
+            .expect(1)
+            .mount(&proxy)
+            .await;
+        let usage = vault.fetch_usage(&account.record_id).await.unwrap();
+        assert_eq!(
+            usage
+                .rate_limit
+                .unwrap()
+                .primary_window
+                .unwrap()
+                .used_percent,
+            Some(25.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_retries_a_transient_server_failure_once() {
+        let server = MockServer::start().await;
+        let (_temp, mut vault) = fixture();
+        vault.paths.usage_endpoint = format!("{}/usage", server.uri());
+        let account = vault
+            .import_auth(&auth("a", "secret", "a@example.test"))
+            .unwrap();
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        Mock::given(method("GET"))
+            .and(path("/usage"))
+            .respond_with(move |_: &wiremock::Request| {
+                if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({"plan_type":"plus"}))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            vault
+                .fetch_usage(&account.record_id)
+                .await
+                .unwrap()
+                .plan_type
+                .as_deref(),
+            Some("plus")
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_prefers_the_current_live_token_over_an_older_saved_snapshot() {
+        let server = MockServer::start().await;
+        let (_temp, mut vault) = fixture();
+        vault.paths.usage_endpoint = format!("{}/usage", server.uri());
+        let account = vault
+            .import_auth(&auth("a", "old-secret", "a@example.test"))
+            .unwrap();
+        let live = auth("a", "current-secret", "a@example.test");
+        atomic_write(&vault.paths.live_auth(), &live).unwrap();
+        Mock::given(method("GET"))
+            .and(path("/usage"))
+            .and(header("authorization", "Bearer current-secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"plan_type":"plus"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert!(vault.fetch_usage(&account.record_id).await.is_ok());
+        assert_eq!(fs::read(vault.paths.live_auth()).unwrap(), live);
+    }
+
+    #[tokio::test]
+    async fn usage_renews_saved_credentials_at_most_once_for_expiry_or_401() {
+        for (expired, final_status) in [(true, 200), (false, 200), (false, 401)] {
+            let server = MockServer::start().await;
+            let (_temp, mut vault) = fixture();
+            vault.paths.usage_endpoint = format!("{}/usage", server.uri());
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                json!({"exp":if expired {1} else {unix_now()+3600},"client_id":"usage-client"})
+                    .to_string(),
+            );
+            let old_token = format!("header.{payload}.signature");
+            let account = vault
+                .import_auth(&auth("a", &old_token, "a@example.test"))
+                .unwrap();
+            Mock::given(method("POST"))
+                .and(path("/oauth/token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "access_token":"renewed-secret","refresh_token":"renewed-refresh-secret"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(header("authorization", format!("Bearer {old_token}")))
+                .respond_with(ResponseTemplate::new(401))
+                .expect(if expired { 0 } else { 1 })
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(header("authorization", "Bearer renewed-secret"))
+                .respond_with(
+                    ResponseTemplate::new(final_status).set_body_json(json!({"plan_type":"plus"})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let result = vault
+                .fetch_usage_with_client(
+                    &account.record_id,
+                    &client,
+                    &format!("{}/oauth/token", server.uri()),
+                )
+                .await;
+            if final_status == 200 {
+                assert_eq!(result.unwrap().plan_type.as_deref(), Some("plus"));
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("401") && error.contains("重新登录"));
+                assert!(!error.contains("secret"));
+            }
+            assert!(!vault.paths.live_auth().exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_never_renews_or_writes_a_live_session_after_401() {
+        let server = MockServer::start().await;
+        let (_temp, mut vault) = fixture();
+        vault.paths.usage_endpoint = format!("{}/usage", server.uri());
+        let live = auth("a", "live-secret", "a@example.test");
+        let account = vault.import_auth(&live).unwrap();
+        atomic_write(&vault.paths.live_auth(), &live).unwrap();
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let error = vault
+            .fetch_usage_with_client(
+                &account.record_id,
+                &client,
+                &format!("{}/oauth/token", server.uri()),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("官方 Codex") && error.contains("重新登录"));
+        assert_eq!(fs::read(vault.paths.live_auth()).unwrap(), live);
+    }
+
+    #[tokio::test]
+    async fn usage_reports_revoked_refresh_credentials_without_leaking_the_response() {
+        let server = MockServer::start().await;
+        let (_temp, mut vault) = fixture();
+        vault.paths.usage_endpoint = format!("{}/usage", server.uri());
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(json!({"client_id":"usage-client"}).to_string());
+        let account = vault
+            .import_auth(&auth("a", &format!("h.{payload}.s"), "a@example.test"))
+            .unwrap();
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(json!({"error":"invalid_grant","secret":"do-not-display"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let error = vault
+            .fetch_usage_with_client(
+                &account.record_id,
+                &client,
+                &format!("{}/oauth/token", server.uri()),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("重新导入或登录"));
+        assert!(!error.contains("do-not-display"));
+    }
+
+    #[tokio::test]
+    async fn usage_bounds_transient_retries_and_leaves_permission_errors_alone() {
+        for (status, attempts) in [(503, 2), (403, 1), (429, 1)] {
+            let server = MockServer::start().await;
+            let (_temp, mut vault) = fixture();
+            vault.paths.usage_endpoint = format!("{}/usage", server.uri());
+            let account = vault
+                .import_auth(&auth("a", "secret", "a@example.test"))
+                .unwrap();
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(attempts)
+                .mount(&server)
+                .await;
+            let error = vault
+                .fetch_usage(&account.record_id)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&format!("HTTP {status}")));
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_retries_interrupted_connections_and_returns_an_actionable_error() {
+        use tokio::io::AsyncReadExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (_temp, mut vault) = fixture();
+        vault.paths.usage_endpoint = format!("http://{}/usage", listener.local_addr().unwrap());
+        let account = vault
+            .import_auth(&auth("a", "secret", "a@example.test"))
+            .unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                // Close after the request arrived, before returning HTTP headers.
+                socket.read(&mut request).await.unwrap();
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let error = vault
+            .fetch_usage_with_client(&account.record_id, &client, "http://unused.test")
+            .await
+            .unwrap_err()
+            .to_string();
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(error.contains("网络请求失败") && error.contains("代理"));
+        assert!(!error.contains("secret"));
     }
 
     #[tokio::test]
