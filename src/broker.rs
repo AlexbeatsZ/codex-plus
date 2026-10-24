@@ -184,7 +184,7 @@ async fn handle_responses(
         Some(value) => value,
         None => return error_response(StatusCode::BAD_REQUEST, "missing route model"),
     };
-    if subscription_endpoint {
+    if subscription_endpoint || route_id == crate::subscription::AUTO_REVIEW_MODEL {
         // Native pre-turn compaction may use the previous turn's real model ID.
         // Keep that compatibility confined to the subscription provider's URL.
         return state

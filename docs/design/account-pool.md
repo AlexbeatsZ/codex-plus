@@ -25,6 +25,26 @@
 普通 `/v1` 不猜测裸模型属于哪个账户池；旧 `cp-pool-...` 请求继续兼容。
 上一模型未获订阅配置允许时明确失败，不自动消费隐藏模型或其他 API。
 
+## 原生自动审批
+
+官方 `0.163.0-alpha.10.2` 的自动审批使用独立 reviewer 模型 `codex-auto-review`，
+而不是被发送消息的目标对话模型。该模型在原生目录隐藏，不能用普通可见模型白名单拦截。
+旧 broker 在审批阶段返回本机 404，MCP 动作因此没有执行；读取历史等无需审批的工具仍可用。
+
+同一 broker 的 `/subscription/v1/responses` 与 `/v1/responses` 只对精确的裸模型 ID
+`codex-auto-review` 使用原生订阅池。普通 API 对话的审批也使用该官方 reviewer，
+消耗用户已启用账户池中已勾选账户的额度；对话生成仍走原 API，不修改目标模型或 provider。
+不将审批提示词交给第三方 API，也不把 reviewer 替换成普通生成模型。
+该内部路由不加入可选目录，不放开其他隐藏模型、前缀近似模型或任意裸模型；普通路由限制不变。
+
+账户池必须已经启用、有参与账户且保留可见生成模型；否则返回 `pool_review_unavailable`，
+提示用户启用池或在官方界面选择人工审批。不得静默启用、借用未勾选账户、关闭审批或生成批准结果。
+请求指令、结构化输出 schema 和官方批准/拒绝输出原样保留，续期、额度冷却和输出后禁止重放规则不变。
+
+`CODEX_PLUS_NATIVE_BIN=<官方 codex.exe> cargo test native_mcp_auto_review -- --nocapture`
+使用临时 CODEX_HOME、假账户、mock 上游与不联网的 fixture MCP，覆盖两个 provider 的
+工具搜索、实际审批、批准仅执行一次、拒绝不执行，不向用户对话发送消息。
+
 ## 模块职责
 
 - `AccountVault` / `accounts/credentials.rs`：凭据读取、席位身份、原生续期及跨进程互斥；手动切换与导入共享续期锁。
