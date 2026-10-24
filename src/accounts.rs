@@ -1,3 +1,5 @@
+mod credentials;
+pub(crate) use credentials::{AccountCredential, CredentialFailure, unix_now};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -233,6 +235,7 @@ impl AccountVault {
 
     pub fn import_auth(&self, contents: &[u8]) -> Result<AccountSummary> {
         let auth = parse_auth(contents)?;
+        let _credential_guard = self.credential_lock(&auth.record_id)?;
         let _guard = self.lock_vault()?;
         let active = read_live_chatgpt(&self.paths.live_auth())?
             .is_some_and(|current| current.record_id == auth.record_id);
@@ -266,6 +269,7 @@ impl AccountVault {
     pub fn switch_after_shutdown(&self, record_id: &str) -> Result<AccountSummary> {
         validate_record_id(record_id)?;
         validate_credential_storage(&self.paths.codex_config())?;
+        let _credential_guard = self.credential_lock(record_id)?;
         let _guard = self.lock_vault()?;
         let target = self.load_unlocked(record_id)?;
         self.snapshot_live_unlocked()?;
@@ -444,7 +448,14 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
     fs::create_dir_all(parent)?;
     let temp = parent.join(format!(".codex-plus-{}.tmp", Uuid::new_v4()));
     let result = (|| -> io::Result<()> {
-        let mut file = File::options().create_new(true).write(true).open(&temp)?;
+        let mut options = File::options();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
         file.write_all(contents)?;
         file.sync_all()?;
         replace_file(&temp, path)
@@ -485,9 +496,6 @@ fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
 
 #[cfg(not(windows))]
 fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
-    if target.exists() {
-        fs::remove_file(target)?;
-    }
     fs::rename(source, target)
 }
 

@@ -5,6 +5,7 @@ mod broker;
 mod cdp;
 mod config;
 mod desktop;
+mod integrations;
 mod local_tools;
 mod pdf_preview;
 #[allow(dead_code)]
@@ -12,12 +13,13 @@ mod protocol_proxy;
 mod providers;
 mod runtime;
 mod service;
+mod subscription;
 
 use anyhow::Context as _;
 use serde_json::json;
 
 use accounts::AccountPaths;
-use service::AccountService;
+use service::BridgeService;
 
 const DEBUG_PORT: u16 = 9229;
 
@@ -68,6 +70,22 @@ async fn main() {
 async fn main_impl() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let paths = AccountPaths::discover()?;
+    // Isolated developer smoke tests: no CDP, helper, launcher lock, process
+    // discovery or Tunnel lifecycle. Config generation is explicitly opt-in.
+    #[cfg(debug_assertions)]
+    if args.iter().any(|arg| arg == "--broker-only") {
+        anyhow::ensure!(
+            std::env::var_os("CODEX_PLUS_STATE_DIR").is_some()
+                && std::env::var_os("CODEX_HOME").is_some(),
+            "broker-only requires isolated CODEX_PLUS_STATE_DIR and CODEX_HOME"
+        );
+        let mut broker = broker::start_on_port(paths, 0).await?;
+        if args.iter().any(|arg| arg == "--test-config") {
+            config::reconcile_codex_config(&AccountPaths::discover()?, broker.port())?;
+        }
+        println!("{}", json!({"brokerPort":broker.port()}));
+        return broker.wait().await;
+    }
     // 不阻止启动，只在身份不稳时留一条可查的日志：adhoc 签名会让 TCC 授权随重新
     // 编译失效，而症状要到下一次权限请求才暴露。
     #[cfg(target_os = "macos")]
@@ -110,13 +128,13 @@ async fn main_impl() -> anyhow::Result<()> {
 }
 
 async fn run_attach_existing(paths: AccountPaths, debug_port: u16) -> anyhow::Result<()> {
-    let service = AccountService::new(paths.clone());
+    let service = BridgeService::new(paths.clone());
     runtime::append_log(
         &paths,
         "launcher.attach_existing",
         json!({"port": debug_port}),
     );
-    let mut broker = broker::start(paths.clone()).await?;
+    let mut broker = broker::start(broker::PREFERRED_BROKER_PORT, service.apis.clone()).await?;
     log_broker_port_selection(&paths, &broker);
     config::reconcile_codex_config(&paths, broker.port())?;
     let result = tokio::select! {
@@ -163,7 +181,7 @@ async fn run_managed_codex(
     start_event: &str,
     capture_web_login: bool,
 ) -> anyhow::Result<()> {
-    let service = AccountService::new(paths.clone());
+    let service = BridgeService::new(paths.clone());
 
     // Resolve read-only installation metadata before terminating the app, but the
     // state-changing lifecycle remains stop -> lock -> launch -> inject.
@@ -176,7 +194,7 @@ async fn run_managed_codex(
     );
     runtime::stop_existing_runtime(&paths)?;
     let _guard = runtime::acquire_launcher_guard(&paths)?;
-    let mut broker = broker::start(paths.clone()).await?;
+    let mut broker = broker::start(broker::PREFERRED_BROKER_PORT, service.apis.clone()).await?;
     log_broker_port_selection(&paths, &broker);
     config::reconcile_codex_config(&paths, broker.port())?;
     let debug_port = runtime::select_debug_port(DEBUG_PORT)?;

@@ -9,7 +9,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::service::AccountService;
+use crate::service::BridgeService;
 
 const BINDING_NAME: &str = "codexPlusAccountsBridgeV1";
 const BINDING_PLACEHOLDER: &str = "\"__CODEX_PLUS_BINDING_NAME__\"";
@@ -59,14 +59,14 @@ pub async fn endpoint_available(port: u16) -> bool {
         .is_ok()
 }
 
-pub async fn run_watchdog(port: u16, service: AccountService) -> anyhow::Result<()> {
+pub async fn run_watchdog(port: u16, service: BridgeService) -> anyhow::Result<()> {
     tokio::select! {
         result = run_accounts_watchdog(port, service.clone()) => result,
         result = run_pdf_watchdog(port, service) => result,
     }
 }
 
-async fn run_accounts_watchdog(port: u16, service: AccountService) -> anyhow::Result<()> {
+async fn run_accounts_watchdog(port: u16, service: BridgeService) -> anyhow::Result<()> {
     loop {
         match discover_main_target(port).await {
             Ok(target) => {
@@ -124,7 +124,7 @@ fn is_pdf_preview_target(target: &Target) -> bool {
         )
 }
 
-async fn run_pdf_watchdog(port: u16, service: AccountService) -> anyhow::Result<()> {
+async fn run_pdf_watchdog(port: u16, service: BridgeService) -> anyhow::Result<()> {
     let mut attached = HashSet::new();
     // Dropping the JoinSet cancels every window session when this Codex
     // lifecycle ends; no task remains attached to a previous debugging port.
@@ -157,7 +157,7 @@ async fn run_pdf_watchdog(port: u16, service: AccountService) -> anyhow::Result<
     }
 }
 
-async fn run_pdf_target_session(target: &Target, service: &AccountService) -> anyhow::Result<()> {
+async fn run_pdf_target_session(target: &Target, service: &BridgeService) -> anyhow::Result<()> {
     let url = target
         .web_socket_debugger_url
         .as_deref()
@@ -262,13 +262,13 @@ impl Default for SessionTuning {
     }
 }
 
-async fn run_target_session(target: &Target, service: AccountService) -> anyhow::Result<()> {
+async fn run_target_session(target: &Target, service: BridgeService) -> anyhow::Result<()> {
     run_target_session_with_tuning(target, service, SessionTuning::default()).await
 }
 
 async fn run_target_session_with_tuning(
     target: &Target,
-    service: AccountService,
+    service: BridgeService,
     tuning: SessionTuning,
 ) -> anyhow::Result<()> {
     let websocket_url = target
@@ -602,8 +602,8 @@ mod tests {
         assert!(!MODEL_ROUTING_SCRIPT.contains("apiKey"));
     }
 
-    fn test_service(state_dir: &std::path::Path) -> AccountService {
-        AccountService::new(AccountPaths {
+    fn test_service(state_dir: &std::path::Path) -> BridgeService {
+        BridgeService::new(AccountPaths {
             codex_home: state_dir.join("codex-home"),
             state_dir: state_dir.to_path_buf(),
             usage_endpoint: "http://127.0.0.1:1/usage".to_string(),
