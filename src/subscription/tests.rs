@@ -92,6 +92,199 @@ async fn mount(f: &Fixture, id: &str, status: u16, body: String) {
         .await;
 }
 #[tokio::test]
+async fn auto_review_uses_the_enabled_pool_from_both_broker_endpoints() {
+    let f = fixture().await;
+    mount(&f, "a", 200, success()).await;
+    let mut broker = crate::broker::start(
+        0,
+        crate::integrations::ApiIntegrations::with_subscription(
+            f.router.paths.clone(),
+            f.router.clone(),
+        ),
+    )
+    .await
+    .unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let body = json!({
+        "model":"codex-auto-review", "stream":true,
+        "instructions":"Keep the native approval policy.",
+        "input":[{"role":"user","content":"Review the isolated fixture action."}],
+        "text":{"format":{"type":"json_schema","name":"review","schema":{"type":"object"}}}
+    });
+    for endpoint in ["/subscription/v1/responses", "/v1/responses"] {
+        let response = client
+            .post(format!("http://127.0.0.1:{}{endpoint}", broker.port()))
+            .bearer_auth(crate::config::BROKER_TOKEN)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{endpoint}");
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("response.completed")
+        );
+    }
+    broker.shutdown().await;
+    let requests = f.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let upstream: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(upstream["model"], "codex-auto-review");
+        assert_eq!(upstream["instructions"], body["instructions"]);
+        assert_eq!(upstream["input"], body["input"]);
+        assert_eq!(upstream["text"], body["text"]);
+    }
+    assert_eq!(f.config.catalog().len(), 1);
+    assert_eq!(f.config.catalog()[0].model_id, "gpt-test");
+}
+
+#[tokio::test]
+async fn auto_review_does_not_enable_a_disabled_pool_or_allow_other_hidden_models() {
+    let mut f = fixture().await;
+    for model in [
+        "gpt-secret",
+        "codex-auto-review-other",
+        &route_id("codex-auto-review"),
+    ] {
+        let mut body = request();
+        body["model"] = json!(model);
+        assert_eq!(
+            f.router
+                .responses(HeaderMap::new(), body, false)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    f.config.enabled = false;
+    f.config.save(&f.router.paths).unwrap();
+    let mut body = request();
+    body["model"] = json!("codex-auto-review");
+    let response = f.router.responses(HeaderMap::new(), body, false).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let bytes = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let error: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(error["error"]["code"], "pool_review_unavailable");
+    assert!(f.server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn native_mcp_auto_review_preserves_allow_and_deny_for_pool_and_external_api() {
+    let Some(binary) = std::env::var_os("CODEX_PLUS_NATIVE_BIN") else {
+        return;
+    };
+    let f = fixture().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let deny = body.to_string().contains("fixture-deny");
+            let reviewed = body["model"] == "codex-auto-review";
+            let mut available_tools = body["tools"].as_array().cloned().unwrap_or_default();
+            for item in body["input"].as_array().into_iter().flatten() {
+                if let Some(tools) = item["tools"].as_array() {
+                    available_tools.extend(tools.iter().cloned());
+                }
+            }
+            let probe_available = available_tools.iter().any(|entry| {
+                entry["name"].as_str().is_some_and(|name| name.ends_with("probe"))
+                    || entry["tools"].as_array().is_some_and(|tools| tools.iter().any(|child| child["name"] == "probe"))
+            });
+            let has_result = body["input"].as_array().is_some_and(|items| {
+                items.iter().any(|item| item["type"] == "function_call_output")
+            });
+            let item = if reviewed || has_result {
+                let text = if reviewed {
+                    json!({"risk_level":if deny {"high"} else {"low"},"user_authorization":"high","outcome":if deny {"deny"} else {"allow"},"rationale":"Isolated fixture decision."}).to_string()
+                } else {
+                    "FIXTURE_COMPLETE".into()
+                };
+                json!({"type":"message","id":"fixture-message","role":"assistant","content":[{"type":"output_text","text":text}]})
+            } else if !probe_available {
+                json!({"type":"tool_search_call","id":"fixture-search","call_id":"fixture-search","execution":"client","arguments":{"query":"fixture probe","limit":1}})
+            } else {
+                let mut tool = json!({"type":"function_call","id":"fixture-call","call_id":"fixture-call","name":"mcp__fixture__probe","arguments":"{}"});
+                for entry in &available_tools {
+                    if entry["type"] == "namespace" && entry["tools"].as_array().is_some_and(|tools| tools.iter().any(|child| child["name"] == "probe")) {
+                        tool["name"] = json!("probe");
+                        tool["namespace"] = entry["name"].clone();
+                    }
+                }
+                tool
+            };
+            let stream = event(json!({"type":"response.created","response":{"id":"fixture-response"}}))
+                + &event(json!({"type":"response.output_item.done","output_index":0,"item":item}))
+                + &event(json!({"type":"response.completed","response":{"id":"fixture-response","status":"completed","output":[item],"usage":{"input_tokens":30,"output_tokens":20,"total_tokens":50}}}));
+            ResponseTemplate::new(200).insert_header("Content-Type", "text/event-stream").set_body_string(stream)
+        })
+        .mount(&f.server)
+        .await;
+    let mut store = crate::providers::ProviderStore::load(&f.router.paths).unwrap();
+    store.upsert(
+        serde_json::from_value(json!({"name":"fixture-external","baseUrl":f.server.uri(),"apiKey":"fixture-key","protocol":"responses","enabled":true,"models":[{"modelId":"external-test","displayName":"fixture","visible":true}]})).unwrap(),
+    ).unwrap();
+    crate::accounts::atomic_write(&f.router.paths.providers_path(), &serde_json::to_vec(&store).unwrap()).unwrap();
+    let mut broker = crate::broker::start(
+        0,
+        crate::integrations::ApiIntegrations::with_subscription(
+            f.router.paths.clone(),
+            f.router.clone(),
+        ),
+    )
+    .await
+    .unwrap();
+    for (endpoint, route, provider) in [
+        (
+            "/subscription/v1",
+            route_id("gpt-test"),
+            crate::config::POOL_PROVIDER_ID,
+        ),
+        (
+            "/v1",
+            store.catalog()[0].route_id.clone(),
+            crate::config::BROKER_PROVIDER_ID,
+        ),
+    ] {
+        let output = tokio::process::Command::new("node")
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("scripts/verify-native-auto-review.mjs"),
+            )
+            .arg(&binary)
+            .arg(format!("http://127.0.0.1:{}{endpoint}", broker.port()))
+            .arg(route)
+            .arg(provider)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+    }
+    broker.shutdown().await;
+    let requests = f.server.received_requests().await.unwrap();
+    let reviews = requests
+        .iter()
+        .filter(|request| {
+            serde_json::from_slice::<Value>(&request.body).unwrap()["model"] == "codex-auto-review"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reviews.len(), 4);
+    for request in reviews {
+        assert_eq!(request.headers.get("chatgpt-account-id").unwrap(), "a");
+    }
+}
+
+#[tokio::test]
 async fn default_is_off_and_order_roundtrips_without_tokens() {
     let mut f = fixture().await;
     assert!(!SubscriptionConfig::default().enabled);
