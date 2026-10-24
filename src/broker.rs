@@ -102,6 +102,11 @@ pub async fn start(preferred_port: u16, apis: ApiIntegrations) -> anyhow::Result
         .route("/responses", post(responses))
         .route("/v1/responses/compact", post(responses))
         .route("/responses/compact", post(responses))
+        .route("/subscription/v1/responses", post(subscription_responses))
+        .route(
+            "/subscription/v1/responses/compact",
+            post(subscription_responses),
+        )
         .with_state(state);
     let task = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -133,6 +138,23 @@ async fn responses(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
+    handle_responses(state, headers, request, false).await
+}
+
+async fn subscription_responses(
+    State(state): State<BrokerState>,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> Response<Body> {
+    handle_responses(state, headers, request, true).await
+}
+
+async fn handle_responses(
+    state: BrokerState,
+    headers: HeaderMap,
+    request: Request<Body>,
+    subscription_endpoint: bool,
+) -> Response<Body> {
     if !authorized(&headers) {
         return error_response(StatusCode::UNAUTHORIZED, "broker authorization failed");
     }
@@ -162,6 +184,15 @@ async fn responses(
         Some(value) => value,
         None => return error_response(StatusCode::BAD_REQUEST, "missing route model"),
     };
+    if subscription_endpoint {
+        // Native pre-turn compaction may use the previous turn's real model ID.
+        // Keep that compatibility confined to the subscription provider's URL.
+        return state
+            .apis
+            .subscription
+            .responses(headers, value, path.ends_with("/compact"))
+            .await;
+    }
     let (profile, model) = match state.apis.resolve(&route_id) {
         Ok(ModelRoute::Subscription) => {
             return state

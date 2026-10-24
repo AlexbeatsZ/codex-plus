@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-10-23：修复订阅迁入已有长会话后的前置压缩 404。官方 `ModelDownshift` 用历史上一轮真实模型 ID 压缩，旧 broker 只认 routeId。订阅 provider 现使用单 broker 的 `/subscription/v1`，只允许已启用且可见的真实模型 ID/routeId；普通 API 仍为 `/v1`。Windows 原生 app-server + 假账户/mock 上游已覆盖“旧模型自动压缩 → 当前订阅 turn”；真实服务和用户界面仍待启动修复版后验收。源码/文件发布不等于运行实例更新，见各端 release.json。
+
 - 2026-10-23：路由脚本 v19 修复全局 API 选择污染已有会话：真实 `model/list` 回包直接记录官方 ID/显示名；`turn/start` 仅从原生 `collaborationMode.settings.model` 或顶层 `model` 判断目标，两者均空时原样继承会话设置。旧 localStorage 和其他会话点击不再触发分支；明确选择后的分支、取消及失败阻发仍受回归保护。当前运行实例的生效状态以部署记录为准。
 
 - 2026-10-23：macOS 的订阅账户池已合入公共主线并移植 Windows。固定“ChatGPT 订阅 API”默认停用，参与账户和顺序由用户选择；复用 vault/单 broker，支持有界续期、坏凭据版本阻断、额度冷却与 SSE 输出后禁止重放。API v8 修复复选框，账户 renderer v11 兼容新版登录页；路由 v20 同时保留 v19 的原生模型优先级和会话继承。Windows 无环境代理时只读采用当前用户静态系统代理。设计见 `docs/design/account-pool.md`；部署状态以各端 `.codex-plus/release.json` 为准。

@@ -18,6 +18,13 @@
 同一订阅 provider 内换实际账户不重启 Codex、不改实时 auth.json，不产生新 thread。
 从官方或普通 API provider 迁入仍遵循现有跨 provider 原生分支确认流程。
 
+订阅 provider 独立使用同一个 broker 的 `/subscription/v1`；普通 API 保持 `/v1`。
+官方 app-server 在 `ModelDownshift` 前置压缩时会沿用历史上一轮的真实模型 ID，
+例如 `gpt-6.1-sol`，即使当前 turn 已使用 `cp-pool-...`。订阅专用路径仅在配置
+已启用且模型可见时接受真实 ID 或稳定 routeId，仍完整转发 `compaction_trigger`。
+普通 `/v1` 不猜测裸模型属于哪个账户池；旧 `cp-pool-...` 请求继续兼容。
+上一模型未获订阅配置允许时明确失败，不自动消费隐藏模型或其他 API。
+
 ## 模块职责
 
 - `AccountVault` / `accounts/credentials.rs`：凭据读取、席位身份、原生续期及跨进程互斥；手动切换与导入共享续期锁。
@@ -69,6 +76,16 @@ Windows 的 OMEN/ROG 版使用相同订阅模块和各自已有的 vault，不�
 测试使用临时 vault 和 mock 服务；部署文件不启用订阅、不选择账户、不改变实时登录。
 
 ## 验收与部署
+
+2026-10-23 Windows 用户真实继承会话首次发送触发 `ModelDownshift`，旧版 broker
+因真实模型 ID 不是 routeId 而本机 404。原来的新建订阅会话 + 手动压缩测试未覆盖
+这条路径，不能据此认定生产压缩已验收；macOS 用户也尚未真实验收。
+修复后的回归同时覆盖专用路径、禁用/隐藏模型拒绝与普通 API 隔离。
+可选原生离线测试 `native_inherited_history_compaction_and_pool_turn` 通过环境变量
+`CODEX_PLUS_NATIVE_BIN` 指定官方 app-server 二进制；它使用本地模型目录模板、临时
+CODEX_HOME、假 vault 与 mock SSE，验证旧模型前置压缩后继续当前订阅 turn。
+目录模板缺省来自 `~/.codex/models_cache.json`，可用 `CODEX_PLUS_NATIVE_CATALOG` 覆盖。
+这是原生协议回归，真实订阅服务和用户当前对话仍需修复版 launcher 启动后验收。
 
 79 Rust、33 JS 测试通过，覆盖顺序、停用、配额、SSE、并发续期、坏凭据跨请求跳过与导入竞态。
 `scripts/verify-account-pool.mjs` 在 `/tmp/.agents/` 独立 state/CODEX_HOME 中复制现有凭据，
