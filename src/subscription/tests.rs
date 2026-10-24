@@ -339,6 +339,136 @@ async fn rejects_legacy_compact_and_exposes_native_pool_catalog_through_broker()
 }
 
 #[tokio::test]
+async fn previous_model_compaction_is_routed_only_on_the_subscription_endpoint() {
+    let mut f = fixture().await;
+    mount(&f, "a", 200, success()).await;
+    let mut broker = crate::broker::start(
+        0,
+        crate::integrations::ApiIntegrations::with_subscription(
+            f.router.paths.clone(),
+            f.router.clone(),
+        ),
+    )
+    .await
+    .unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let base = format!("http://127.0.0.1:{}", broker.port());
+    let body = json!({"model":"gpt-test","stream":true,"input":[
+        {"role":"user","content":"history"},{"type":"compaction_trigger"}
+    ]});
+    let compact = client
+        .post(format!("{base}/subscription/v1/responses"))
+        .bearer_auth(crate::config::BROKER_TOKEN)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(compact.status(), StatusCode::OK);
+    assert!(compact.text().await.unwrap().contains("response.completed"));
+    let requests = f.server.received_requests().await.unwrap();
+    let sent: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(sent["model"], "gpt-test");
+    assert_eq!(sent["input"], body["input"]);
+    assert_eq!(requests.len(), 1);
+
+    // No alias guessing on the ordinary API endpoint, and no cross-provider route.
+    for (endpoint, model) in [
+        ("/v1/responses", "gpt-test"),
+        ("/subscription/v1/responses", "cp-external"),
+        ("/subscription/v1/responses", "gpt-unknown"),
+    ] {
+        let r = client
+            .post(format!("{base}{endpoint}"))
+            .bearer_auth(crate::config::BROKER_TOKEN)
+            .json(&json!({"model":model,"stream":true,"input":body["input"]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{endpoint} {model}");
+    }
+    f.config.models[0].visible = false;
+    f.config.enabled = false;
+    f.config.save(&f.router.paths).unwrap();
+    let r = client
+        .post(format!("{base}/subscription/v1/responses"))
+        .bearer_auth(crate::config::BROKER_TOKEN)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert_eq!(f.server.received_requests().await.unwrap().len(), 1);
+    broker.shutdown().await;
+}
+
+#[tokio::test]
+async fn native_inherited_history_compaction_and_pool_turn() {
+    let Some(binary) = std::env::var_os("CODEX_PLUS_NATIVE_BIN") else {
+        return;
+    };
+    let f = fixture().await;
+    Mock::given(method("POST")).and(path("/responses"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value=serde_json::from_slice(&request.body).unwrap();
+            let compact=body["input"].as_array().unwrap().iter().any(|i|i["type"]=="compaction_trigger");
+            let item=if compact { json!({"type":"compaction","encrypted_content":"offline-fixture"}) }
+                else { json!({"type":"message","id":"pool-message","role":"assistant","content":[{"type":"output_text","text":"READY"}]}) };
+            let stream=event(json!({"type":"response.created","response":{"id":"pool"}}))
+                + &event(json!({"type":"response.output_item.done","output_index":0,"item":item}))
+                + &event(json!({"type":"response.completed","response":{"id":"pool","status":"completed","output":[item],"usage":{"input_tokens":30,"output_tokens":1,"total_tokens":31}}}));
+            ResponseTemplate::new(200).set_body_string(stream)
+        }).mount(&f.server).await;
+    let mut broker = crate::broker::start(
+        0,
+        crate::integrations::ApiIntegrations::with_subscription(
+            f.router.paths.clone(),
+            f.router.clone(),
+        ),
+    )
+    .await
+    .unwrap();
+    let output = tokio::process::Command::new("node")
+        .arg(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts/verify-native-pool-compaction.mjs"),
+        )
+        .arg(binary)
+        .arg(format!(
+            "http://127.0.0.1:{}/subscription/v1",
+            broker.port()
+        ))
+        .output()
+        .await
+        .unwrap();
+    broker.shutdown().await;
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = f.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let compact: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let turn: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert_eq!(compact["model"], "gpt-test");
+    assert!(
+        compact["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["type"] == "compaction_trigger")
+    );
+    assert!(
+        turn["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["type"] == "compaction")
+    );
+}
+
+#[tokio::test]
 async fn second_401_skips_account_and_persists_rejection_across_models_and_config_saves() {
     let f = fixture().await;
     mount(
