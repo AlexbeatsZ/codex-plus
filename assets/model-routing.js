@@ -3,8 +3,9 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 19;
+  const VERSION = 20;
   const PROVIDER = "codex-plus-api";
+  const POOL_PROVIDER = "codex-plus-account-pool";
   const SELECTED_KEY = "codex-plus:selected-model";
   const state = {
     catalog: [],
@@ -116,7 +117,8 @@
     const previous = selectedModel();
     state.pendingOfficialModel = "";
     state.selected = String(model || "");
-    state.selectedProvider = state.selected ? PROVIDER : "openai";
+    // Stored selections can outlive their catalog entry; validate only when routing.
+    state.selectedProvider = state.selected ? state.byRoute.get(state.selected)?.nativeProviderId || PROVIDER : "openai";
     try {
       if (model) localStorage.setItem(SELECTED_KEY, model);
       else localStorage.removeItem(SELECTED_KEY);
@@ -208,7 +210,7 @@
   function providerForModel(model) {
     const id = String(model || "");
     if (!id) return "";
-    if (state.byRoute.has(id)) return PROVIDER;
+    if (state.byRoute.has(id)) return state.byRoute.get(id).nativeProviderId || PROVIDER;
     if (/^cp-/.test(id)) throw new Error("该 API 模型已删除、隐藏或停用，请重新选择模型");
     if (state.officialModels.has(id) || /^(gpt-|codex-|o[1-9](?:-|$))/i.test(id)) return "openai";
     return "";
@@ -290,7 +292,7 @@
   }
 
   function restoreSelection(model, provider) {
-    if (provider === PROVIDER && model) setSelectedModel(model);
+    if ([PROVIDER, POOL_PROVIDER].includes(provider) && model) setSelectedModel(model);
     else if (provider === "openai" && model) setSelectedOfficialModel(model);
     else setSelectedModel("");
   }
@@ -328,7 +330,7 @@
   }
 
   function providerLabel(provider) {
-    return provider === PROVIDER ? "API 模型" : "GPT";
+    return provider === POOL_PROVIDER ? "订阅 API 模型" : provider === PROVIDER ? "API 模型" : "GPT";
   }
 
   function confirmProviderFork(currentProvider, targetProvider) {

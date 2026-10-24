@@ -271,7 +271,7 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.version, 19);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 20);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option \{ color:var\(--cp-text\); background:var\(--cp-bg\); \}/);
 });
@@ -797,4 +797,119 @@ test("re-injecting the bridge fails requests left over from the dead connection"
   dom.window.eval(bridgeScript);
   await assert.rejects(stranded, /重新连接/);
   assert.equal(dom.window.__codexPlusPending.size, 0);
+});
+
+test("fixed subscription API configures account order and model visibility without switching login", async () => {
+  const a="a".repeat(64), b="b".repeat(64), calls=[];
+  const models=[{modelId:"gpt-test",displayName:"My model",visible:true}];
+  const fixed={id:"chatgpt-subscription",kind:"subscription",fixed:true,name:"ChatGPT 订阅",enabled:false,models};
+  const dom=setup(async(path,payload)=>{
+    calls.push({path,payload:JSON.parse(JSON.stringify(payload||{}))});
+    if(path==="/api-providers/list")return {status:"ok",providers:[fixed]};
+    if(path==="/api-providers/subscription/get")return {status:"ok",config:{enabled:false,accountOrder:[a,b],models,proxyUrl:""},accounts:[{recordId:a,email:"a@example.test"},{recordId:b,email:"b@example.test"}]};
+    if(path==="/api-providers/subscription/save")return {status:"ok",config:payload};
+    return {status:"ok",models:[]};
+  });
+  dom.window.__codexPlusApi.open();await flush();
+  assert.equal(dom.window.document.querySelector('[data-api-delete="chatgpt-subscription"]'),null);
+  dom.window.document.querySelector('[data-api-edit="chatgpt-subscription"]').click();await flush();
+  assert.equal(dom.window.document.querySelector('input[name="apiKey"]'),null);
+  assert.equal(dom.window.document.querySelector('input[name="baseUrl"]'),null);
+  dom.window.document.querySelector('[data-model-name="0"]').value="Custom name";
+  dom.window.document.querySelector('[data-sub-up="'+b+'"]').click();
+  assert.equal(dom.window.document.querySelector('[data-model-name="0"]').value,"Custom name");
+  const enabled=dom.window.document.querySelector('[data-sub-enabled]');enabled.checked=true;enabled.dispatchEvent(new dom.window.Event("change"));
+  dom.window.document.querySelector('[data-sub-save]').click();await flush();
+  const saved=calls.find(c=>c.path==="/api-providers/subscription/save").payload;
+  assert.deepEqual(saved.accountOrder,[b,a]);assert.equal(saved.enabled,true);assert.equal(saved.models[0].displayName,"Custom name");
+  assert.equal(calls.some(c=>c.path==="/accounts/switch"),false);
+  assert.ok(dom.window.document.querySelector('[data-codex-plus-account-item]'));
+  assert.match(dom.window.document.body.textContent,/订阅 API 已保存/);
+  dom.window.close();
+});
+
+test("subscription account opt-out and failed saves preserve the complete API draft", async () => {
+  const a="a".repeat(64),b="b".repeat(64);
+  const fixed={id:"chatgpt-subscription",kind:"subscription",name:"ChatGPT 订阅",models:[],enabled:false};
+  const dom=setup(async(path,payload)=>{
+    if(path==="/api-providers/list")return {status:"ok",providers:[fixed]};
+    if(path==="/api-providers/subscription/get")return {status:"ok",config:{enabled:false,accountOrder:[a,b],models:[],proxyUrl:""},accounts:[{recordId:a,email:"a@example.test"},{recordId:b,email:"b@example.test"}],blockedAccounts:[{recordId:a,blocked:true,reason:"凭据失效，请更新"}]};
+    if(path==="/api-providers/subscription/discover"){assert.deepEqual(JSON.parse(JSON.stringify(payload.accountOrder)),[b]);return {status:"ok",models:[{modelId:"gpt-test",displayName:"gpt-test",visible:true}]};}
+    if(path==="/api-providers/subscription/save")return {status:"failed",message:"账户不存在，请刷新"};
+    return {status:"ok",models:[]};
+  });
+  dom.window.__codexPlusApi.open();await flush();dom.window.document.querySelector('[data-api-edit="chatgpt-subscription"]').click();await flush();
+  assert.match(dom.window.document.body.textContent,/凭据失效/);
+  const input=dom.window.document.querySelector('[data-sub-account="'+a+'"]');input.checked=false;input.dispatchEvent(new dom.window.Event("change"));
+  const proxy=dom.window.document.querySelector('[data-sub-proxy]');proxy.value="http://127.0.0.1:7897";proxy.dispatchEvent(new dom.window.Event("input"));
+  dom.window.document.querySelector('[data-sub-discover]').click();await flush();
+  dom.window.document.querySelector('[data-sub-save]').click();await flush();
+  assert.match(dom.window.document.body.textContent,/账户不存在/);assert.match(dom.window.document.body.textContent,/gpt-test/);
+  assert.equal(dom.window.document.querySelector('[data-sub-proxy]').value,"http://127.0.0.1:7897");
+  dom.window.close();
+});
+
+test("subscription controls survive the native input reset and labels enable discovery", async () => {
+  const id = "a".repeat(64), calls = [];
+  const dom = setup(async (path, payload) => {
+    calls.push({path, payload});
+    if (path === "/api-providers/list") return {status:"ok",providers:[{id:"chatgpt-subscription",kind:"subscription",name:"ChatGPT 订阅",models:[],enabled:false}]};
+    if (path === "/api-providers/subscription/get") return {status:"ok",config:{enabled:false,accountOrder:[],models:[],proxyUrl:""},accounts:[{recordId:id,email:"a@example.test"}]};
+    if (path === "/api-providers/subscription/discover") return {status:"ok",models:[{modelId:"gpt-test",displayName:"gpt-test",visible:true}]};
+    if (path === "/api-providers/subscription/save") return {status:"ok",config:payload};
+    return {status:"ok",models:[]};
+  });
+  const reset = dom.window.document.createElement("style");
+  reset.textContent = 'input,textarea,select,optgroup { appearance:none; background-color:transparent; border-radius:0; }';
+  dom.window.document.head.append(reset);
+  dom.window.__codexPlusApi.open(); await flush();
+  dom.window.document.querySelector('[data-api-edit="chatgpt-subscription"]').click(); await flush();
+  const document = dom.window.document;
+  assert.equal(document.querySelector('[data-sub-discover]').disabled, true);
+  for (const input of document.querySelectorAll('.cp-api-dialog input[type="checkbox"]')) {
+    const style = dom.window.getComputedStyle(input);
+    assert.equal(style.appearance, "auto");
+    assert.equal(style.width, "16px");
+    assert.equal(style.height, "16px");
+  }
+  document.querySelector('[data-sub-enabled]').closest('label').click();
+  document.querySelector('[data-sub-account]').closest('label').click();
+  assert.equal(document.querySelector('[data-sub-enabled]').checked, true);
+  assert.equal(document.querySelector('[data-sub-account]').checked, true);
+  assert.equal(document.querySelector('[data-sub-discover]').disabled, false);
+  document.querySelector('[data-sub-discover]').click(); await flush();
+  assert.equal(dom.window.getComputedStyle(document.querySelector('[data-model-visible]')).appearance, "auto");
+  document.querySelector('[data-sub-save]').click(); await flush();
+  const saved = calls.find(c => c.path === '/api-providers/subscription/save').payload;
+  assert.equal(saved.enabled, true);
+  assert.deepEqual(saved.accountOrder, [id]);
+  assert.equal(saved.models[0].visible, true);
+  dom.window.close();
+});
+
+test("account pool uses its native compaction provider for thread starts and subsequent turns", async () => {
+  const model={routeId:'cp-pool-test',modelId:'gpt-test',displayName:'账户池 · gpt-test',providerId:'chatgpt-subscription',nativeProviderId:'codex-plus-account-pool'};
+  const dom=setup(async()=>({status:'ok',models:[model]}));
+  const router=dom.window.__codexPlusModelRouting;
+  await router.loadCatalog(true);
+  router.setSelectedModel(model.routeId);
+  assert.equal(router.state.selectedProvider,'codex-plus-account-pool');
+  assert.equal(router.routeParams('thread/start',{model:model.routeId}).modelProvider,'codex-plus-account-pool');
+  assert.equal(router.routeParams('turn/start',{model:model.routeId,modelProvider:'codex-plus-account-pool'}).model,model.routeId);
+  assert.throws(()=>router.routeParams('turn/start',{model:model.routeId,modelProvider:'openai'}),/先完成 provider 切换/);
+  dom.window.close();
+});
+
+test("native signed-out heading anchors the new Continue sign-in button", async () => {
+  const dom=setupSignedOut(async()=>({status:"ok",accounts:[]}),'<main><h1>登录 ChatGPT</h1><div><button>继续登录</button></div><button>使用其他方式登录</button></main>');
+  await flush();assert.equal(dom.window.document.querySelectorAll('[data-codex-plus-signed-out-account]').length,1);dom.window.close();
+});
+
+test("signed-out entry follows React text updates but ignores unrelated text churn", async () => {
+  const dom=setupSignedOut(async()=>({status:"ok",accounts:[]}),'<main><h1>登录 ChatGPT</h1><div><button>Loading...</button></div></main><section><span>unrelated</span></section>');
+  await flush();const button=dom.window.document.querySelector('button');button.firstChild.data='继续登录';await flush();
+  assert.equal(dom.window.document.querySelectorAll('[data-codex-plus-signed-out-account]').length,1);
+  let scans=0;const original=dom.window.document.querySelectorAll.bind(dom.window.document);dom.window.document.querySelectorAll=selector=>{if(selector==='button,[role="button"]')scans++;return original(selector);};
+  for(let i=0;i<100;i++)dom.window.document.querySelector('section span').firstChild.data=String(i);
+  await flush();assert.equal(scans,0);dom.window.close();
 });

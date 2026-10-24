@@ -10,7 +10,7 @@ API 接入与账户管理共用同一套 Codex 原生化视觉约束：16×16px 
 
 ## 数据与 bridge
 
-`%LOCALAPPDATA%\codex-plus\providers.json` 是版本化数据文件，结构为 provider 列表：
+仓库根 `.codex-plus/providers.json` 是版本化数据文件，结构为 provider 列表：
 
 - provider：`id/name/baseUrl/apiKey/protocol/enabled/models`；
 - model：`routeId/modelId/displayName/visible`；
@@ -20,6 +20,8 @@ API 接入与账户管理共用同一套 Codex 原生化视觉约束：16×16px 
 renderer 只使用 `/api-providers/list|discover|save|delete|catalog`。`list` 只返回 `hasApiKey`，`catalog` 只返回可见模型描述；两者都不得包含 key。bridge 失败日志只写路由和错误文本，不记录请求 payload。
 
 `discover` 规范化 URL 后在用户填写的精确 base URL 后追加 `/models`，不得自行插入 `/v1`；需要版本前缀的服务由用户在 base URL 中提供。请求使用 Bearer Key。首次发现的模型默认全部可见；重新发现按真实 model ID 保留 alias、visible 和 routeId，新模型默认隐藏。启用的 API 必须至少有一个可见模型。
+
+固定订阅 API 的顺序、凭据策略与原生压缩见 [account-pool.md](account-pool.md)。`ApiIntegrations` 统一所有 API 的列表、模型发现、目录和路由；bridge 使用 `/api-providers/subscription/get|save|discover` 管理固定项，复用外部 API 的模型编辑与 rediscovery 规则。
 
 ## 单 broker provider
 
@@ -59,7 +61,7 @@ v19 在真实 `model/list` 探测成功后直接记录官方模型 ID 与显示�
 
 安装路由包装时必须清除安装前已经创建的预热任务；原生选择器改变模型时也必须再次清除缓存。之后的普通创建、预热创建和首轮发送都从同一 `enqueueRequest` 包装进入，保证 routeId 与 `codex-plus-api` 同时提交，不能出现 routeId 搭配 `openai` 的混合状态。
 
-创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用 `codex-plus-api`，不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为当前官方客户端使用的 `null` 全 provider 哨兵，同时原样保留 `sourceKinds`、`archived` 等目录范围参数；不得再使用旧的空数组语义扩大本地目录扫描范围。
+创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用目录明确给出的 `nativeProviderId`（普通 API 为 `codex-plus-api`，订阅为 `codex-plus-account-pool`），不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为当前官方客户端使用的 `null` 全 provider 哨兵，同时原样保留 `sourceKinds`、`archived` 等目录范围参数；不得再使用旧的空数组语义扩大本地目录扫描范围。
 
 同 provider 的 API→API 切换只覆盖下一次 `turn/start.model`。Codex `26.803.10989.0` 的 provider 在任务 ID 创建时固定：`thread/resume` 不能改变 provider，`thread/shutdown` 已移除，二者都不得用于跨 provider 切换。
 
