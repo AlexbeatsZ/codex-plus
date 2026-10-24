@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 11;
+  const VERSION = 12;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -25,6 +25,7 @@
     view: "accounts",
     accounts: [],
     usage: new Map(),
+    generation: 0,
     loading: false,
     switching: "",
     deleting: "",
@@ -49,6 +50,7 @@
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
+      .cp-usage-status { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:4px; }
       .codex-plus-account-menu-item .cp-menu-row { display:flex!important; width:100%!important; min-width:0; flex-direction:row!important; align-items:center!important; justify-content:flex-start!important; gap:8px!important; white-space:nowrap!important; }
       .codex-plus-account-menu-item .cp-menu-row svg { flex:0 0 auto; width:16px; height:16px; opacity:.72; }
       .codex-plus-account-menu-item .cp-menu-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -288,6 +290,7 @@
   }
 
   function closeModal() {
+    state.generation += 1;
     const modal = document.getElementById(ROOT_ID);
     modal?.remove();
     state.modal = null;
@@ -351,6 +354,9 @@
     body.querySelectorAll("[data-cp-delete]").forEach((button) => {
       button.addEventListener("click", () => void deleteAccount(button.dataset.cpDelete));
     });
+    body.querySelectorAll("[data-cp-usage-retry]").forEach((button) => {
+      button.addEventListener("click", () => void loadUsage(button.dataset.cpUsageRetry));
+    });
     body.querySelector("[data-cp-add]")?.addEventListener("click", () => switchView("import"));
     body.querySelector("[data-cp-web-login]")?.addEventListener("click", () => void startWebLogin());
   }
@@ -365,61 +371,82 @@
       <div class="cp-account-main">
         <div class="cp-account-name-line"><span class="cp-account-name">${escapeHtml(displayName)}</span>${active ? '<span class="cp-account-badge">当前</span>' : ""}</div>
         <div class="cp-account-meta">${secondary ? `<span>${escapeHtml(secondary)}</span>` : ""}${account?.plan ? `<span>${escapeHtml(account.plan)}</span>` : ""}</div>
-        <div class="cp-account-usage">${usageMarkup(usageState)}</div>
+        <div class="cp-account-usage">${usageMarkup(usageState, id)}</div>
       </div>
       <div class="cp-account-row-actions"><button type="button" class="cp-account-button" data-primary="${!active}" data-cp-switch="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""}>${state.switching === id ? "切换中…" : active ? "当前账户" : "切换"}</button><button type="button" class="cp-account-button" data-danger="true" data-cp-delete="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""} title="${active ? "请先切换到其他账户再删除" : "删除已保存账户"}">${state.deleting === id ? "删除中…" : "删除"}</button></div>
     </div>`;
   }
 
-  function usageMarkup(entry) {
-    if (!entry || entry.status === "loading") return '<div class="cp-usage-loading">额度读取中…</div>';
-    if (entry.status === "error") return `<div class="cp-usage-loading">${escapeHtml(entry.message || "额度暂不可用")}</div>`;
+  function usageMarkup(entry, recordId) {
+    const loading = !entry || entry.status === "loading";
+    const message = loading ? (entry?.usage ? "正在刷新…" : "额度读取中…") : entry.status === "error" ? entry.message || "额度暂不可用" : "";
+    const updated = entry?.updatedAt && entry.status !== "ok" ? `上次更新 ${new Date(entry.updatedAt).toLocaleString()}` : "";
+    const status = `<div class="cp-usage-status"><span class="cp-usage-loading">${escapeHtml([message, updated].filter(Boolean).join(" · "))}</span><button type="button" class="cp-account-button" data-cp-usage-retry="${escapeHtml(recordId)}" ${loading ? "disabled" : ""}>${loading ? "刷新中…" : entry.status === "error" ? "重试" : "刷新额度"}</button></div>`;
+    if (!entry?.usage) return status;
     const usage = entry.usage || {};
     const rateLimit = usage.rate_limit || usage.rateLimit || {};
     const windows = [rateLimit.primary_window || rateLimit.primaryWindow, rateLimit.secondary_window || rateLimit.secondaryWindow].filter(Boolean);
-    if (!windows.length) return '<div class="cp-usage-loading">额度信息暂不可用</div>';
+    if (!windows.length) return `<div class="cp-usage-loading">额度信息暂不可用</div>${status}`;
     return windows.map((windowValue) => {
-      const rawPercent = Number(windowValue.used_percent ?? windowValue.usedPercent);
-      const used = Number.isFinite(rawPercent) ? Math.max(0, Math.min(100, rawPercent)) : 0;
+      const percent = windowValue.used_percent ?? windowValue.usedPercent;
+      const rawPercent = percent == null || percent === "" ? NaN : Number(percent);
+      if (!Number.isFinite(rawPercent)) return '<div class="cp-usage-loading">额度剩余未知</div>';
+      const used = Math.max(0, Math.min(100, rawPercent));
       const remaining = Math.max(0, 100 - used);
       const seconds = Number(windowValue.limit_window_seconds ?? windowValue.limitWindowSeconds);
       const label = seconds && seconds <= 6 * 3600 ? "5 小时额度" : seconds && seconds >= 6 * 24 * 3600 ? "周额度" : "额度窗口";
       const resetAt = Number(windowValue.reset_at ?? windowValue.resetAt);
       const reset = Number.isFinite(resetAt) && resetAt > 0 ? new Date(resetAt * 1000).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
       return `<div class="cp-usage-window"><span>${escapeHtml(label)} · 剩余 ${remaining.toFixed(0)}%</span><span class="cp-usage-track"><span class="cp-usage-fill" style="width:${remaining}%"></span></span><span class="cp-usage-reset">${reset ? `重置 ${escapeHtml(reset)}` : ""}</span></div>`;
-    }).join("");
+    }).join("") + status;
   }
 
   async function loadAccounts() {
+    const generation = ++state.generation;
     state.loading = true;
     state.accounts = [];
-    state.usage.clear();
     renderAccounts();
     try {
       const result = await invoke("/accounts/list", {});
+      if (generation !== state.generation) return;
       state.accounts = Array.isArray(result?.accounts) ? result.accounts : [];
+      const ids = new Set(state.accounts.map((account) => String(account?.recordId || "")));
+      for (const id of state.usage.keys()) if (!ids.has(id)) state.usage.delete(id);
       for (const account of state.accounts) {
         const id = String(account?.recordId || "");
-        if (id) state.usage.set(id, { status: "loading" });
+        if (id) state.usage.set(id, { ...state.usage.get(id), status: "loading" });
       }
     } catch (error) {
+      if (generation !== state.generation) return;
       setMessage(error?.message || String(error), "error");
     } finally {
-      state.loading = false;
-      renderAccounts();
+      if (generation === state.generation) {
+        state.loading = false;
+        renderAccounts();
+      }
     }
-    for (const account of state.accounts) {
-      const id = String(account?.recordId || "");
-      if (id) void loadUsage(id);
+    if (generation !== state.generation) return;
+    const queue = state.accounts.map((account) => String(account?.recordId || "")).filter(Boolean);
+    async function worker() {
+      while (queue.length && generation === state.generation) await loadUsage(queue.shift(), generation);
     }
+    const workers = Math.min(3, queue.length);
+    for (let index = 0; index < workers; index += 1) void worker();
   }
 
-  async function loadUsage(recordId) {
+  async function loadUsage(recordId, generation = state.generation) {
+    const previous = state.usage.get(recordId);
+    const request = {};
+    state.usage.set(recordId, { ...previous, status: "loading", request });
+    if (state.view === "accounts") renderAccounts();
+    const current = () => generation === state.generation && state.usage.get(recordId)?.request === request;
     try {
       const result = await invoke("/accounts/usage", { recordId });
-      state.usage.set(recordId, { status: "ok", usage: result?.usage || {} });
+      if (!current()) return;
+      state.usage.set(recordId, { status: "ok", usage: result?.usage || {}, updatedAt: Date.now() });
     } catch (error) {
-      state.usage.set(recordId, { status: "error", message: error?.message || "额度暂不可用" });
+      if (!current()) return;
+      state.usage.set(recordId, { ...previous, status: "error", message: error?.message || "额度暂不可用" });
     }
     if (state.view === "accounts") renderAccounts();
   }
@@ -559,7 +586,6 @@
     state.signedOut = options?.signedOut === true;
     state.view = "accounts";
     state.accounts = [];
-    state.usage.clear();
     state.loading = false;
     state.switching = "";
     state.deleting = "";
@@ -600,6 +626,7 @@
   }
 
   function destroy() {
+    state.generation += 1;
     state.observer?.disconnect?.();
     state.observer = null;
     document.querySelectorAll(`[${ITEM_ATTR}],[${SIGNED_OUT_ATTR}]`).forEach((node) => node.remove());

@@ -59,7 +59,7 @@ impl SubscriptionConfig {
         Ok(())
     }
 
-    pub(super) fn client(&self) -> anyhow::Result<reqwest::Client> {
+    pub(crate) fn client(&self) -> anyhow::Result<reqwest::Client> {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .user_agent("codex-plus/0.3.3 account-pool")
