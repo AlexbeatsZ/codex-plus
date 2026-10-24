@@ -21,6 +21,7 @@ const REFRESH_URL: &str = "https://auth.openai.com/oauth/token";
 const PRELUDE_LIMIT: usize = 1024 * 1024;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const ROUTE_PREFIX: &str = "cp-pool-";
+pub const AUTO_REVIEW_MODEL: &str = "codex-auto-review";
 
 mod config;
 pub use config::SubscriptionConfig;
@@ -293,18 +294,33 @@ impl SubscriptionApi {
             }
         };
         let route = body["model"].as_str().unwrap_or("");
-        let Some(model) = config
-            .models
-            .iter()
-            .find(|m| m.visible && (route_id(&m.model_id) == route || m.model_id == route))
-            .map(|m| m.model_id.clone())
-            .filter(|_| config.enabled)
-        else {
-            return error(
-                StatusCode::NOT_FOUND,
-                "pool_disabled",
-                "账户池已关闭或模型不再可用",
-            );
+        let model = if route == AUTO_REVIEW_MODEL {
+            if !config.enabled
+                || config.account_order.is_empty()
+                || !config.models.iter().any(|model| model.visible)
+            {
+                return error(
+                    StatusCode::NOT_FOUND,
+                    "pool_review_unavailable",
+                    "原生自动审批需要已启用且有参与账户的 ChatGPT 订阅账户池；请启用账户池或在官方界面选择人工审批",
+                );
+            }
+            AUTO_REVIEW_MODEL.to_owned()
+        } else {
+            let Some(model) = config
+                .models
+                .iter()
+                .find(|m| m.visible && (route_id(&m.model_id) == route || m.model_id == route))
+                .map(|m| m.model_id.clone())
+                .filter(|_| config.enabled)
+            else {
+                return error(
+                    StatusCode::NOT_FOUND,
+                    "pool_disabled",
+                    "账户池已关闭或模型不再可用",
+                );
+            };
+            model
         };
         // Stateful response references are account-bound and cannot safely fail over.
         if body
