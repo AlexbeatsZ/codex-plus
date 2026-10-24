@@ -6,7 +6,7 @@
 
 # Current State
 
-- 2026-10-24：账户 renderer v13 在原生“剩余用量”下新增“API 剩余额度”。菜单旁浮层展示已参与订阅 API 的账户，按套餐/窗口时长分别显示平均剩余及已更新数，失败与未知不计作零；支持各账户和全部刷新，沿用三并发、缓存及有界网络处理，不改变订阅参与配置。当前正式实例的生效状态见 `.codex-plus/release.json`，设计见 `docs/design/account-switch-lifecycle.md`。
+- 2026-10-24：账户 renderer v14 将“API 剩余额度”修正为原生式菜单内折叠展开，替代 v13 的侧边浮层。匹配嵌套标题后在完整原生用量区块后插入，预先展开也可定位；沿用菜单字号、箭头和两列窗口布局，显示平均余量/已更新数，重置标记“最早”。收起或菜单卸载会丢弃旧响应并停止队列；“查看账户”复用原弹窗。当前实例与文件部署分开记录于 `.codex-plus/release.json`，设计见 `docs/design/account-switch-lifecycle.md`。
 
 - 2026-10-24：修复账户用量频繁网络失败/401。查询复用订阅 API 的显式/环境/系统代理，以及 vault 的实时凭据优先和串行续期；非当前账户最多续期一次，当前官方登录不续期、不改写。网络/408/5xx 最多重试一次、总限时 25 秒。账户 renderer v12 增加逐行刷新、保留标记更新时间的旧结果、限制三个并发和过期响应保护。部署状态以 `.codex-plus/release.json` 为准；当前界面验收需加载新版 launcher。设计见 `docs/design/account-switch-lifecycle.md` 的“UI 与额度”。
 

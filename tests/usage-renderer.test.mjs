@@ -86,7 +86,7 @@ test("opening the account list limits simultaneous quota requests to three", asy
   } finally { dom.window.close(); }
 });
 
-async function setupSummary({ accounts = [account], order = [account.recordId], enabled = true, query = async () => ({ usage: quota(25) }), label = "剩余用量" } = {}) {
+async function setupSummary({ accounts = [account], order = [account.recordId], enabled = true, query = async () => ({ usage: quota(25) }), label = "剩余用量", expanded = false } = {}) {
   const dom = setup(query);
   const calls = [];
   dom.window.codexPlusInvoke = async (path, payload) => {
@@ -95,17 +95,30 @@ async function setupSummary({ accounts = [account], order = [account.recordId], 
     if (path === "/accounts/usage") return query(payload);
     throw new Error(`Unexpected route: ${path}`);
   };
-  dom.window.document.body.innerHTML = `<div role="menu"><button role="menuitem" data-native-usage>${label}</button><button role="menuitem">设置</button><button role="menuitem">退出登录</button></div>`;
+  dom.window.document.body.innerHTML = `<div role="menu"><div data-native-usage-block><button role="menuitem" data-native-usage aria-expanded="${expanded}">${label}</button>${expanded ? '<div data-native-details><div>5 小时 31% 14:24</div><div>1 周 42% 10月30日</div><button>升级至 Pro</button><button>了解更多</button></div>' : ""}</div><button role="menuitem">设置</button><button role="menuitem">退出登录</button></div>`;
   dom.window.__codexPlusAccounts.install(); await flush();
   return { dom, calls };
 }
 
-test("API remaining usage is inserted immediately below native usage once in either locale", async () => {
-  for (const label of ["剩余用量", "Usage limits"]) {
-    const { dom } = await setupSummary({ label });
+test("API usage is a separate inline accordion after the complete native usage block", async () => {
+  for (const label of ["剩余用量", "剩余用量31%", "Usage remaining 31%", "Usage limits"]) {
+    const { dom } = await setupSummary({ label, expanded: true });
     try {
-      const native = dom.window.document.querySelector("[data-native-usage]");
-      assert.equal(native.nextElementSibling.textContent.trim().replace(/›$/, "").trim(), "API 剩余额度");
+      const native = dom.window.document.querySelector("[data-native-usage-block]");
+      const item = native.nextElementSibling.querySelector("[data-codex-plus-usage-item]");
+      assert.equal(item.textContent.trim(), "API 剩余额度");
+      assert.equal(item.getAttribute("aria-expanded"), "false");
+      assert.equal(item.getAttribute("aria-haspopup"), null);
+      const body = dom.window.document.getElementById(item.getAttribute("aria-controls"));
+      assert.equal(body.hidden, true);
+      item.click(); await flush();
+      assert.equal(item.getAttribute("aria-expanded"), "true");
+      assert.equal(body.hidden, false);
+      assert.equal(dom.window.document.querySelector(".cp-account-overlay"), null);
+      assert.equal(native.querySelector("[data-native-usage]").getAttribute("aria-expanded"), "true");
+      assert.match(native.textContent, /升级至 Pro.*了解更多/);
+      item.click();
+      assert.equal(body.hidden, true);
       dom.window.__codexPlusAccounts.install(); await flush();
       assert.equal(dom.window.document.querySelectorAll("[data-codex-plus-usage-item]").length, 1);
     } finally { dom.window.close(); }
@@ -120,16 +133,16 @@ test("the API usage panel aggregates only selected accounts and excludes failed 
   } });
   try {
     dom.window.document.querySelector("[data-codex-plus-usage-item]").click(); await flush();
-    const panel = dom.window.document.querySelector("[data-cp-body]");
-    assert.match(panel.textContent, /平均剩余 60%/);
-    assert.match(panel.textContent, /平均剩余 40%/);
+    const panel = dom.window.document.querySelector("[data-cp-usage-inline]");
+    assert.deepEqual([...panel.querySelectorAll("[data-cp-usage-mean]")].map((node) => node.textContent), ["60%", "40%"]);
     assert.match(panel.textContent, /已更新 2\/3/);
-    assert.match(panel.textContent, /重新登录/);
+    assert.match(panel.textContent, /1 个查询失败/);
     assert.doesNotMatch(panel.textContent, /Not selected/);
     assert.equal(calls.filter((call) => call.path === "/accounts/usage").length, 3);
     assert.equal(panel.querySelector("[data-cp-switch]"), null);
     assert.equal(panel.querySelector("[data-cp-delete]"), null);
-    assert.ok(dom.window.document.querySelector(".cp-usage-dialog"));
+    assert.equal(dom.window.document.querySelector(".cp-usage-dialog"), null);
+    assert.equal(panel.closest('[role="menu"]'), dom.window.document.querySelector('[role="menu"]'));
   } finally { dom.window.close(); }
 });
 
@@ -151,11 +164,54 @@ test("subscription averages keep different plans and durations separate", async 
   } }) });
   try {
     dom.window.document.querySelector("[data-codex-plus-usage-item]").click(); await flush();
-    const groups = [...dom.window.document.querySelectorAll(".cp-usage-group")];
+    const groups = [...dom.window.document.querySelectorAll(".cp-inline-usage-group")];
     assert.equal(groups.length, 2);
-    assert.match(groups[0].textContent, /5 小时额度 · 平均剩余 80%/);
-    assert.match(groups[0].textContent, /1 小时额度 · 平均剩余 40%/);
-    assert.match(groups[1].textContent, /平均剩余 10%/);
+    assert.match(groups[0].textContent, /5 小时80%/);
+    assert.match(groups[0].textContent, /1 小时40%/);
+    assert.match(groups[1].textContent, /10%/);
+  } finally { dom.window.close(); }
+});
+
+test("collapsed or removed menu requests cannot update the next expanded accordion", async () => {
+  let rejectOld, requests = 0;
+  const { dom } = await setupSummary({ query: async () => {
+    if (++requests === 1) return new Promise((_, reject) => { rejectOld = reject; });
+    return { usage: quota(20) };
+  } });
+  try {
+    const item = dom.window.document.querySelector("[data-codex-plus-usage-item]");
+    item.click(); await flush(); item.click(); item.click(); await flush();
+    rejectOld(new Error("obsolete error")); await flush();
+    assert.equal(dom.window.document.querySelector("[data-cp-usage-mean]").textContent, "80%");
+    assert.doesNotMatch(dom.window.document.querySelector("[data-cp-usage-inline]").textContent, /obsolete error/);
+    dom.window.document.querySelector('[role="menu"]').remove(); await flush();
+    assert.equal(dom.window.document.querySelector(".cp-account-overlay"), null);
+  } finally { dom.window.close(); }
+});
+
+test("the inline trigger supports Enter and Space without opening a dialog", async () => {
+  const { dom } = await setupSummary();
+  try {
+    const item = dom.window.document.querySelector("[data-codex-plus-usage-item]");
+    item.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); await flush();
+    assert.equal(item.getAttribute("aria-expanded"), "true");
+    item.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    assert.equal(item.getAttribute("aria-expanded"), "false");
+    assert.equal(dom.window.document.querySelector("[role=dialog]"), null);
+  } finally { dom.window.close(); }
+});
+
+test("removing an expanded menu stops its remaining queued quota requests", async () => {
+  const accounts = Array.from({ length: 5 }, (_, index) => ({ recordId: String(index), plan: "plus" }));
+  const replies = [];
+  const { dom } = await setupSummary({ accounts, order: accounts.map((value) => value.recordId), query: () => new Promise((resolve) => replies.push(resolve)) });
+  try {
+    dom.window.document.querySelector("[data-codex-plus-usage-item]").click(); await flush();
+    assert.equal(replies.length, 3);
+    dom.window.document.querySelector('[role="menu"]').remove();
+    replies.forEach((resolve) => resolve({ usage: quota(20) })); await flush();
+    assert.equal(replies.length, 3);
+    assert.equal(dom.window.document.querySelector(".cp-account-overlay"), null);
   } finally { dom.window.close(); }
 });
 

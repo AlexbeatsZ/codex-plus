@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 13;
+  const VERSION = 14;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -28,6 +28,7 @@
     usage: new Map(),
     summaryEnabled: false,
     summaryMissing: 0,
+    summary: null,
     generation: 0,
     loading: false,
     switching: "",
@@ -54,14 +55,22 @@
     style.id = STYLE_ID;
     style.textContent = `
       .cp-usage-status { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:4px; }
-      .cp-menu-chevron { margin-left:auto; opacity:.6; }
-      .cp-account-overlay[data-usage-summary] { display:block; padding:0; background:transparent; }
-      .cp-account-dialog.cp-usage-dialog { position:absolute; bottom:16px; left:clamp(8px,var(--cp-usage-left,8px),max(8px,calc(100vw - 476px))); width:min(460px,calc(100vw - 16px)); }
-      .cp-usage-dialog .cp-account-body { min-height:120px; }
-      .cp-usage-summary { display:grid; gap:10px; margin-bottom:16px; }
-      .cp-usage-group { display:grid; gap:8px; padding:12px; border:1px solid var(--cp-border); border-radius:9px; }
-      .cp-usage-group-heading { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; font-size:12px; }
-      .cp-usage-summary-status { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; color:var(--cp-muted); font-size:12px; }
+      .cp-menu-chevron { margin-left:auto; display:flex; opacity:.6; }
+      .cp-inline-usage { color:inherit; font:inherit; }
+      .cp-inline-usage [aria-expanded="true"] .cp-menu-chevron { transform:rotate(90deg); }
+      .cp-inline-usage-body[hidden] { display:none!important; }
+      .cp-inline-usage-body { padding:4px var(--padding-row-x,8px) 6px calc(var(--padding-row-x,8px) + 20px); color:inherit; font-size:12px; }
+      .cp-inline-usage-group + .cp-inline-usage-group { margin-top:8px; }
+      .cp-inline-usage-plan { margin-bottom:3px; opacity:.65; }
+      .cp-inline-usage-window { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:baseline; gap:12px; padding:3px 0; }
+      .cp-inline-usage-window > :first-child { font-weight:500; }
+      .cp-inline-usage-values { display:flex; align-items:baseline; justify-content:flex-end; gap:6px; font-variant-numeric:tabular-nums; opacity:.7; }
+      .cp-inline-usage-reset { opacity:.8; }
+      .cp-inline-usage-status { margin-top:4px; opacity:.65; overflow-wrap:anywhere; }
+      .cp-inline-usage-actions { display:flex; gap:12px; margin-top:6px; }
+      .cp-inline-usage-actions button { border:0; border-radius:4px; padding:2px 0; background:transparent; color:inherit; font:inherit; opacity:.7; cursor:pointer; }
+      .cp-inline-usage-actions button:hover:not(:disabled) { opacity:1; }
+      .cp-inline-usage-actions button:disabled { opacity:.4; cursor:default; }
       .codex-plus-account-menu-item .cp-menu-row { display:flex!important; width:100%!important; min-width:0; flex-direction:row!important; align-items:center!important; justify-content:flex-start!important; gap:8px!important; white-space:nowrap!important; }
       .codex-plus-account-menu-item .cp-menu-row svg { flex:0 0 auto; width:16px; height:16px; opacity:.72; }
       .codex-plus-account-menu-item .cp-menu-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -172,35 +181,83 @@
     return logout ? { parent, logout } : null;
   }
 
-  function createMenuItem(settingsItem, usageSummary = false) {
-    const label = usageSummary ? "API 剩余额度" : "切换账户";
+  function createMenuItem(settingsItem) {
     const item = settingsItem.cloneNode(false);
     item.removeAttribute("id");
     item.removeAttribute("aria-haspopup");
     item.removeAttribute("aria-expanded");
     item.removeAttribute("data-state");
-    item.setAttribute(usageSummary ? USAGE_ITEM_ATTR : ITEM_ATTR, "true");
-    item.setAttribute("aria-label", label);
-    if (usageSummary) item.setAttribute("aria-haspopup", "dialog");
+    item.setAttribute(ITEM_ATTR, "true");
+    item.setAttribute("aria-label", "切换账户");
     item.setAttribute("role", "menuitem");
-    item.tabIndex = usageSummary ? 0 : -1;
+    item.tabIndex = -1;
     item.classList.add("codex-plus-account-menu-item");
-    const icon = usageSummary ? settingsItem.querySelector("svg")?.outerHTML || svgIcon() : svgIcon();
-    item.innerHTML = `<div class="cp-menu-row">${icon}<div class="cp-menu-label">${label}</div>${usageSummary ? '<span class="cp-menu-chevron" aria-hidden="true">›</span>' : ""}</div>`;
+    item.innerHTML = `<div class="cp-menu-row">${svgIcon()}<div class="cp-menu-label">切换账户</div></div>`;
     item.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
-      openModal(item, { usageSummary });
+      openModal(item);
     }, true);
-    if (usageSummary) item.addEventListener("keydown", (event) => {
+    return item;
+  }
+
+  function createUsageSection(nativeHeader) {
+    const section = document.createElement("div");
+    section.className = "cp-inline-usage";
+    section.setAttribute("data-codex-plus-usage-section", "true");
+    const item = nativeHeader.cloneNode(false);
+    // Only inherit the native row's appearance, not its collapsible identity.
+    for (const attribute of Array.from(item.attributes)) if (attribute.name !== "class") item.removeAttribute(attribute.name);
+    item.classList.add("codex-plus-account-menu-item");
+    item.setAttribute(USAGE_ITEM_ATTR, "true");
+    item.setAttribute("role", "menuitem");
+    item.setAttribute("aria-label", "API 剩余额度");
+    item.setAttribute("aria-expanded", "false");
+    item.tabIndex = 0;
+    const body = document.createElement("div");
+    body.id = `cp-inline-usage-${Math.random().toString(36).slice(2)}`;
+    body.className = "cp-inline-usage-body";
+    body.setAttribute("data-cp-usage-inline", "true");
+    body.setAttribute("role", "group");
+    body.setAttribute("aria-label", "订阅 API 额度汇总");
+    body.hidden = true;
+    item.setAttribute("aria-controls", body.id);
+    const icon = nativeHeader.querySelector("svg")?.outerHTML || svgIcon();
+    item.innerHTML = `<div class="cp-menu-row">${icon}<div class="cp-menu-label">API 剩余额度</div><span class="cp-menu-chevron" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></span></div>`;
+    item.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (state.summary?.item === item) { closeUsageSummary(); return; }
+      closeUsageSummary();
+      closeModal();
+      state.summary = { item, body };
+      state.view = "usage";
+      state.message = "";
+      state.messageType = "";
+      item.setAttribute("aria-expanded", "true");
+      body.hidden = false;
+      void loadAccounts();
+    }, true);
+    item.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         event.stopPropagation();
         item.click();
       }
     });
-    return item;
+    body.addEventListener("click", (event) => event.stopPropagation());
+    section.append(item, body);
+    return section;
+  }
+
+  function closeUsageSummary() {
+    if (!state.summary) return;
+    state.generation += 1;
+    state.summary.item.setAttribute("aria-expanded", "false");
+    state.summary.body.hidden = true;
+    state.summary = null;
+    state.view = "accounts";
   }
 
   function createSignedOutButton(template) {
@@ -234,15 +291,18 @@
   }
 
   function scanMenus() {
+    if (state.summary && !state.summary.body.isConnected) closeUsageSummary();
     const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
     for (const settingsItem of items.filter(isSettings)) {
       const context = profileMenuContext(settingsItem);
       if (!context) continue;
       const { parent, logout } = context;
       if (!parent.querySelector(`:scope > [${ITEM_ATTR}]`)) parent.insertBefore(createMenuItem(settingsItem), logout);
-      const nativeUsage = Array.from(parent.children).find((node) => /^(剩余用量|用量限制|Usage limits|Remaining usage|Usage)$/i.test(normalizedText(node)));
-      if (nativeUsage && !parent.querySelector(`:scope > [${USAGE_ITEM_ATTR}]`)) {
-        parent.insertBefore(createMenuItem(nativeUsage, true), nativeUsage.nextSibling);
+      const nativeHeader = Array.from(parent.querySelectorAll('[role="menuitem"],button')).find((node) => !node.hasAttribute(USAGE_ITEM_ATTR) && /^(剩余用量|用量限制|Usage remaining|Usage limits|Remaining usage|Usage)(?:\s*[\d.,]+\s*%)?$/i.test(normalizedText(node)));
+      if (nativeHeader && !parent.querySelector('[data-codex-plus-usage-section]')) {
+        let nativeBlock = nativeHeader;
+        while (nativeBlock.parentElement !== parent) nativeBlock = nativeBlock.parentElement;
+        parent.insertBefore(createUsageSection(nativeHeader), nativeBlock.nextSibling);
       }
     }
   }
@@ -370,9 +430,9 @@
   }
 
   function renderUsageSummary() {
-    const body = state.modal?.querySelector("[data-cp-body]");
-    if (!body) return;
-    if (state.loading) { body.innerHTML = '<div class="cp-account-empty">正在读取订阅账户…</div>'; return; }
+    const body = state.summary?.body;
+    if (!body?.isConnected) return;
+    if (state.loading) { body.innerHTML = '<div class="cp-inline-usage-status">正在读取订阅账户…</div>'; return; }
     const entries = state.accounts.map((account) => ({ account, entry: state.usage.get(account.recordId) }));
     const updated = entries.filter(({ entry }) => entry?.status === "ok").length;
     const failed = entries.filter(({ entry }) => entry?.status === "error").length;
@@ -380,32 +440,36 @@
     const groups = new Map();
     for (const { account, entry } of entries) {
       const plan = entry?.usage?.plan_type || account.plan || "套餐未知";
-      if (!groups.has(plan)) groups.set(plan, { total: 0, updated: 0, windows: new Map() });
+      if (!groups.has(plan)) groups.set(plan, { windows: new Map() });
       const group = groups.get(plan);
-      group.total += 1;
       if (entry?.status !== "ok") continue;
-      group.updated += 1;
       usageWindows(entry.usage).forEach((windowValue, index) => {
         const remaining = remainingPercent(windowValue);
         if (remaining == null) return;
         const seconds = Number(windowValue.limit_window_seconds ?? windowValue.limitWindowSeconds) || 0;
         const key = `${index}:${seconds}`;
-        if (!group.windows.has(key)) group.windows.set(key, { index, seconds, values: [] });
+        if (!group.windows.has(key)) group.windows.set(key, { index, seconds, values: [], resets: [] });
         group.windows.get(key).values.push(remaining);
+        const reset = Number(windowValue.reset_at ?? windowValue.resetAt);
+        if (Number.isFinite(reset) && reset * 1000 > Date.now()) group.windows.get(key).resets.push(reset);
       });
     }
     const summaries = Array.from(groups, ([plan, group]) => {
-      const windows = Array.from(group.windows.values(), ({ index, seconds, values }) => {
+      const windows = Array.from(group.windows.values(), ({ index, seconds, values, resets }) => {
         const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-        const label = seconds === 604800 ? "周额度" : seconds > 0 && seconds % 3600 === 0 ? `${seconds / 3600} 小时额度` : index ? "长期窗口" : "短期窗口";
-        return `<div class="cp-usage-window"><span>${escapeHtml(label)} · 平均剩余 ${mean.toFixed(0)}%</span><span class="cp-usage-track"><span class="cp-usage-fill" style="width:${mean}%"></span></span><span class="cp-usage-reset">${values.length} 个账户</span></div>`;
+        const label = seconds === 604800 ? "1 周" : seconds > 0 && seconds % 3600 === 0 ? `${seconds / 3600} 小时` : index ? "长期窗口" : "短期窗口";
+        const reset = resets.length ? new Date(Math.min(...resets) * 1000) : null;
+        const resetText = reset ? (reset.toDateString() === new Date().toDateString() ? reset.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : `${reset.getMonth() + 1}月${reset.getDate()}日`) : "";
+        const detail = `${values.length} 个账户的平均剩余${reset ? `；最早有账户重置于 ${reset.toLocaleString()}` : ""}`;
+        return `<div class="cp-inline-usage-window" title="${escapeHtml(detail)}"><span>${escapeHtml(label)}</span><span class="cp-inline-usage-values"><span data-cp-usage-mean>${mean.toFixed(0)}%</span>${resetText ? `<span class="cp-inline-usage-reset">最早 ${escapeHtml(resetText)}</span>` : ""}</span></div>`;
       }).join("");
-      return `<div class="cp-usage-group"><div class="cp-usage-group-heading"><strong>${escapeHtml(plan)}</strong><span>已更新 ${group.updated}/${group.total}</span></div>${windows || '<span class="cp-usage-loading">额度尚未知</span>'}</div>`;
+      const planName = plan.slice(0, 1).toUpperCase() + plan.slice(1);
+      return `<div class="cp-inline-usage-group">${groups.size > 1 ? `<div class="cp-inline-usage-plan">${escapeHtml(planName)}</div>` : ""}${windows || '<div class="cp-inline-usage-status">额度尚未知</div>'}</div>`;
     }).join("");
-    const status = `${state.summaryEnabled ? "已参与订阅 API" : "订阅 API 已停用"} · 已更新 ${updated}/${entries.length} 个账户${failed ? ` · ${failed} 个查询失败` : ""}`;
-    body.innerHTML = `${messageMarkup()}<div class="cp-usage-summary-status"><span>${status}</span><button type="button" class="cp-account-button" data-cp-usage-refresh ${pending ? "disabled" : ""}>${pending ? "刷新中…" : "刷新全部"}</button></div>${state.summaryMissing ? `<div class="cp-usage-loading">${state.summaryMissing} 个参与账户已删除，请在 API 接入中移出。</div>` : ""}${entries.length ? `<div class="cp-usage-summary">${summaries}</div><div class="cp-usage-loading">同套餐、同窗口分别取平均；查询失败不计作 0%，也不计入平均值。</div><div class="cp-account-list" style="margin-top:12px">${state.accounts.map((account) => accountMarkup(account, true)).join("")}</div>` : '<div class="cp-account-empty">尚未选择参与账户，请在“API 接入 → ChatGPT 订阅 API”中选择。</div>'}`;
+    const status = `${pending ? "刷新中 · " : ""}平均余量 · 已更新 ${updated}/${entries.length}${failed ? ` · ${failed} 个查询失败` : ""}`;
+    body.innerHTML = `${state.message ? `<div class="cp-inline-usage-status" role="status">${escapeHtml(state.message)}</div>` : ""}${state.summaryEnabled ? "" : '<div class="cp-inline-usage-status">订阅 API 已停用</div>'}${entries.length ? summaries : '<div class="cp-inline-usage-status">尚未选择参与账户，请在 API 接入中选择。</div>'}${state.summaryMissing ? `<div class="cp-inline-usage-status">${state.summaryMissing} 个参与账户已删除，请在 API 接入中移出。</div>` : ""}<div class="cp-inline-usage-status" title="同套餐、同窗口取平均；失败、未知和旧缓存不计入本轮平均值。">${status}</div><div class="cp-inline-usage-actions"><button type="button" data-cp-usage-refresh ${pending ? "disabled" : ""}>刷新</button><button type="button" data-cp-usage-accounts>查看账户</button></div>`;
     body.querySelector("[data-cp-usage-refresh]")?.addEventListener("click", () => void loadAccounts());
-    body.querySelectorAll("[data-cp-usage-retry]").forEach((button) => button.addEventListener("click", () => void loadUsage(button.dataset.cpUsageRetry)));
+    body.querySelector("[data-cp-usage-accounts]")?.addEventListener("click", () => openModal(state.summary?.item));
   }
 
   function renderAccounts() {
@@ -435,7 +499,7 @@
     body.querySelector("[data-cp-web-login]")?.addEventListener("click", () => void startWebLogin());
   }
 
-  function accountMarkup(account, usageOnly = false) {
+  function accountMarkup(account) {
     const id = String(account?.recordId || "");
     const active = account?.active === true;
     const displayName = account?.name || account?.email || "ChatGPT 账户";
@@ -447,7 +511,7 @@
         <div class="cp-account-meta">${secondary ? `<span>${escapeHtml(secondary)}</span>` : ""}${account?.plan ? `<span>${escapeHtml(account.plan)}</span>` : ""}</div>
         <div class="cp-account-usage">${usageMarkup(usageState, id)}</div>
       </div>
-      ${usageOnly === true ? "" : `<div class="cp-account-row-actions"><button type="button" class="cp-account-button" data-primary="${!active}" data-cp-switch="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""}>${state.switching === id ? "切换中…" : active ? "当前账户" : "切换"}</button><button type="button" class="cp-account-button" data-danger="true" data-cp-delete="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""} title="${active ? "请先切换到其他账户再删除" : "删除已保存账户"}">${state.deleting === id ? "删除中…" : "删除"}</button></div>`}
+      <div class="cp-account-row-actions"><button type="button" class="cp-account-button" data-primary="${!active}" data-cp-switch="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""}>${state.switching === id ? "切换中…" : active ? "当前账户" : "切换"}</button><button type="button" class="cp-account-button" data-danger="true" data-cp-delete="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""} title="${active ? "请先切换到其他账户再删除" : "删除已保存账户"}">${state.deleting === id ? "删除中…" : "删除"}</button></div>
     </div>`;
   }
 
@@ -471,6 +535,10 @@
     }).join("") + status;
   }
 
+  function viewIsCurrent(generation) {
+    return generation === state.generation && (state.view !== "usage" || state.summary?.body.isConnected);
+  }
+
   async function loadAccounts() {
     const generation = ++state.generation;
     state.loading = true;
@@ -478,7 +546,7 @@
     renderBody();
     try {
       const result = await invoke(state.view === "usage" ? "/api-providers/subscription/get" : "/accounts/list", {});
-      if (generation !== state.generation) return;
+      if (!viewIsCurrent(generation)) return;
       state.accounts = Array.isArray(result?.accounts) ? result.accounts : [];
       if (state.view === "usage") {
         state.summaryEnabled = result?.config?.enabled === true;
@@ -494,18 +562,18 @@
         if (id) state.usage.set(id, { ...state.usage.get(id), status: "loading" });
       }
     } catch (error) {
-      if (generation !== state.generation) return;
+      if (!viewIsCurrent(generation)) return;
       setMessage(error?.message || String(error), "error");
     } finally {
-      if (generation === state.generation) {
+      if (viewIsCurrent(generation)) {
         state.loading = false;
         renderBody();
       }
     }
-    if (generation !== state.generation) return;
+    if (!viewIsCurrent(generation)) return;
     const queue = state.accounts.map((account) => String(account?.recordId || "")).filter(Boolean);
     async function worker() {
-      while (queue.length && generation === state.generation) await loadUsage(queue.shift(), generation);
+      while (queue.length && viewIsCurrent(generation)) await loadUsage(queue.shift(), generation);
     }
     const workers = Math.min(3, queue.length);
     for (let index = 0; index < workers; index += 1) void worker();
@@ -516,7 +584,7 @@
     const request = {};
     state.usage.set(recordId, { ...previous, status: "loading", request });
     if (state.view === "accounts" || state.view === "usage") renderBody();
-    const current = () => generation === state.generation && state.usage.get(recordId)?.request === request;
+    const current = () => viewIsCurrent(generation) && state.usage.get(recordId)?.request === request;
     try {
       const result = await invoke("/accounts/usage", { recordId });
       if (!current()) return;
@@ -657,11 +725,12 @@
   }
 
   function openModal(opener = null, options = {}) {
+    closeUsageSummary();
     closeModal();
     installStyle();
     state.opener = opener instanceof HTMLElement ? opener : document.activeElement;
     state.signedOut = options?.signedOut === true;
-    state.view = options?.usageSummary ? "usage" : "accounts";
+    state.view = "accounts";
     state.accounts = [];
     state.loading = false;
     state.switching = "";
@@ -673,12 +742,8 @@
     const overlay = document.createElement("div");
     overlay.id = ROOT_ID;
     overlay.className = "cp-account-overlay";
-    if (state.view === "usage") {
-      overlay.setAttribute("data-usage-summary", "true");
-      overlay.style.setProperty("--cp-usage-left", `${(state.opener?.getBoundingClientRect().right || 0) + 8}px`);
-    }
-    overlay.innerHTML = `<section class="cp-account-dialog${state.view === "usage" ? " cp-usage-dialog" : ""}" role="dialog" aria-modal="true" aria-labelledby="cp-account-title">
-      <header class="cp-account-header"><div><h2 class="cp-account-title" id="cp-account-title">${state.view === "usage" ? "API 剩余额度" : "账户管理"}</h2><p class="cp-account-subtitle">${state.view === "usage" ? "ChatGPT 订阅 API · 参与账户汇总" : state.signedOut ? "当前未登录：选择已保存账户，或导入 auth.json 后切换" : "切换 ChatGPT 账户并查看额度状态"}</p></div><button type="button" class="cp-account-close" aria-label="关闭">${closeIcon()}</button></header>
+    overlay.innerHTML = `<section class="cp-account-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-account-title">
+      <header class="cp-account-header"><div><h2 class="cp-account-title" id="cp-account-title">账户管理</h2><p class="cp-account-subtitle">${state.signedOut ? "当前未登录：选择已保存账户，或导入 auth.json 后切换" : "切换 ChatGPT 账户并查看额度状态"}</p></div><button type="button" class="cp-account-close" aria-label="关闭">${closeIcon()}</button></header>
       <div class="cp-account-body" data-cp-body aria-live="polite"></div>
     </section>`;
     overlay.addEventListener("click", (event) => {
@@ -703,15 +768,15 @@
     document.body.appendChild(overlay);
     state.modal = overlay;
     renderBody();
-    if (state.view === "usage") overlay.querySelector(".cp-account-close")?.focus();
     void loadAccounts();
   }
 
   function destroy() {
+    closeUsageSummary();
     state.generation += 1;
     state.observer?.disconnect?.();
     state.observer = null;
-    document.querySelectorAll(`[${ITEM_ATTR}],[${USAGE_ITEM_ATTR}],[${SIGNED_OUT_ATTR}]`).forEach((node) => node.remove());
+    document.querySelectorAll(`[${ITEM_ATTR}],[data-codex-plus-usage-section],[${SIGNED_OUT_ATTR}]`).forEach((node) => node.remove());
     document.getElementById(ROOT_ID)?.remove();
     document.getElementById(STYLE_ID)?.remove();
   }
