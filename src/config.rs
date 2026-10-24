@@ -38,7 +38,7 @@ pub fn reconcile_codex_config(paths: &AccountPaths, port: u16) -> anyhow::Result
     providers[BROKER_PROVIDER_ID] = Item::Table(managed);
     let mut pool = Table::new();
     pool["name"] = value("codex-plus ChatGPT account pool");
-    pool["base_url"] = value(format!("http://127.0.0.1:{port}/v1"));
+    pool["base_url"] = value(format!("http://127.0.0.1:{port}/subscription/v1"));
     pool["wire_api"] = value("responses");
     pool["experimental_bearer_token"] = value(BROKER_TOKEN);
     pool["requires_openai_auth"] = value(false);
@@ -84,6 +84,14 @@ mod tests {
         assert!(output.contains("[model_providers.other]"));
         assert!(output.contains("[model_providers.codex-plus-api]"));
         let config: DocumentMut = output.parse().unwrap();
+        assert_eq!(
+            config["model_providers"][POOL_PROVIDER_ID]["base_url"].as_str(),
+            Some("http://127.0.0.1:57321/subscription/v1")
+        );
+        assert_eq!(
+            config["model_providers"][BROKER_PROVIDER_ID]["base_url"].as_str(),
+            Some("http://127.0.0.1:57321/v1")
+        );
         assert_eq!(
             config["model_providers"][POOL_PROVIDER_ID]["capabilities"]["remote_compaction"]
                 .as_str(),

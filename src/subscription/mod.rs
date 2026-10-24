@@ -296,7 +296,7 @@ impl SubscriptionApi {
         let Some(model) = config
             .models
             .iter()
-            .find(|m| m.visible && route_id(&m.model_id) == route)
+            .find(|m| m.visible && (route_id(&m.model_id) == route || m.model_id == route))
             .map(|m| m.model_id.clone())
             .filter(|_| config.enabled)
         else {
