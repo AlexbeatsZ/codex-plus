@@ -2,10 +2,11 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 12;
+  const VERSION = 13;
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
+  const USAGE_ITEM_ATTR = "data-codex-plus-usage-item";
   const SIGNED_OUT_ATTR = "data-codex-plus-signed-out-account";
 
   if (window.__codexPlusAccounts?.version === VERSION) {
@@ -25,6 +26,8 @@
     view: "accounts",
     accounts: [],
     usage: new Map(),
+    summaryEnabled: false,
+    summaryMissing: 0,
     generation: 0,
     loading: false,
     switching: "",
@@ -51,6 +54,14 @@
     style.id = STYLE_ID;
     style.textContent = `
       .cp-usage-status { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:4px; }
+      .cp-menu-chevron { margin-left:auto; opacity:.6; }
+      .cp-account-overlay[data-usage-summary] { display:block; padding:0; background:transparent; }
+      .cp-account-dialog.cp-usage-dialog { position:absolute; bottom:16px; left:clamp(8px,var(--cp-usage-left,8px),max(8px,calc(100vw - 476px))); width:min(460px,calc(100vw - 16px)); }
+      .cp-usage-dialog .cp-account-body { min-height:120px; }
+      .cp-usage-summary { display:grid; gap:10px; margin-bottom:16px; }
+      .cp-usage-group { display:grid; gap:8px; padding:12px; border:1px solid var(--cp-border); border-radius:9px; }
+      .cp-usage-group-heading { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; font-size:12px; }
+      .cp-usage-summary-status { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; color:var(--cp-muted); font-size:12px; }
       .codex-plus-account-menu-item .cp-menu-row { display:flex!important; width:100%!important; min-width:0; flex-direction:row!important; align-items:center!important; justify-content:flex-start!important; gap:8px!important; white-space:nowrap!important; }
       .codex-plus-account-menu-item .cp-menu-row svg { flex:0 0 auto; width:16px; height:16px; opacity:.72; }
       .codex-plus-account-menu-item .cp-menu-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -83,7 +94,7 @@
       .cp-account-usage { display:grid; gap:6px; margin-top:8px; }
       .cp-usage-window { display:grid; grid-template-columns:auto minmax(90px,1fr) auto; align-items:center; gap:8px; color:var(--cp-text); font-size:11px; }
       .cp-usage-track { height:4px; overflow:hidden; border-radius:999px; background:var(--cp-divider); }
-      .cp-usage-fill { height:100%; border-radius:inherit; background:var(--cp-accent); }
+      .cp-usage-fill { display:block; height:100%; border-radius:inherit; background:var(--cp-accent); }
       .cp-usage-reset { color:var(--cp-muted); white-space:nowrap; }
       .cp-usage-loading { color:var(--cp-muted); font-size:12px; }
       .cp-account-button { min-width:64px; height:30px; border:1px solid var(--cp-border); border-radius:8px; padding:0 12px; color:var(--cp-text); background:var(--cp-button); cursor:pointer; font-size:12px; font-weight:500; }
@@ -161,24 +172,34 @@
     return logout ? { parent, logout } : null;
   }
 
-  function createMenuItem(settingsItem) {
+  function createMenuItem(settingsItem, usageSummary = false) {
+    const label = usageSummary ? "API 剩余额度" : "切换账户";
     const item = settingsItem.cloneNode(false);
     item.removeAttribute("id");
     item.removeAttribute("aria-haspopup");
     item.removeAttribute("aria-expanded");
     item.removeAttribute("data-state");
-    item.setAttribute(ITEM_ATTR, "true");
-    item.setAttribute("aria-label", "切换账户");
+    item.setAttribute(usageSummary ? USAGE_ITEM_ATTR : ITEM_ATTR, "true");
+    item.setAttribute("aria-label", label);
+    if (usageSummary) item.setAttribute("aria-haspopup", "dialog");
     item.setAttribute("role", "menuitem");
-    item.tabIndex = -1;
+    item.tabIndex = usageSummary ? 0 : -1;
     item.classList.add("codex-plus-account-menu-item");
-    item.innerHTML = `<div class="cp-menu-row">${svgIcon()}<div class="cp-menu-label">切换账户</div></div>`;
+    const icon = usageSummary ? settingsItem.querySelector("svg")?.outerHTML || svgIcon() : svgIcon();
+    item.innerHTML = `<div class="cp-menu-row">${icon}<div class="cp-menu-label">${label}</div>${usageSummary ? '<span class="cp-menu-chevron" aria-hidden="true">›</span>' : ""}</div>`;
     item.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
-      openModal(item);
+      openModal(item, { usageSummary });
     }, true);
+    if (usageSummary) item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        item.click();
+      }
+    });
     return item;
   }
 
@@ -218,9 +239,11 @@
       const context = profileMenuContext(settingsItem);
       if (!context) continue;
       const { parent, logout } = context;
-      if (!parent || parent.querySelector(`:scope > [${ITEM_ATTR}]`)) continue;
-      const item = createMenuItem(settingsItem);
-      parent.insertBefore(item, logout);
+      if (!parent.querySelector(`:scope > [${ITEM_ATTR}]`)) parent.insertBefore(createMenuItem(settingsItem), logout);
+      const nativeUsage = Array.from(parent.children).find((node) => /^(剩余用量|用量限制|Usage limits|Remaining usage|Usage)$/i.test(normalizedText(node)));
+      if (nativeUsage && !parent.querySelector(`:scope > [${USAGE_ITEM_ATTR}]`)) {
+        parent.insertBefore(createMenuItem(nativeUsage, true), nativeUsage.nextSibling);
+      }
     }
   }
 
@@ -331,7 +354,58 @@
 
   function renderBody() {
     if (state.view === "import") renderImport();
+    else if (state.view === "usage") renderUsageSummary();
     else renderAccounts();
+  }
+
+  function remainingPercent(windowValue) {
+    const value = windowValue?.used_percent ?? windowValue?.usedPercent;
+    if (value == null || value === "" || !Number.isFinite(Number(value))) return null;
+    return 100 - Math.max(0, Math.min(100, Number(value)));
+  }
+
+  function usageWindows(usage) {
+    const limits = usage?.rate_limit || usage?.rateLimit || {};
+    return [limits.primary_window || limits.primaryWindow, limits.secondary_window || limits.secondaryWindow];
+  }
+
+  function renderUsageSummary() {
+    const body = state.modal?.querySelector("[data-cp-body]");
+    if (!body) return;
+    if (state.loading) { body.innerHTML = '<div class="cp-account-empty">正在读取订阅账户…</div>'; return; }
+    const entries = state.accounts.map((account) => ({ account, entry: state.usage.get(account.recordId) }));
+    const updated = entries.filter(({ entry }) => entry?.status === "ok").length;
+    const failed = entries.filter(({ entry }) => entry?.status === "error").length;
+    const pending = entries.some(({ entry }) => entry?.status === "loading");
+    const groups = new Map();
+    for (const { account, entry } of entries) {
+      const plan = entry?.usage?.plan_type || account.plan || "套餐未知";
+      if (!groups.has(plan)) groups.set(plan, { total: 0, updated: 0, windows: new Map() });
+      const group = groups.get(plan);
+      group.total += 1;
+      if (entry?.status !== "ok") continue;
+      group.updated += 1;
+      usageWindows(entry.usage).forEach((windowValue, index) => {
+        const remaining = remainingPercent(windowValue);
+        if (remaining == null) return;
+        const seconds = Number(windowValue.limit_window_seconds ?? windowValue.limitWindowSeconds) || 0;
+        const key = `${index}:${seconds}`;
+        if (!group.windows.has(key)) group.windows.set(key, { index, seconds, values: [] });
+        group.windows.get(key).values.push(remaining);
+      });
+    }
+    const summaries = Array.from(groups, ([plan, group]) => {
+      const windows = Array.from(group.windows.values(), ({ index, seconds, values }) => {
+        const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+        const label = seconds === 604800 ? "周额度" : seconds > 0 && seconds % 3600 === 0 ? `${seconds / 3600} 小时额度` : index ? "长期窗口" : "短期窗口";
+        return `<div class="cp-usage-window"><span>${escapeHtml(label)} · 平均剩余 ${mean.toFixed(0)}%</span><span class="cp-usage-track"><span class="cp-usage-fill" style="width:${mean}%"></span></span><span class="cp-usage-reset">${values.length} 个账户</span></div>`;
+      }).join("");
+      return `<div class="cp-usage-group"><div class="cp-usage-group-heading"><strong>${escapeHtml(plan)}</strong><span>已更新 ${group.updated}/${group.total}</span></div>${windows || '<span class="cp-usage-loading">额度尚未知</span>'}</div>`;
+    }).join("");
+    const status = `${state.summaryEnabled ? "已参与订阅 API" : "订阅 API 已停用"} · 已更新 ${updated}/${entries.length} 个账户${failed ? ` · ${failed} 个查询失败` : ""}`;
+    body.innerHTML = `${messageMarkup()}<div class="cp-usage-summary-status"><span>${status}</span><button type="button" class="cp-account-button" data-cp-usage-refresh ${pending ? "disabled" : ""}>${pending ? "刷新中…" : "刷新全部"}</button></div>${state.summaryMissing ? `<div class="cp-usage-loading">${state.summaryMissing} 个参与账户已删除，请在 API 接入中移出。</div>` : ""}${entries.length ? `<div class="cp-usage-summary">${summaries}</div><div class="cp-usage-loading">同套餐、同窗口分别取平均；查询失败不计作 0%，也不计入平均值。</div><div class="cp-account-list" style="margin-top:12px">${state.accounts.map((account) => accountMarkup(account, true)).join("")}</div>` : '<div class="cp-account-empty">尚未选择参与账户，请在“API 接入 → ChatGPT 订阅 API”中选择。</div>'}`;
+    body.querySelector("[data-cp-usage-refresh]")?.addEventListener("click", () => void loadAccounts());
+    body.querySelectorAll("[data-cp-usage-retry]").forEach((button) => button.addEventListener("click", () => void loadUsage(button.dataset.cpUsageRetry)));
   }
 
   function renderAccounts() {
@@ -361,7 +435,7 @@
     body.querySelector("[data-cp-web-login]")?.addEventListener("click", () => void startWebLogin());
   }
 
-  function accountMarkup(account) {
+  function accountMarkup(account, usageOnly = false) {
     const id = String(account?.recordId || "");
     const active = account?.active === true;
     const displayName = account?.name || account?.email || "ChatGPT 账户";
@@ -373,7 +447,7 @@
         <div class="cp-account-meta">${secondary ? `<span>${escapeHtml(secondary)}</span>` : ""}${account?.plan ? `<span>${escapeHtml(account.plan)}</span>` : ""}</div>
         <div class="cp-account-usage">${usageMarkup(usageState, id)}</div>
       </div>
-      <div class="cp-account-row-actions"><button type="button" class="cp-account-button" data-primary="${!active}" data-cp-switch="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""}>${state.switching === id ? "切换中…" : active ? "当前账户" : "切换"}</button><button type="button" class="cp-account-button" data-danger="true" data-cp-delete="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""} title="${active ? "请先切换到其他账户再删除" : "删除已保存账户"}">${state.deleting === id ? "删除中…" : "删除"}</button></div>
+      ${usageOnly === true ? "" : `<div class="cp-account-row-actions"><button type="button" class="cp-account-button" data-primary="${!active}" data-cp-switch="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""}>${state.switching === id ? "切换中…" : active ? "当前账户" : "切换"}</button><button type="button" class="cp-account-button" data-danger="true" data-cp-delete="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""} title="${active ? "请先切换到其他账户再删除" : "删除已保存账户"}">${state.deleting === id ? "删除中…" : "删除"}</button></div>`}
     </div>`;
   }
 
@@ -384,15 +458,11 @@
     const status = `<div class="cp-usage-status"><span class="cp-usage-loading">${escapeHtml([message, updated].filter(Boolean).join(" · "))}</span><button type="button" class="cp-account-button" data-cp-usage-retry="${escapeHtml(recordId)}" ${loading ? "disabled" : ""}>${loading ? "刷新中…" : entry.status === "error" ? "重试" : "刷新额度"}</button></div>`;
     if (!entry?.usage) return status;
     const usage = entry.usage || {};
-    const rateLimit = usage.rate_limit || usage.rateLimit || {};
-    const windows = [rateLimit.primary_window || rateLimit.primaryWindow, rateLimit.secondary_window || rateLimit.secondaryWindow].filter(Boolean);
+    const windows = usageWindows(usage).filter(Boolean);
     if (!windows.length) return `<div class="cp-usage-loading">额度信息暂不可用</div>${status}`;
     return windows.map((windowValue) => {
-      const percent = windowValue.used_percent ?? windowValue.usedPercent;
-      const rawPercent = percent == null || percent === "" ? NaN : Number(percent);
-      if (!Number.isFinite(rawPercent)) return '<div class="cp-usage-loading">额度剩余未知</div>';
-      const used = Math.max(0, Math.min(100, rawPercent));
-      const remaining = Math.max(0, 100 - used);
+      const remaining = remainingPercent(windowValue);
+      if (remaining == null) return '<div class="cp-usage-loading">额度剩余未知</div>';
       const seconds = Number(windowValue.limit_window_seconds ?? windowValue.limitWindowSeconds);
       const label = seconds && seconds <= 6 * 3600 ? "5 小时额度" : seconds && seconds >= 6 * 24 * 3600 ? "周额度" : "额度窗口";
       const resetAt = Number(windowValue.reset_at ?? windowValue.resetAt);
@@ -405,11 +475,18 @@
     const generation = ++state.generation;
     state.loading = true;
     state.accounts = [];
-    renderAccounts();
+    renderBody();
     try {
-      const result = await invoke("/accounts/list", {});
+      const result = await invoke(state.view === "usage" ? "/api-providers/subscription/get" : "/accounts/list", {});
       if (generation !== state.generation) return;
       state.accounts = Array.isArray(result?.accounts) ? result.accounts : [];
+      if (state.view === "usage") {
+        state.summaryEnabled = result?.config?.enabled === true;
+        const order = [...new Set(result?.config?.accountOrder || [])];
+        const accounts = new Map(state.accounts.map((account) => [account.recordId, account]));
+        state.summaryMissing = order.filter((id) => !accounts.has(id)).length;
+        state.accounts = order.map((id) => accounts.get(id)).filter(Boolean);
+      }
       const ids = new Set(state.accounts.map((account) => String(account?.recordId || "")));
       for (const id of state.usage.keys()) if (!ids.has(id)) state.usage.delete(id);
       for (const account of state.accounts) {
@@ -422,7 +499,7 @@
     } finally {
       if (generation === state.generation) {
         state.loading = false;
-        renderAccounts();
+        renderBody();
       }
     }
     if (generation !== state.generation) return;
@@ -438,7 +515,7 @@
     const previous = state.usage.get(recordId);
     const request = {};
     state.usage.set(recordId, { ...previous, status: "loading", request });
-    if (state.view === "accounts") renderAccounts();
+    if (state.view === "accounts" || state.view === "usage") renderBody();
     const current = () => generation === state.generation && state.usage.get(recordId)?.request === request;
     try {
       const result = await invoke("/accounts/usage", { recordId });
@@ -448,7 +525,7 @@
       if (!current()) return;
       state.usage.set(recordId, { ...previous, status: "error", message: error?.message || "额度暂不可用" });
     }
-    if (state.view === "accounts") renderAccounts();
+    if (state.view === "accounts" || state.view === "usage") renderBody();
   }
 
   async function switchAccount(recordId, button) {
@@ -584,7 +661,7 @@
     installStyle();
     state.opener = opener instanceof HTMLElement ? opener : document.activeElement;
     state.signedOut = options?.signedOut === true;
-    state.view = "accounts";
+    state.view = options?.usageSummary ? "usage" : "accounts";
     state.accounts = [];
     state.loading = false;
     state.switching = "";
@@ -596,8 +673,12 @@
     const overlay = document.createElement("div");
     overlay.id = ROOT_ID;
     overlay.className = "cp-account-overlay";
-    overlay.innerHTML = `<section class="cp-account-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-account-title">
-      <header class="cp-account-header"><div><h2 class="cp-account-title" id="cp-account-title">账户管理</h2><p class="cp-account-subtitle">${state.signedOut ? "当前未登录：选择已保存账户，或导入 auth.json 后切换" : "切换 ChatGPT 账户并查看额度状态"}</p></div><button type="button" class="cp-account-close" aria-label="关闭">${closeIcon()}</button></header>
+    if (state.view === "usage") {
+      overlay.setAttribute("data-usage-summary", "true");
+      overlay.style.setProperty("--cp-usage-left", `${(state.opener?.getBoundingClientRect().right || 0) + 8}px`);
+    }
+    overlay.innerHTML = `<section class="cp-account-dialog${state.view === "usage" ? " cp-usage-dialog" : ""}" role="dialog" aria-modal="true" aria-labelledby="cp-account-title">
+      <header class="cp-account-header"><div><h2 class="cp-account-title" id="cp-account-title">${state.view === "usage" ? "API 剩余额度" : "账户管理"}</h2><p class="cp-account-subtitle">${state.view === "usage" ? "ChatGPT 订阅 API · 参与账户汇总" : state.signedOut ? "当前未登录：选择已保存账户，或导入 auth.json 后切换" : "切换 ChatGPT 账户并查看额度状态"}</p></div><button type="button" class="cp-account-close" aria-label="关闭">${closeIcon()}</button></header>
       <div class="cp-account-body" data-cp-body aria-live="polite"></div>
     </section>`;
     overlay.addEventListener("click", (event) => {
@@ -622,6 +703,7 @@
     document.body.appendChild(overlay);
     state.modal = overlay;
     renderBody();
+    if (state.view === "usage") overlay.querySelector(".cp-account-close")?.focus();
     void loadAccounts();
   }
 
@@ -629,7 +711,7 @@
     state.generation += 1;
     state.observer?.disconnect?.();
     state.observer = null;
-    document.querySelectorAll(`[${ITEM_ATTR}],[${SIGNED_OUT_ATTR}]`).forEach((node) => node.remove());
+    document.querySelectorAll(`[${ITEM_ATTR}],[${USAGE_ITEM_ATTR}],[${SIGNED_OUT_ATTR}]`).forEach((node) => node.remove());
     document.getElementById(ROOT_ID)?.remove();
     document.getElementById(STYLE_ID)?.remove();
   }
