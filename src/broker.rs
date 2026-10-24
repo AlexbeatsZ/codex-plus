@@ -1,5 +1,4 @@
 use std::convert::Infallible;
-use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -10,13 +9,14 @@ use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
+#[cfg(any(test, debug_assertions))]
 use crate::accounts::AccountPaths;
 use crate::config::BROKER_TOKEN;
+use crate::integrations::{ApiIntegrations, ModelRoute};
 use crate::protocol_proxy::{
     ChatSseToResponsesConverter, UpstreamWireApi, open_provider_responses_request,
     provider_non_stream_response,
 };
-use crate::providers::ProviderStore;
 
 // Keep the stable port below Windows' default dynamic client range
 // (49152-65535). WSL mirrored networking tracks client ports in that range
@@ -25,7 +25,7 @@ pub const PREFERRED_BROKER_PORT: u16 = 43121;
 
 #[derive(Clone)]
 struct BrokerState {
-    paths: Arc<AccountPaths>,
+    apis: ApiIntegrations,
 }
 
 pub struct BrokerHandle {
@@ -69,11 +69,16 @@ impl Drop for BrokerHandle {
     }
 }
 
-pub async fn start(paths: AccountPaths) -> anyhow::Result<BrokerHandle> {
-    start_on_port(paths, PREFERRED_BROKER_PORT).await
+#[cfg(any(test, debug_assertions))]
+pub(crate) async fn start_on_port(
+    paths: AccountPaths,
+    preferred_port: u16,
+) -> anyhow::Result<BrokerHandle> {
+    let apis = ApiIntegrations::new(paths.clone());
+    start(preferred_port, apis).await
 }
 
-async fn start_on_port(paths: AccountPaths, preferred_port: u16) -> anyhow::Result<BrokerHandle> {
+pub async fn start(preferred_port: u16, apis: ApiIntegrations) -> anyhow::Result<BrokerHandle> {
     let (listener, preferred_bind_error) = match TcpListener::bind(("127.0.0.1", preferred_port))
         .await
     {
@@ -88,9 +93,7 @@ async fn start_on_port(paths: AccountPaths, preferred_port: u16) -> anyhow::Resu
         }
     };
     let port = listener.local_addr().map_err(anyhow::Error::from)?.port();
-    let state = BrokerState {
-        paths: Arc::new(paths),
-    };
+    let state = BrokerState { apis };
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/models", get(models))
@@ -116,12 +119,12 @@ async fn models(State(state): State<BrokerState>, headers: HeaderMap) -> Respons
     if !authorized(&headers) {
         return error_response(StatusCode::UNAUTHORIZED, "broker authorization failed");
     }
-    match ProviderStore::load(&state.paths) {
-        Ok(store) => {
-            let data = store.catalog().into_iter().map(|model| json!({"id": model.route_id, "object": "model", "owned_by": model.provider_id})).collect::<Vec<_>>();
-            json_response(StatusCode::OK, json!({"object":"list", "data":data}))
-        }
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    match state.apis.catalog() {
+        Ok(models) => json_response(
+            StatusCode::OK,
+            json!({"object":"list","data":models.into_iter().map(|m|json!({"id":m.route_id,"object":"model","owned_by":m.provider_id})).collect::<Vec<_>>()}),
+        ),
+        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "API 模型目录读取失败"),
     }
 }
 
@@ -159,13 +162,16 @@ async fn responses(
         Some(value) => value,
         None => return error_response(StatusCode::BAD_REQUEST, "missing route model"),
     };
-    let store = match ProviderStore::load(&state.paths) {
-        Ok(store) => store,
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
-    };
-    let (profile, model) = match store.route(&route_id) {
-        Some(route) => route,
-        None => {
+    let (profile, model) = match state.apis.resolve(&route_id) {
+        Ok(ModelRoute::Subscription) => {
+            return state
+                .apis
+                .subscription
+                .responses(headers, value, path.ends_with("/compact"))
+                .await;
+        }
+        Ok(ModelRoute::External(profile, model)) => (profile, model),
+        Err(_) => {
             return error_response(StatusCode::NOT_FOUND, "unknown or disabled API model route");
         }
     };

@@ -81,7 +81,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveModel {
     pub model_id: String,
@@ -111,6 +111,7 @@ pub struct CatalogModel {
     pub display_name: String,
     pub provider_id: String,
     pub provider_name: String,
+    pub native_provider_id: String,
 }
 
 impl ProviderStore {
@@ -156,6 +157,7 @@ impl ProviderStore {
                     display_name: m.display_name.clone(),
                     provider_id: p.id.clone(),
                     provider_name: p.name.clone(),
+                    native_provider_id: crate::config::BROKER_PROVIDER_ID.into(),
                 })
             })
             .collect()
@@ -304,20 +306,52 @@ pub async fn discover_models(
 }
 
 pub fn discover_view(existing: Option<&ProviderProfile>, model_ids: Vec<String>) -> Value {
+    let drafts = existing.map(|p| {
+        p.models
+            .iter()
+            .map(|m| SaveModel {
+                model_id: m.model_id.clone(),
+                display_name: m.display_name.clone(),
+                visible: m.visible,
+            })
+            .collect::<Vec<_>>()
+    });
+    let models: Vec<_> = rediscover_settings(drafts.as_deref(), model_ids)
+        .into_iter()
+        .map(|model| {
+            let previous =
+                existing.and_then(|p| p.models.iter().find(|m| m.model_id == model.model_id));
+            let mut view = serde_json::to_value(&model).expect("model settings serialize");
+            view["routeId"] = json!(previous.map(|m| &m.route_id));
+            view
+        })
+        .collect();
+    json!({"models": models})
+}
+
+pub fn rediscover_settings(
+    existing: Option<&[SaveModel]>,
+    model_ids: Vec<String>,
+) -> Vec<SaveModel> {
     let first = existing.is_none();
     let old = existing
-        .map(|p| {
-            p.models
-                .iter()
-                .map(|m| (m.model_id.as_str(), m))
-                .collect::<HashMap<_, _>>()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| (&m.model_id, m))
+        .collect::<HashMap<_, _>>();
+    model_ids
+        .into_iter()
+        .map(|model_id| {
+            let previous = old.get(&model_id);
+            SaveModel {
+                display_name: previous
+                    .map(|m| m.display_name.clone())
+                    .unwrap_or_else(|| model_id.clone()),
+                visible: previous.map(|m| m.visible).unwrap_or(first),
+                model_id,
+            }
         })
-        .unwrap_or_default();
-    let models = model_ids.into_iter().map(|model_id| {
-        let previous = old.get(model_id.as_str());
-        json!({"modelId": model_id, "displayName": previous.map(|m| m.display_name.as_str()).unwrap_or(&model_id), "visible": previous.map(|m| m.visible).unwrap_or(first), "routeId": previous.map(|m| m.route_id.as_str())})
-    }).collect::<Vec<_>>();
-    json!({"models": models})
+        .collect()
 }
 
 pub fn normalize_base_url(value: &str) -> anyhow::Result<String> {

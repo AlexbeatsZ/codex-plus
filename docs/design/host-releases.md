@@ -54,3 +54,10 @@ embed `CARGO_MANIFEST_DIR`, so an executable built in a disposable worktree is n
 a deployable artifact after that worktree is removed. Cargo target directories
 may be isolated without moving the source root. Temporarily stash and restore
 tracked local edits when a clean release build is needed.
+
+The October 23 subscription update promotes `codex/account-pool` through `main`
+into both Windows branches. It includes API v8 checkbox styling, account renderer
+v11 and routing v20, retaining v19's native turn-model precedence and thread
+inheritance. The Windows subscription client reads the current user's static
+system proxy when no explicit or environment proxy is set. Existing subscription
+configuration is preserved; a missing configuration remains disabled by default.

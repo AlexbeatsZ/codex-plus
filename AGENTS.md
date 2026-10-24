@@ -7,6 +7,8 @@
 # Current State
 
 - 2026-10-23：路由脚本 v19 修复全局 API 选择污染已有会话：真实 `model/list` 回包直接记录官方 ID/显示名；`turn/start` 仅从原生 `collaborationMode.settings.model` 或顶层 `model` 判断目标，两者均空时原样继承会话设置。旧 localStorage 和其他会话点击不再触发分支；明确选择后的分支、取消及失败阻发仍受回归保护。当前运行实例的生效状态以部署记录为准。
+
+- 2026-10-23：macOS 的订阅账户池已合入公共主线并移植 Windows。固定“ChatGPT 订阅 API”默认停用，参与账户和顺序由用户选择；复用 vault/单 broker，支持有界续期、坏凭据版本阻断、额度冷却与 SSE 输出后禁止重放。API v8 修复复选框，账户 renderer v11 兼容新版登录页；路由 v20 同时保留 v19 的原生模型优先级和会话继承。Windows 无环境代理时只读采用当前用户静态系统代理。设计见 `docs/design/account-pool.md`；部署状态以各端 `.codex-plus/release.json` 为准。
 - 2026-10-21 三端公共发布更新到 `0.3.3`（Windows 分别为 `0.3.3-omen` / `0.3.3-rog`）：纳入已审查的未登录账户切换/导入入口、已有 PDF CMap 与 Mac 安全签名发布修复、Windows/Mac 官方图标。全部渠道仅含 generic local-tools；ROG 的 AI Decision 业务工具已在 10-17 迁到独立连接器，旧的“ROG 保留内嵌适配层”约束已失效。源码可先同步，实际部署记录以各端 `.codex-plus/release.json` 为准；本轮不重启当前 Codex/launcher/Tunnel。
 - 2026-10-15：新增未登录状态下的账户入口。原生登录页没有个人资料菜单，渲染器（账户脚本 VERSION 9）在原生 ChatGPT 登录按钮组末尾插入“切换账户 / 导入 auth.json”，打开同一账户弹窗（隐藏网页登录），可直接切换已保存账户或导入 `auth.json` 后切换。设计见 `docs/design/account-switch-lifecycle.md`。28 JS / 50 Rust（Linux）测试通过；登录页按钮文本按“ChatGPT + 登录动词”匹配，尚未在真实 Codex 登录页目视验收。
 - 2026-10-13：新增 PDF 预览 CMap 资源加载修复，目标为官方 `26.1007.30912`。在原生主窗口及独立窗口的 PDF.js worker 通道按需提供 168 份本地映射，覆盖普通 PDF 与 LaTeX 预览；不修改文档或官方签名包。设计及验收入口见 `docs/design/pdf-preview-cmaps.md`。57 Rust / 25 JS 测试通过，已签名发布并以 `--attach-existing` 更新运行实例，Codex PID 保持不变；主/独立窗口均 ready。部署后实际 PDF.js 读取六页中文成功，普通预览的最终目视验收待用户重开预览确认。
@@ -42,6 +44,8 @@
 - 2026-09-04 22:16 已定位并部署首次重试仍返回 502 的修复：Tunnel 的共享 stdio MCP 通道会串行处理响应，而 `run_command` 原默认 90 秒、最大 300 秒，能超过托管请求约 83 秒的截止时间；原请求超时后，立即重试仍排在未结束命令之后。同步前台命令现限制为默认 30 秒、最大 45 秒；隔离 Tunnel 代理验证了命令超时后下一次 MCP 请求可立即恢复。实际 managed runtime 已重载为 PID 10040、MCP Node PID 25856，来自当前 `local-tools/dist/cli.js`；health/ready 200、远端 metadata 复查成功，重载后的运行日志无 WARN/ERROR。
 
 # Active Work
+
+- 订阅 API 与未登录入口修复已在 `codex/account-pool` 完成，正式文件已在 2026-10-23 用户授权后部署；用户已运行订阅版本并反馈勾选框不可见，显示修复已发布；修复后的生产 UI 目视验收等待下次启动新版 launcher。本轮不重启、不热附加当前 Codex/launcher/Tunnel。
 
 - [done] 2026-10-13：发布并附加 PDF CMap 修复到本机 codex-plus；部署后真实应用 PDF.js 读取未改动 PDF 已恢复六页中文，首页 435 字，资源计数 `loaded=1 / served=1`。内置 LaTeX 编译 success。
 - [pending] 当前普通 PDF/LaTeX 预览界面需关闭后重新打开，等待用户目视验收；界面控制工具禁止操作 Codex 自身窗口。
@@ -89,6 +93,8 @@
 - 文件部署已清理构建/脚本临时产物；ROG 的旧常驻 launcher 仍映射 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-upgrade-20261001\running-previous-codex-plus.exe`，Windows 拒绝删除该映像。保留至进程自然退出后清理，不为此停止 launcher。以前的 `.codex-plus/release-backups/20261001-package-identity` 属于上一轮恢复资料，本次未动。
 
 # Build / Run / Test
+
+- 订阅路由真实验收：`node scripts/verify-account-pool.mjs --binary=target/account-pool-build/debug/codex-plus --auth-dir=.codex-plus/accounts --model=<可用模型> --proxy=<HTTP代理> --app-server=<官方codex可执行文件>`；脚本只运行隔离 broker/app-server，临时凭据在 finally 清理，切勿改成生产 CODEX_HOME。无重启候选构建显式使用 `--target-dir target/account-pool-build`，签名也明确该候选路径，不调用替换正式入口的 release 脚本。
 
 - PDF 预览修改额外执行 `node --test tests/pdf-preview.test.mjs`，并按 `docs/design/pdf-preview-cmaps.md` 用官方应用自己的 PDF.js 做实际渲染验证；TeX 编译成功不能替代预览验收。
 ```powershell
@@ -169,3 +175,12 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - `System::new_all()` 会采集所有进程的 CPU、内存、磁盘和路径，不能放在常驻秒级轮询中；由 launcher 自己启动的 Codex 应保留根 `Child` 句柄并用 `try_wait()`，登录前不得不发现外部 Codex 时则复用单个 `System`，用 `ProcessRefreshKind::nothing().with_exe(OnlyIfNotSet)` 只刷新身份字段。全页面 MutationObserver 同样必须先按新增/变化的菜单节点过滤，避免聊天流和终端输出把一次菜单查找放大成持续扫描。
 - Codex `26.810.6296.0` 可在没有 plus 进程、没有 CDP 参数且 GPU/DPC 均空闲时，由 Electron 根 `ChatGPT.exe` 自身持续消耗约 1.3 个核心；其中热线程可为 `AboveNormal`，足以造成系统级鼠标顿挫。plus 无法修复闭源忙循环，但可用 `BELOW_NORMAL_PRIORITY_CLASS` 隔离其桌面调度影响。官方更新可能先启动无 CDP 的新根进程再结束旧受管实例，因此登录 launcher 必须在生命周期结束后重新待命，并用命令行排除 renderer/GPU/crashpad/app-server 后再次接管。
 - Windows Microsoft Store (MSIX / AppX) 安装的桌面应用在 `C:\Program Files\WindowsApps\` 下具有 NTFS 条件访问控制列表（Conditional ACE：`WIN://SYSAPPID Contains "<PackageFamilyName>"`）。普通非打包 Win32 进程直接调用 `CreateProcessW` / `Command::spawn()` 会因调用令牌缺少该包 Claim 而被操作系统内核安全模型直接拦截，返回 `拒绝访问。(os error 5)`（`0x80070005`）。必须通过 Windows Shell COM 接口 `IApplicationActivationManager::ActivateApplication` 传入 Application User Model ID (`AUMID: <PackageFamilyName>!App`) 和启动参数（如 `--remote-debugging-port`）由 DCOM 系统服务代理创建具备合法包身份的进程；再通过返回的 PID 用 `OpenProcess` 获取句柄后下调为 `BELOW_NORMAL_PRIORITY_CLASS` 并监听退出。
+
+# Docs Index
+
+- `CONTEXT.md`：账户、订阅 API、模型路由与凭据状态术语。
+- `docs/design/account-pool.md`：固定订阅 API、顺序、失败跳过、凭据续期及验收。
+- `docs/design/account-switch-lifecycle.md`：手动切换、未登录入口、生命周期。
+- `docs/design/api-provider-routing.md`：外部 API、统一目录与原生 provider 路由。
+- `docs/design/host-releases.md`、`docs/design/macos-release.md`：渠道、签名与发布。
+- `docs/design/local-tools-lifecycle.md`、`docs/design/desktop-helper.md`、`docs/design/pdf-preview-cmaps.md`：MCP、桌面与 PDF。

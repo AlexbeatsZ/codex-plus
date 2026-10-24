@@ -1,6 +1,6 @@
 # codex-plus
 
-`codex-plus` 是一个面向 Windows 官方 OpenAI Codex 桌面应用的账户、OpenAI 兼容 API 与本地 MCP 启动器。它只有一个 Windows 自启动入口，没有独立管理面板：正常点击 `codex-plus.exe` 后，程序会确保本机 Secure MCP Tunnel 可用、受控重启 Codex，并把管理入口注入左下角个人资料菜单。
+`codex-plus` 是一个面向 Windows 与 macOS 官方 OpenAI Codex 桌面应用的账户、OpenAI 兼容 API 与本地 MCP 启动器。它只有一个 Windows 自启动入口，没有独立管理面板：正常点击 `codex-plus.exe` 后，程序会确保本机 Secure MCP Tunnel 可用、受控重启 Codex，并把管理入口注入左下角个人资料菜单。
 
 ## 功能
 
@@ -10,6 +10,7 @@
 - 切换账户时先停止 Codex、原子替换认证文件，再自动重新启动并恢复注入。
 - 账户令牌只保存在本机，不返回给注入页面，也不写入日志。
 - 可同时保存多个 OpenAI 兼容 API，通过 `/models` 自动发现模型，并选择模型、设置显示别名。
+- “API 接入”内置固定的“ChatGPT 订阅 API”，直接复用已导入 auth.json；可选择允许使用额度的账户及优先顺序，额度受限时自动尝试后续账户，失效凭据持续跳过直到更新。
 - 官方登录模型保持 `openai` provider；API 模型通过本机 `codex-plus-api` broker 按稳定 `routeId` 分发，不切换全局 provider。
 - 原生支持 Responses；Chat Completions 会在本机转换 Responses 请求、SSE、工具调用与推理字段。
 - 内置 `local-tools/` tool-only MCP，可为 ChatGPT/Codex Chat 模式提供工作区文件、搜索、补丁、命令和 Git 工具；MCP 初始化时直接注入本机 Codex 可见的全局与工作区根 `AGENTS` 指令链，Skills 继续渐进加载。
@@ -28,6 +29,10 @@
 未登录时没有个人资料菜单，可直接点击原生登录页 ChatGPT 登录按钮旁的“切换账户 / 导入 auth.json”，选择已保存账户或先导入再切换。
 
 导入只保存账户，不会自动切换；切换账户会自动重启 Codex。当前有效 ChatGPT 登录会自动加入本地账户列表。
+
+使用订阅轮换时，在“API 接入 → ChatGPT 订阅 API → 配置”中勾选参与账户，用上下箭头调整优先顺序，读取模型、设置别名和可见性，再启用并保存。在 Codex 原生模型选择器选择“订阅 · …”模型即可。默认关闭；未勾选账户不消耗额度，新导入账户也需手动勾选。同一订阅对话中换账户不需要切换登录或重启。第一次从官方模型切到订阅模型仍遵循原生跨 provider 的历史分支确认。
+
+401 最多续期并重试一次；凭据确认失效后跳过，重新导入有效凭据后恢复。额度冷却和模型不可用按账户、模型分别处理，全部参与账户不可用时明确报错。已经输出文本或工具调用后的错误不会透明重放，以免重复执行工具。详情见 [固定订阅 API 设计](docs/design/account-pool.md)。
 
 ### Local tools 与 Secure MCP Tunnel
 
