@@ -61,6 +61,12 @@ pub struct DiscoverRequest {
     pub api_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredModel {
+    pub model_id: String,
+    pub display_name: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveRequest {
@@ -252,7 +258,7 @@ impl ProviderStore {
 pub async fn discover_models(
     paths: &AccountPaths,
     request: DiscoverRequest,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<DiscoveredModel>> {
     let base_url = normalize_base_url(&request.base_url)?;
     let store = ProviderStore::load(paths)?;
     let api_key = if request.api_key.trim().is_empty() {
@@ -287,25 +293,55 @@ pub async fn discover_models(
         .and_then(Value::as_array)
         .or_else(|| body.get("models").and_then(Value::as_array))
         .ok_or_else(|| anyhow::anyhow!("模型接口缺少 data/models 数组"))?;
-    let mut models = items
-        .iter()
-        .filter_map(|item| {
-            item.as_str()
-                .or_else(|| item.get("id").and_then(Value::as_str))
-        })
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    models.sort();
-    models.dedup();
+    let mut models_by_id = HashMap::new();
+    for item in items {
+        let Some(model_id) = item
+            .as_str()
+            .or_else(|| item.get("id").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let display_name = ["display_name", "displayName", "name"]
+            .into_iter()
+            .find_map(|field| {
+                item.get(field)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+            })
+            .unwrap_or(model_id);
+        let model = models_by_id
+            .entry(model_id.to_string())
+            .or_insert_with(|| DiscoveredModel {
+                model_id: model_id.to_string(),
+                display_name: model_id.to_string(),
+            });
+        if model.display_name == model_id {
+            model.display_name = display_name.to_string();
+        }
+    }
+    let mut models = models_by_id.into_values().collect::<Vec<_>>();
+    models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
     if models.is_empty() {
         bail!("模型接口没有返回可用模型");
     }
     Ok(models)
 }
 
-pub fn discover_view(existing: Option<&ProviderProfile>, model_ids: Vec<String>) -> Value {
+pub fn discover_view(
+    existing: Option<&ProviderProfile>,
+    discovered: Vec<DiscoveredModel>,
+) -> Value {
+    let names: HashMap<_, _> = discovered
+        .iter()
+        .map(|model| (model.model_id.as_str(), model.display_name.as_str()))
+        .collect();
+    let model_ids = discovered
+        .iter()
+        .map(|model| model.model_id.clone())
+        .collect();
     let drafts = existing.map(|p| {
         p.models
             .iter()
@@ -318,7 +354,12 @@ pub fn discover_view(existing: Option<&ProviderProfile>, model_ids: Vec<String>)
     });
     let models: Vec<_> = rediscover_settings(drafts.as_deref(), model_ids)
         .into_iter()
-        .map(|model| {
+        .map(|mut model| {
+            if model.display_name.trim().is_empty() || model.display_name == model.model_id {
+                if let Some(display_name) = names.get(model.model_id.as_str()) {
+                    model.display_name = (*display_name).to_string();
+                }
+            }
             let previous =
                 existing.and_then(|p| p.models.iter().find(|m| m.model_id == model.model_id));
             let mut view = serde_json::to_value(&model).expect("model settings serialize");
@@ -460,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn rediscovery_preserves_alias_and_hides_new_models() {
+    fn rediscovery_preserves_alias_routes_and_visibility_and_upgrades_id_names() {
         let profile = ProviderProfile {
             id: "api-a".into(),
             name: "A".into(),
@@ -468,16 +509,51 @@ mod tests {
             api_key: "secret".into(),
             protocol: ProviderProtocol::Responses,
             enabled: true,
-            models: vec![ProviderModel {
-                route_id: "route".into(),
-                model_id: "old".into(),
-                display_name: "Alias".into(),
-                visible: true,
-            }],
+            models: vec![
+                ProviderModel {
+                    route_id: "route".into(),
+                    model_id: "old".into(),
+                    display_name: "Alias".into(),
+                    visible: true,
+                },
+                ProviderModel {
+                    route_id: "raw-route".into(),
+                    model_id: "raw".into(),
+                    display_name: "raw".into(),
+                    visible: false,
+                },
+                ProviderModel {
+                    route_id: "blank-route".into(),
+                    model_id: "blank".into(),
+                    display_name: " ".into(),
+                    visible: true,
+                },
+            ],
         };
-        let view = discover_view(Some(&profile), vec!["new".into(), "old".into()]);
+        let discovered = [
+            ("new", "New name"),
+            ("old", "Provider name"),
+            ("raw", "Friendly name"),
+            ("blank", "Nonblank name"),
+        ]
+        .into_iter()
+        .map(|(model_id, display_name)| DiscoveredModel {
+            model_id: model_id.into(),
+            display_name: display_name.into(),
+        })
+        .collect();
+        let view = discover_view(Some(&profile), discovered);
         assert_eq!(view["models"][0]["visible"], false);
+        assert_eq!(view["models"][0]["displayName"], "New name");
         assert_eq!(view["models"][1]["displayName"], "Alias");
+        assert_eq!(view["models"][1]["routeId"], "route");
+        assert_eq!(view["models"][1]["visible"], true);
+        assert_eq!(view["models"][2]["displayName"], "Friendly name");
+        assert_eq!(view["models"][2]["routeId"], "raw-route");
+        assert_eq!(view["models"][2]["visible"], false);
+        assert_eq!(view["models"][3]["displayName"], "Nonblank name");
+        assert_eq!(view["models"][3]["routeId"], "blank-route");
+        assert_eq!(view["models"][3]["visible"], true);
     }
 
     #[test]
@@ -515,6 +591,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn discovery_preserves_provider_names_through_save_and_catalog() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[
+                {"id":"qoder-cn/gfmodel"},
+                {"id":"qoder-cn/gfmodel","display_name":" GLM-5.3-Flash ","displayName":"ignored","name":"ignored"},
+                {"id":"qoder-cn/gfmodel","display_name":"later name"},
+                {"id":"camel","displayName":"Camel name"},
+                {"id":"named","name":"Provider name"},
+                {"id":"blank","display_name":" ","displayName":"","name":" "},
+                {"id":"fallback","display_name":null,"displayName":7,"name":"Fallback name"},
+                "legacy", "legacy", {"id":" id-only "},
+                null, 7, {"id":" "}, {"name":"missing id"}
+            ]})))
+            .mount(&server)
+            .await;
+        let temp = tempfile::TempDir::new().unwrap();
+        let paths = AccountPaths {
+            codex_home: temp.path().join("codex"),
+            state_dir: temp.path().join("state"),
+            usage_endpoint: String::new(),
+        };
+        let models = discover_models(
+            &paths,
+            DiscoverRequest {
+                provider_id: None,
+                base_url: format!("{}/v1", server.uri()),
+                api_key: "discovery-secret".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let view = discover_view(None, models);
+        let names: Vec<_> = view["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| {
+                (
+                    model["modelId"].as_str().unwrap(),
+                    model["displayName"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("blank", "blank"),
+                ("camel", "Camel name"),
+                ("fallback", "Fallback name"),
+                ("id-only", "id-only"),
+                ("legacy", "legacy"),
+                ("named", "Provider name"),
+                ("qoder-cn/gfmodel", "GLM-5.3-Flash"),
+            ]
+        );
+        let mut saved = ProviderStore::load(&paths).unwrap();
+        saved
+            .upsert(SaveRequest {
+                id: None,
+                name: "magpie".into(),
+                base_url: format!("{}/v1", server.uri()),
+                api_key: "discovery-secret".into(),
+                protocol: ProviderProtocol::Responses,
+                enabled: true,
+                models: serde_json::from_value(view["models"].clone()).unwrap(),
+            })
+            .unwrap();
+        saved.save(&paths).unwrap();
+        let store = ProviderStore::load(&paths).unwrap();
+        let catalog = store.catalog();
+        let model = catalog
+            .iter()
+            .find(|model| model.model_id == "qoder-cn/gfmodel")
+            .unwrap();
+        assert_eq!(model.display_name, "GLM-5.3-Flash");
+        assert_eq!(
+            store.route(&model.route_id).unwrap().1.model_id,
+            model.model_id
+        );
+    }
+
+    #[tokio::test]
     async fn discovery_uses_exact_base_models_path_and_bearer_key() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -543,6 +703,18 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(models, vec!["model-a", "model-b"]);
+        assert_eq!(
+            models,
+            vec![
+                DiscoveredModel {
+                    model_id: "model-a".into(),
+                    display_name: "model-a".into()
+                },
+                DiscoveredModel {
+                    model_id: "model-b".into(),
+                    display_name: "model-b".into()
+                },
+            ]
+        );
     }
 }

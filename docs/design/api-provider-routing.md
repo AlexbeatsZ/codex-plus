@@ -21,6 +21,8 @@ renderer 只使用 `/api-providers/list|discover|save|delete|catalog`。`list` �
 
 `discover` 规范化 URL 后在用户填写的精确 base URL 后追加 `/models`，不得自行插入 `/v1`；需要版本前缀的服务由用户在 base URL 中提供。请求使用 Bearer Key。首次发现的模型默认全部可见；重新发现按真实 model ID 保留 alias、visible 和 routeId，新模型默认隐藏。启用的 API 必须至少有一个可见模型。
 
+外部模型发现同时保留真实 ID 和友好名称，名称依次取首个非空字符串 `display_name`、`displayName`、`name`，均无有效值时回退 ID；兼容直接返回字符串 ID 的接口。按 ID 去重和排序，重复项可为尚无友好名称的同一 ID 补充名称。重新发现时，旧名称为空或等于 ID 的条目采用供应方名称；其他已保存名称视为自定义别名保留。`modelId`、`routeId`、可见性规则和实际请求模型 ID 不因名称变化而改变，友好名称随保存进入模型目录。
+
 固定订阅 API 的顺序、凭据策略与原生压缩见 [account-pool.md](account-pool.md)。`ApiIntegrations` 统一所有 API 的列表、模型发现、目录和路由；bridge 使用 `/api-providers/subscription/get|save|discover` 管理固定项，复用外部 API 的模型编辑与 rediscovery 规则。
 
 ## 单 broker provider
