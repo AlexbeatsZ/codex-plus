@@ -15,7 +15,7 @@ impl AccountVault {
             .await
     }
 
-    pub(super) async fn fetch_usage_with_client(
+    pub(crate) async fn fetch_usage_with_client(
         &self,
         record_id: &str,
         client: &reqwest::Client,
