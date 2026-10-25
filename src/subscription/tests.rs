@@ -43,6 +43,7 @@ async fn fixture() -> Fixture {
             visible: true,
         }],
         proxy_url: String::new(),
+        account_reserves: HashMap::new(),
     };
     config.save(&paths).unwrap();
     let server = MockServer::start().await;
@@ -228,7 +229,11 @@ async fn native_mcp_auto_review_preserves_allow_and_deny_for_pool_and_external_a
     store.upsert(
         serde_json::from_value(json!({"name":"fixture-external","baseUrl":f.server.uri(),"apiKey":"fixture-key","protocol":"responses","enabled":true,"models":[{"modelId":"external-test","displayName":"fixture","visible":true}]})).unwrap(),
     ).unwrap();
-    crate::accounts::atomic_write(&f.router.paths.providers_path(), &serde_json::to_vec(&store).unwrap()).unwrap();
+    crate::accounts::atomic_write(
+        &f.router.paths.providers_path(),
+        &serde_json::to_vec(&store).unwrap(),
+    )
+    .unwrap();
     let mut broker = crate::broker::start(
         0,
         crate::integrations::ApiIntegrations::with_subscription(

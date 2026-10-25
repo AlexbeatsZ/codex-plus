@@ -85,6 +85,7 @@ pub(super) struct SseGuard {
     pub(super) committed: bool,
     pub(super) terminal: bool,
     pub(super) failure: Option<Value>,
+    pub(super) quota_update: Option<crate::accounts::Usage>,
 }
 impl SseGuard {
     pub(super) fn push(&mut self, bytes: &[u8]) {
@@ -99,6 +100,11 @@ impl SseGuard {
                 continue;
             };
             let kind = value["type"].as_str().unwrap_or("");
+            if kind == "codex.rate_limits"
+                && let Some(usage) = quota::usage_event(&value)
+            {
+                self.quota_update = Some(usage);
+            }
             if matches!(kind, "response.failed" | "error") {
                 self.failure = Some(value);
                 self.terminal = true;

@@ -6,6 +6,14 @@
 
 # Current State
 
+- 2026-10-25：外部 API 模型发现保留 `display_name` / `displayName` / `name` 友好名称；旧名称为空或等于 ID 时在重新读取后更新，自定义别名、可见性和路由不变。工作区 114 项 Rust、60 项 JS 回归通过。仅源码修改，未替换正式 EXE，未重启或附加当前实例；使用新版 launcher 后需重新“读取模型”并保存。设计见 `docs/design/api-provider-routing.md`。
+
+- 2026-10-25：订阅 API 新增每账户短期/长期剩余额度保留阈值（API renderer v10），达到后按原顺序换号，未知额度跳过；旧配置默认关闭，保存后即时重判。窗口按实际时长分类，15 秒缓存、近阈值 3 秒，响应头/事件更新，已输出请求不重放。源码与隔离编译已完成，102 项 Rust / 54 项 JS 回归通过；尚未发布或加载到当前实例。设计见 `docs/design/account-pool.md` 的“额度保留阈值”。
+
+- 2026-10-24：账户 renderer v14 将“API 剩余额度”修正为原生式菜单内折叠展开，替代 v13 的侧边浮层。匹配嵌套标题后在完整原生用量区块后插入，预先展开也可定位；沿用菜单字号、箭头和两列窗口布局，显示平均余量/已更新数，重置标记“最早”。收起或菜单卸载会丢弃旧响应并停止队列；“查看账户”复用原弹窗。当前实例与文件部署分开记录于 `.codex-plus/release.json`，设计见 `docs/design/account-switch-lifecycle.md`。
+
+- 2026-10-24：修复账户用量频繁网络失败/401。查询复用订阅 API 的显式/环境/系统代理，以及 vault 的实时凭据优先和串行续期；非当前账户最多续期一次，当前官方登录不续期、不改写。网络/408/5xx 最多重试一次、总限时 25 秒。账户 renderer v12 增加逐行刷新、保留标记更新时间的旧结果、限制三个并发和过期响应保护。部署状态以 `.codex-plus/release.json` 为准；当前界面验收需加载新版 launcher。设计见 `docs/design/account-switch-lifecycle.md` 的“UI 与额度”。
+
 - 2026-10-24：修复跨会话发送/新建任务在原生自动审批前返回本机 404。官方独立请求隐藏模型 `codex-auto-review`，不属于普通可见模型目录；broker 现将两个 API 入口的该精确内部模型交给已启用且由用户选择账户的订阅池，保留官方 reviewer、策略与拒绝结果，不替换目标对话模型。池停用时明确提示启用或人工审批，不自动启用或借用未勾选账户。原生隔离 MCP 已验证工具发现、批准后执行、拒绝不执行；正式运行验收待新版 launcher 启动。见 `docs/design/account-pool.md` 的“原生自动审批”。
 
 - 2026-10-23：修复订阅迁入已有长会话后的前置压缩 404。官方 `ModelDownshift` 用历史上一轮真实模型 ID 压缩，旧 broker 只认 routeId。订阅 provider 现使用单 broker 的 `/subscription/v1`，只允许已启用且可见的真实模型 ID/routeId；普通 API 仍为 `/v1`。Windows 原生 app-server + 假账户/mock 上游已覆盖“旧模型自动压缩 → 当前订阅 turn”；真实服务和用户界面仍待启动修复版后验收。源码/文件发布不等于运行实例更新，见各端 release.json。

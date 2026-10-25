@@ -11,6 +11,23 @@ pub struct SubscriptionConfig {
     pub models: Vec<crate::providers::SaveModel>,
     #[serde(default)]
     pub proxy_url: String,
+    #[serde(default)]
+    pub account_reserves: HashMap<String, AccountReserve>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountReserve {
+    #[serde(default)]
+    pub short_term_percent: Option<u8>,
+    #[serde(default)]
+    pub long_term_percent: Option<u8>,
+}
+
+impl AccountReserve {
+    pub fn enabled(&self) -> bool {
+        self.short_term_percent.is_some() || self.long_term_percent.is_some()
+    }
 }
 
 impl SubscriptionConfig {
@@ -23,10 +40,23 @@ impl SubscriptionConfig {
     }
 
     pub fn save(&self, paths: &AccountPaths) -> anyhow::Result<()> {
-        if self.account_order.len() > 100 || self.models.len() > 100 {
+        if self.account_order.len() > 100
+            || self.models.len() > 100
+            || self.account_reserves.len() > 100
+        {
             bail!("账户池最多支持 100 个账户和模型");
         }
         let accounts = AccountVault::new(paths.clone()).list_accounts()?;
+        for (id, reserve) in &self.account_reserves {
+            if !accounts.iter().any(|a| a.record_id == *id)
+                || [reserve.short_term_percent, reserve.long_term_percent]
+                    .into_iter()
+                    .flatten()
+                    .any(|value| value > 100)
+            {
+                bail!("保留额度必须属于已有账户，百分比须为 0 至 100 的整数");
+            }
+        }
         let mut seen = HashSet::new();
         for id in &self.account_order {
             if !seen.insert(id) || !accounts.iter().any(|a| a.record_id == *id) {
@@ -59,7 +89,7 @@ impl SubscriptionConfig {
         Ok(())
     }
 
-    pub(super) fn client(&self) -> anyhow::Result<reqwest::Client> {
+    pub(crate) fn client(&self) -> anyhow::Result<reqwest::Client> {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .user_agent("codex-plus/0.3.3 account-pool")

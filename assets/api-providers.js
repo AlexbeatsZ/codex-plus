@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 8;
+  const VERSION = 10;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
@@ -55,6 +55,10 @@
       .cp-sub-note { color:var(--cp-muted); font-size:12px; line-height:1.6; margin:0; }
       .cp-sub-row small { display:block; color:var(--cp-muted); margin-top:4px; }
       .cp-sub-row .cp-api-button { min-width:32px; padding:0 8px; }
+      .cp-sub-row { flex-wrap:wrap; }
+      .cp-sub-reserve { display:flex; flex:0 0 100%; flex-wrap:wrap; gap:8px 16px; padding-left:22px; box-sizing:border-box; }
+      .cp-sub-row .cp-sub-reserve label { display:flex; flex:0 1 auto; align-items:center; gap:6px; color:var(--cp-muted); }
+      .cp-sub-reserve input { width:78px; min-height:30px; padding:4px 7px; }
       .cp-api-form { display:grid; gap:12px; }
       .cp-api-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
       .cp-api-field { display:grid; gap:6px; color:var(--cp-text); font-size:12px; }
@@ -153,18 +157,27 @@
   async function openSubscription() {
     state.subscriptionBusy = true;
     state.message = "";
-    state.subscription = { enabled: false, accountOrder: [], models: [], proxyUrl: "" };
+    state.subscription = { enabled: false, accountOrder: [], models: [], proxyUrl: "", accountReserves: {} };
     state.subscriptionAccounts = [];
     state.models = [];
     renderSubscription();
     try {
       const result = await invoke("/api-providers/subscription/get");
       state.subscription = result.config;
+      state.subscription.accountReserves = Object.fromEntries(Object.entries(result.config.accountReserves || {}).filter(([id]) => (result.accounts || []).some(a => String(a.recordId) === id)));
       state.models = (result.config?.models || []).map(m => ({ ...m }));
       state.subscriptionAccounts = result.accounts || [];
-      state.subscriptionStates = [...(result.accountStates || []), ...(result.blockedAccounts || [])];
+      state.subscriptionStates = subscriptionStates(result);
     } catch (error) { state.message = error.message; state.error = true; }
     finally { state.subscriptionBusy = false; renderSubscription(); }
+  }
+
+  function subscriptionStates(result) {
+    return [...(result.accountStates || []), ...(result.blockedAccounts || []), ...(result.quotaStates || []).map(s => ({ ...s, reserve: true }))];
+  }
+
+  function reserveEditor(id, reserve, disabled) {
+    return `<div class="cp-sub-reserve">${[["shortTermPercent", "短期保留"], ["longTermPercent", "长期保留（如每周）"]].map(([key, label]) => `<label>${label}<input class="cp-api-input" type="number" min="0" max="100" step="1" placeholder="不限制" aria-label="${label}百分比" data-sub-reserve="${key}" data-sub-reserve-account="${esc(id)}" value="${esc(reserve?.[key] ?? "")}" ${disabled ? "disabled" : ""}>%</label>`).join("")}</div>`;
   }
 
   function renderSubscription() {
@@ -176,12 +189,17 @@
     const ids = [...order, ...accounts.keys()].filter((id, i, all) => all.indexOf(id) === i);
     const rows = ids.map(id => {
       const account = accounts.get(id), index = order.indexOf(id);
-      const health = state.subscriptionStates.filter(s => s.recordId === id).map(s => s.blocked ? s.reason : `${s.model === "*" ? "账户" : s.model}：${s.reason}，${new Date(s.retryAt * 1000).toLocaleTimeString()} 后重试`).join("；");
-      return `<div class="cp-sub-row"><label><input type="checkbox" data-sub-account="${esc(id)}" ${index >= 0 ? "checked" : ""} ${busy ? "disabled" : ""}> ${index >= 0 ? `${index + 1}. ` : ""}${esc(account?.email || account?.name || "账户已删除，请移出")}${account?.plan ? ` · ${esc(account.plan)}` : ""}${health ? `<small>${esc(health)}</small>` : ""}</label><button type="button" class="cp-api-button" data-sub-up="${esc(id)}" aria-label="上移账户" ${busy || index <= 0 ? "disabled" : ""}>↑</button><button type="button" class="cp-api-button" data-sub-down="${esc(id)}" aria-label="下移账户" ${busy || index < 0 || index === order.length - 1 ? "disabled" : ""}>↓</button></div>`;
+      const health = state.subscriptionStates.filter(s => s.recordId === id).map(s => s.blocked || s.reserve ? s.reason : `${s.model === "*" ? "账户" : s.model}：${s.reason}，${new Date(s.retryAt * 1000).toLocaleTimeString()} 后重试`).join("；");
+      return `<div class="cp-sub-row"><label><input type="checkbox" data-sub-account="${esc(id)}" ${index >= 0 ? "checked" : ""} ${busy ? "disabled" : ""}> ${index >= 0 ? `${index + 1}. ` : ""}${esc(account?.email || account?.name || "账户已删除，请移出")}${account?.plan ? ` · ${esc(account.plan)}` : ""}${health ? `<small>${esc(health)}</small>` : ""}</label><button type="button" class="cp-api-button" data-sub-up="${esc(id)}" aria-label="上移账户" ${busy || index <= 0 ? "disabled" : ""}>↑</button><button type="button" class="cp-api-button" data-sub-down="${esc(id)}" aria-label="下移账户" ${busy || index < 0 || index === order.length - 1 ? "disabled" : ""}>↓</button>${account ? reserveEditor(id, config.accountReserves?.[id], busy || index < 0) : ""}</div>`;
     }).join("");
-    root.innerHTML = `${status()}<div class="cp-api-form"><div class="cp-api-actions"><strong>ChatGPT 订阅 API</strong><label><input type="checkbox" data-sub-enabled ${config.enabled ? "checked" : ""} ${busy ? "disabled" : ""}> 启用</label></div><p class="cp-sub-note">直接使用“切换账户”中已导入的 auth.json。勾选允许使用额度的账户，再按优先顺序排列；未勾选的账户不会参与请求。</p><div class="cp-api-list">${rows || '<div class="cp-api-row">暂无导入账户，请先添加账户。</div>'}</div><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-accounts ${busy ? "disabled" : ""}>管理导入账户</button><span>失效凭据自动跳过，更新后恢复</span></div><label class="cp-api-field">HTTP 代理（可选）<input class="cp-api-input" data-sub-proxy value="${esc(config.proxyUrl)}" placeholder="留空使用环境或系统代理" ${busy ? "disabled" : ""}></label><div class="cp-api-actions"><span>模型与显示名称</span><button type="button" class="cp-api-button" data-sub-discover ${busy || !order.length ? "disabled" : ""}>${busy ? "处理中…" : "读取模型"}</button></div>${modelEditor()}<p class="cp-sub-note">已交付文本或工具调用后不会自动重放；所有参与账户不可用时明确报错。</p><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-back ${busy ? "disabled" : ""}>返回</button><button type="button" class="cp-api-button" data-primary="true" data-sub-save ${busy ? "disabled" : ""}>保存订阅 API</button></div></div>`;
+    root.innerHTML = `${status()}<div class="cp-api-form"><div class="cp-api-actions"><strong>ChatGPT 订阅 API</strong><label><input type="checkbox" data-sub-enabled ${config.enabled ? "checked" : ""} ${busy ? "disabled" : ""}> 启用</label></div><p class="cp-sub-note">直接使用“切换账户”中已导入的 auth.json。勾选允许使用额度的账户，再按优先顺序排列；未勾选的账户不会参与请求。</p><p class="cp-sub-note">保留额度留空表示不限制；短期窗口不超过 24 小时，长期窗口超过 24 小时（如每周）。剩余 ≤ 设置值时换下一个账户；已开始的请求会完成，实际余量可能略低于设置值。</p><div class="cp-api-list">${rows || '<div class="cp-api-row">暂无导入账户，请先添加账户。</div>'}</div><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-accounts ${busy ? "disabled" : ""}>管理导入账户</button><span>失效凭据自动跳过，更新后恢复</span></div><label class="cp-api-field">HTTP 代理（可选）<input class="cp-api-input" data-sub-proxy value="${esc(config.proxyUrl)}" placeholder="留空使用环境或系统代理" ${busy ? "disabled" : ""}></label><div class="cp-api-actions"><span>模型与显示名称</span><button type="button" class="cp-api-button" data-sub-discover ${busy || !order.length ? "disabled" : ""}>${busy ? "处理中…" : "读取模型"}</button></div>${modelEditor()}<p class="cp-sub-note">已交付文本或工具调用后不会自动重放；所有参与账户不可用时明确报错。</p><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-back ${busy ? "disabled" : ""}>返回</button><button type="button" class="cp-api-button" data-primary="true" data-sub-save ${busy ? "disabled" : ""}>保存订阅 API</button></div></div>`;
     root.querySelector("[data-sub-enabled]").addEventListener("change", e => { config.enabled = e.target.checked; });
     root.querySelector("[data-sub-proxy]").addEventListener("input", e => { config.proxyUrl = e.target.value; });
+    root.querySelectorAll("[data-sub-reserve]").forEach(input => input.addEventListener("input", () => {
+      const reserve = (config.accountReserves[input.dataset.subReserveAccount] ||= {});
+      const value = input.value.trim();
+      reserve[input.dataset.subReserve] = value === "" ? null : Number(value);
+    }));
     root.querySelectorAll("[data-sub-account]").forEach(input => input.addEventListener("change", () => {
       syncModels(root);
       config.accountOrder = order.filter(id => id !== input.dataset.subAccount);
@@ -206,6 +224,9 @@
 
   async function subscriptionAction(saveConfig) {
     if (state.subscriptionBusy) return;
+    for (const input of body().querySelectorAll("[data-sub-reserve]")) {
+      if (!input.checkValidity()) { input.reportValidity(); return; }
+    }
     syncModels(body());
     state.subscription.models = state.models.map(m => ({ modelId: m.modelId, displayName: m.displayName, visible: m.visible }));
     state.subscriptionBusy = true; state.message = ""; renderSubscription();
@@ -213,6 +234,7 @@
       const result = await invoke(`/api-providers/subscription/${saveConfig ? "save" : "discover"}`, state.subscription);
       if (saveConfig) {
         state.subscription = result.config;
+        state.subscriptionStates = subscriptionStates(result);
         state.message = state.subscription.enabled ? "订阅 API 已保存，在模型列表选择“订阅”模型即可使用。" : "订阅 API 已停用。";
         state.providers = (await invoke("/api-providers/list")).providers || [];
         await window.__codexPlusModelRouting?.loadCatalog?.(true);

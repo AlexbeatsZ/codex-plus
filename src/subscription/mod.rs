@@ -25,6 +25,7 @@ pub const AUTO_REVIEW_MODEL: &str = "codex-auto-review";
 
 mod config;
 pub use config::SubscriptionConfig;
+mod quota;
 
 pub fn route_id(model: &str) -> String {
     format!(
@@ -40,6 +41,7 @@ pub struct SubscriptionApi {
     refresh_url: String,
     state: Arc<Mutex<HashMap<(String, String), AccountState>>>,
     rejected: Arc<Mutex<HashMap<String, String>>>,
+    quota: Arc<quota::QuotaTracker>,
 }
 
 #[derive(Clone, Serialize)]
@@ -63,6 +65,7 @@ impl SubscriptionApi {
             refresh_url: REFRESH_URL.into(),
             state: Arc::new(Mutex::new(HashMap::new())),
             rejected: Arc::new(Mutex::new(rejected)),
+            quota: Arc::new(quota::QuotaTracker::default()),
         }
     }
 
@@ -84,12 +87,13 @@ impl SubscriptionApi {
             .map(|id| json!({"recordId":id,"blocked":true,"reason":"凭据失效，请重新导入或登录"}))
             .collect();
         Ok(
-            json!({"status":"ok", "config":config, "accounts":accounts,"accountStates":states,"blockedAccounts":blocked}),
+            json!({"status":"ok", "quotaStates":self.quota_states(&config), "config":config, "accounts":accounts,"accountStates":states,"blockedAccounts":blocked}),
         )
     }
 
     pub fn save(&self, config: SubscriptionConfig) -> anyhow::Result<Value> {
         config.save(&self.paths)?;
+        self.quota.clear();
         self.view()
     }
 
@@ -369,9 +373,31 @@ impl SubscriptionApi {
         };
         let endpoint = format!("{}/responses", self.native_base);
         let mut tried = 0;
+        let mut reserved = 0;
+        let mut unknown = 0;
+        let mut quota_budget = Duration::from_secs(25);
         for id in &config.account_order {
             if self.cooling(id, &model) || self.is_rejected_current(id) {
                 continue;
+            }
+            let reserve = config.account_reserves.get(id).filter(|r| r.enabled());
+            if let Some(reserve) = reserve {
+                let started = tokio::time::Instant::now();
+                let status = self
+                    .check_reserve(id, reserve, &client, started + quota_budget)
+                    .await;
+                quota_budget = quota_budget.saturating_sub(started.elapsed());
+                match status {
+                    quota::ReserveStatus::Ready => {}
+                    quota::ReserveStatus::Reserved(_) => {
+                        reserved += 1;
+                        continue;
+                    }
+                    quota::ReserveStatus::Unknown => {
+                        unknown += 1;
+                        continue;
+                    }
+                }
             }
             tried += 1;
             let response = match self
@@ -389,6 +415,9 @@ impl SubscriptionApi {
                 }
             };
             let status = response.status();
+            if reserve.is_some() {
+                self.quota.observe_headers(id, response.headers());
+            }
             let retry_after = response
                 .headers()
                 .get("retry-after")
@@ -436,6 +465,9 @@ impl SubscriptionApi {
                     mut tail,
                     mut guard,
                 }) => {
+                    if reserve.is_some() {
+                        self.quota.observe_event(id, guard.quota_update.take());
+                    }
                     if let Some(value) = &guard.failure
                         && let Some((reason, until)) = recoverable(value, retry_after)
                     {
@@ -444,12 +476,14 @@ impl SubscriptionApi {
                     let router = self.clone();
                     let record_id = id.clone();
                     let model = model.clone();
+                    let track_quota = reserve.is_some();
                     let stream = async_stream::stream! {
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(prefix));
                         while !guard.terminal {
                             match tokio::time::timeout(IDLE_TIMEOUT, tail.next()).await {
                                 Ok(Some(Ok(bytes))) => {
                                     guard.push(&bytes);
+                                    if track_quota { router.quota.observe_event(&record_id, guard.quota_update.take()); }
                                     if let Some(value) = &guard.failure {
                                         if let Some((reason, until)) = recoverable(value, retry_after) { router.cool(&record_id,&model,reason,until); }
                                     }
@@ -482,6 +516,20 @@ impl SubscriptionApi {
                     );
                 }
             }
+        }
+        if unknown > 0 {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "subscription_quota_unknown",
+                "参与账户的保留额度暂无法确认，其余账户已达保留阈值或不可用；请检查网络并稍后重试",
+            );
+        }
+        if reserved > 0 {
+            return error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "subscription_reserve_reached",
+                "参与账户已达到保留额度或暂不可用；请等待额度重置、调整保留百分比或选择其他账户",
+            );
         }
         let message = if tried == 0 {
             "账户池暂时没有可用账户，请查看额度和冷却状态"
