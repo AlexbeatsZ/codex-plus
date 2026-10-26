@@ -3,7 +3,7 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 20;
+  const VERSION = 21;
   const PROVIDER = "codex-plus-api";
   const POOL_PROVIDER = "codex-plus-account-pool";
   const SELECTED_KEY = "codex-plus:selected-model";
@@ -25,6 +25,8 @@
   };
   const clientOriginals = new WeakMap();
   const installedManagers = new WeakSet();
+  const pendingModelChanges = new Map();
+  const pendingProviderTurns = new Set();
   const threadProviders = new Map();
   const threadModels = new Map();
   let originalSendMessageFromView = null;
@@ -34,7 +36,6 @@
   let appServerHost = null;
   let queryClient = null;
   let installTimer = null;
-  let pendingThreadNavigation = null;
   let installing = null;
   const managersByHost = new Map();
   const clientsByHost = new Map();
@@ -370,7 +371,6 @@
       if (ui.title) {
         try { await managersByHost.get(String(client.hostId || ui.hostId))?.setThreadTitle?.(childId, ui.title); } catch {}
       }
-      pendingThreadNavigation = { threadId: childId, hostId: String(client.hostId || ui.hostId) };
       diagnostic("provider-fork-complete", { sourceThreadId: threadId, targetThreadId: childId, currentProvider, targetProvider });
       return { status: "ok", provider: targetProvider, threadId: childId };
     } catch (error) {
@@ -389,37 +389,98 @@
     // A turn request may already describe the newly selected provider. The
     // source thread is authoritative: its provider is fixed at creation time.
     let currentProvider = String(threadProviders.get(threadId) || "");
-    let thread = null;
     if (!currentProvider) {
       const read = await original.call(client, "thread/read", { threadId, includeTurns: false });
-      thread = read?.thread || null;
       rememberThread(read);
-      currentProvider = String(thread?.modelProvider || thread?.model_provider || "");
+      currentProvider = String(read?.thread?.modelProvider || read?.thread?.model_provider || "");
     }
+    if (!currentProvider) throw new Error("无法确认当前任务的 provider，消息未发送");
     if (currentProvider && currentProvider !== targetProvider) {
-      if (!thread) {
-        const read = await original.call(client, "thread/read", { threadId, includeTurns: false });
-        thread = read?.thread || null;
-        rememberThread(read);
-      }
-      const forked = await forkThreadWithClient(client, original, {
-        threadId,
-        currentModel: threadModels.get(threadId) || "",
-        currentProvider,
-        targetModel: desiredModel,
-        targetProvider,
-        idle: isIdleThread(thread),
-      });
-      const next = { ...params, model: desiredModel };
-      if ("thread_id" in next && !("threadId" in next)) next.thread_id = forked.threadId;
-      else next.threadId = forked.threadId;
-      return next;
+      throw new Error("跨 provider 切换必须在原生发送事务开始前完成，消息已阻止发送");
     }
     return { ...params, model: desiredModel };
   }
 
   function isRequestClient(value) {
     return !!value && typeof value.sendRequest === "function" && typeof value.enqueueRequest === "function" && typeof value.requestPromises?.get === "function" && typeof value.requestPromises?.set === "function";
+  }
+
+  function threadKey(client, threadId) {
+    return `${String(client.hostId || "local")}:${threadId}`;
+  }
+
+  async function stageModelChange(client, original, params) {
+    const model = turnModel(params);
+    const threadId = String(params.threadId || "");
+    if (!model || !threadId) return false;
+    await loadCatalog(false);
+    const targetProvider = providerForModel(model);
+    if (!targetProvider) return false;
+    const key = threadKey(client, threadId);
+    const read = await original.call(client, "thread/read", { threadId, includeTurns: false });
+    rememberThread(read);
+    const currentProvider = String(read?.thread?.modelProvider || "");
+    if (!currentProvider) throw new Error("无法确认当前任务的 provider，模型未切换");
+    if (currentProvider === targetProvider) {
+      pendingModelChanges.delete(key);
+      return false;
+    }
+    if (pendingProviderTurns.has(key)) throw new Error("该任务正在切换 provider，请等待切换完成");
+    const manager = managersByHost.get(String(client.hostId || "local"));
+    if (typeof manager?.executeTurnStart !== "function") throw new Error("原生发送事务接口尚未就绪，模型未切换");
+    const previous = pendingModelChanges.get(key);
+    const conversation = manager.getConversation?.(threadId);
+    const previousModel = previous?.previousModel || threadModels.get(threadId) || [conversation?.previousTurnModel, conversation?.latestModel].find(value => value && providerForModel(value) === currentProvider) || "";
+    pendingModelChanges.set(key, { model, effort: params.effort, previousModel, previousEffort: previous?.previousEffort ?? conversation?.latestReasoningEffort });
+    diagnostic("provider-model-change-staged", { threadId, currentProvider, targetProvider });
+    return true;
+  }
+
+  async function executeManagedTurn(manager, original, threadId, operation, args) {
+    await loadCatalog(false);
+    const client = manager.requestClient;
+    const key = threadKey(client, threadId);
+    const staged = pendingModelChanges.get(key);
+    const desiredModel = turnModel(operation?.request || {}) || staged?.model || "";
+    const targetProvider = providerForModel(desiredModel);
+    if (!desiredModel || !targetProvider) return original.call(manager, threadId, operation, ...args);
+    const rawRequest = clientOriginals.get(client);
+    const read = await rawRequest.call(client, "thread/read", { threadId, includeTurns: false });
+    rememberThread(read);
+    const currentProvider = String(read?.thread?.modelProvider || "");
+    if (!currentProvider) throw new Error("无法确认当前任务的 provider，消息未发送");
+    if (currentProvider === targetProvider) return original.call(manager, threadId, operation, ...args);
+    if (pendingProviderTurns.has(key)) throw new Error("该任务正在切换 provider，请等待切换完成");
+    if (!isIdleThread(read.thread)) throw new Error("任务仍在运行，不能切换 provider");
+    pendingProviderTurns.add(key);
+    const currentModel = staged?.previousModel || threadModels.get(threadId) || "";
+    const restoreSource = async () => {
+      if (staged && currentModel && typeof manager.updateThreadSettingsForNextTurn === "function") {
+        await manager.updateThreadSettingsForNextTurn(threadId, { model: currentModel, ...(staged.previousEffort == null ? {} : { effort: staged.previousEffort }) });
+      }
+    };
+    try {
+      const forked = await forkThreadWithClient(client, rawRequest, {
+        threadId, currentModel, currentProvider, targetModel: desiredModel, targetProvider, idle: true,
+      });
+      pendingModelChanges.delete(key);
+      await restoreSource();
+      const request = { ...operation.request, threadId: forked.threadId, model: desiredModel };
+      if (request.effort === undefined && staged?.effort !== undefined) request.effort = staged.effort;
+      const result = await original.call(manager, forked.threadId, { ...operation, request }, ...args);
+      navigateToThread(forked.threadId, String(client.hostId || "local"));
+      diagnostic("provider-turn-started", { sourceThreadId: threadId, targetThreadId: forked.threadId, targetProvider });
+      return result;
+    } catch (error) {
+      pendingModelChanges.delete(key);
+      restoreSelection(currentModel, currentProvider);
+      try { await restoreSource(); } catch (restoreError) {
+        diagnostic("provider-source-restore-failed", { threadId, message: String(restoreError?.message || restoreError) });
+      }
+      throw error;
+    } finally {
+      pendingProviderTurns.delete(key);
+    }
   }
 
   function installRequestClient(client) {
@@ -431,10 +492,12 @@
     clientOriginals.set(client, rawRequest);
     client.enqueueRequest = async function (method, params, options, dispatch, trace) {
       const normalizedMethod = String(method || "");
+      if (normalizedMethod === "thread/settings/update" && await stageModelChange(this, rawRequest, params || {})) return {};
       const nextParams = await prepareRequest(this, rawRequest, normalizedMethod, params || {});
       if (["thread/start", "thread/resume", "thread/fork", "turn/start"].includes(normalizedMethod)) {
         diagnostic("app-server-request-routed", {
           method: normalizedMethod,
+          threadId: String(nextParams?.threadId || nextParams?.thread_id || ""),
           model: String(nextParams?.model || ""),
           modelProvider: String(nextParams?.modelProvider || nextParams?.model_provider || ""),
           transport: "enqueueRequest",
@@ -444,14 +507,6 @@
       if (normalizedMethod === "turn/start" && state.pendingOfficialModel && turnModel(nextParams) === state.pendingOfficialModel) {
         state.pendingOfficialModel = "";
         state.selectedProvider = "";
-      }
-      if (normalizedMethod === "turn/start" && pendingThreadNavigation) {
-        const sentThreadId = String(nextParams?.threadId || nextParams?.thread_id || "");
-        if (sentThreadId === pendingThreadNavigation.threadId) {
-          const navigation = pendingThreadNavigation;
-          pendingThreadNavigation = null;
-          navigateToThread(navigation.threadId, navigation.hostId);
-        }
       }
       rememberThreadResult(normalizedMethod, nextParams, result);
       if (normalizedMethod === "list-models" || normalizedMethod === "model/list") return patchModelResult(result);
@@ -471,6 +526,12 @@
     installedManagers.add(manager);
     activeConversationManager = manager;
     managersByHost.set(String(manager.hostId || manager.requestClient.hostId || "local"), manager);
+    if (typeof manager.executeTurnStart === "function") {
+      const original = manager.executeTurnStart;
+      manager.executeTurnStart = function (threadId, operation, ...args) {
+        return executeManagedTurn(this, original, threadId, operation, args);
+      };
+    }
     discardPrewarmedThreads("routing-installed");
     diagnostic("conversation-manager-installed");
     return true;

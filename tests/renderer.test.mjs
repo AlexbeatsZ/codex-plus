@@ -271,7 +271,7 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.version, 20);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 21);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option \{ color:var\(--cp-text\); background:var\(--cp-bg\); \}/);
 });
@@ -323,7 +323,11 @@ test("patches the real app-server client for native models and provider routing"
     return { status: "created", conversationId: params.sourceConversationId === "existing" ? "api-child" : "gpt-child", synchronization: { status: "complete" } };
   });
   let prewarmClears = 0;
-  assert.equal(routing.installConversationManagerForTest({ requestClient: client, forkConversationFromLatest() {}, setThreadTitle: async (id, title) => { calls.push({ method: "native-title", id, title }); }, clearPrewarmedThreads: () => { prewarmClears += 1; } }), true);
+  const manager = { requestClient: client, forkConversationFromLatest() {}, setThreadTitle: async (id, title) => { calls.push({ method: "native-title", id, title }); }, clearPrewarmedThreads: () => { prewarmClears += 1; }, executeTurnStart: async (threadId, operation) => {
+    assert.equal(operation.request.threadId, threadId);
+    return client.sendRequest("turn/start", operation.request);
+  } };
+  assert.equal(routing.installConversationManagerForTest(manager), true);
   assert.equal(prewarmClears, 1);
   routing.setSelectedModel("cp-route");
   assert.equal(prewarmClears, 2);
@@ -336,7 +340,7 @@ test("patches the real app-server client for native models and provider routing"
   assert.equal(calls.filter((call) => call.method === "thread/start").at(-1).params.modelProvider, "codex-plus-api");
   await client.sendRequest("thread/list", { modelProviders: ["openai"] });
   assert.equal(calls.find((call) => call.method === "thread/list").params.modelProviders, null);
-  await client.sendRequest("turn/start", { threadId: "existing", model: "cp-route" });
+  await manager.executeTurnStart("existing", { request: { threadId: "existing", model: "cp-route", input: [] } });
   assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "native-fork", "thread/read", "native-title", "turn/start"]);
   assert.equal(calls.at(-4).params.model, "cp-route");
   assert.equal(calls.at(-1).params.threadId, "api-child");
@@ -348,7 +352,7 @@ test("patches the real app-server client for native models and provider routing"
   officialOption.textContent = "GPT-5";
   dom.window.document.body.append(officialOption);
   officialOption.click();
-  await client.sendRequest("turn/start", { threadId: "new-thread", model: null, collaborationMode: { mode: "default", settings: { model: "gpt-5", reasoning_effort: "high" } } });
+  await manager.executeTurnStart("new-thread", { request: { threadId: "new-thread", model: null, input: [], collaborationMode: { mode: "default", settings: { model: "gpt-5", reasoning_effort: "high" } } } });
   assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "native-fork", "thread/read", "native-title", "turn/start"]);
   assert.equal(calls.at(-4).params.model, "gpt-5");
   assert.equal(calls.at(-1).params.threadId, "gpt-child");
@@ -388,7 +392,9 @@ test("does not fork or send when the user cancels a provider branch", async () =
   officialOption.textContent = "GPT-5";
   dom.window.document.body.append(officialOption);
   officialOption.click();
-  await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread", collaborationMode: { settings: { model: "gpt-5" } } }), /已取消跨 provider 历史分支/);
+  const manager = { requestClient: client, forkConversationFromLatest() {}, clearPrewarmedThreads() {}, executeTurnStart() { assert.fail("cancelled switch must not register a native turn"); } };
+  routing.installConversationManagerForTest(manager);
+  await assert.rejects(manager.executeTurnStart("api-thread", { request: { threadId: "api-thread", collaborationMode: { settings: { model: "gpt-5" } } } }), /已取消跨 provider 历史分支/);
   assert.equal(calls.at(-1).method, "thread/read");
   assert.equal(calls.some((call) => call.method === "turn/start" || call.method === "thread/fork"), false);
   assert.equal(routing.selectedModel(), "cp-route");
@@ -428,7 +434,9 @@ test("blocks the turn when a provider fork cannot be verified", async () => {
   officialOption.textContent = "GPT-5";
   dom.window.document.body.append(officialOption);
   officialOption.click();
-  await assert.rejects(client.sendRequest("turn/start", { threadId: "api-thread", collaborationMode: { settings: { model: "gpt-5" } } }), /provider 验证失败：codex-plus-api/);
+  const manager = { requestClient: client, forkConversationFromLatest() {}, clearPrewarmedThreads() {}, executeTurnStart() { assert.fail("unverified switch must not register a native turn"); } };
+  routing.installConversationManagerForTest(manager);
+  await assert.rejects(manager.executeTurnStart("api-thread", { request: { threadId: "api-thread", collaborationMode: { settings: { model: "gpt-5" } } } }), /provider 验证失败：codex-plus-api/);
   assert.equal(calls.some((call) => call.method === "turn/start"), false);
   assert.equal(routing.selectedModel(), "cp-route");
 });
