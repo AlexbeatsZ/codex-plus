@@ -11,7 +11,7 @@
 - 登录模式先获取 launcher 锁并静默等待，不启动 broker、不修改配置，也不主动打开 Codex；若已有 launcher 持锁则直接退出。
 - 用户之后从官方入口打开 Codex 时，登录模式检测到受支持的 OpenAI 进程，释放等待锁，再进入与普通启动相同的 `stop → lock → broker → config → launch → inject` 生命周期。
 - 接管的 Codex 会以 Windows `BelowNormal` priority class 启动，避免官方 Electron 主进程出现持续 CPU 忙循环时以普通或更高线程优先级阻塞桌面输入；该设置仅作用于本次 Codex 进程树，不修改系统全局调度配置。
-- 一次受管 Codex 生命周期结束后，登录模式必须重新获取等待锁并回到静默监测；官方应用更新或自重启产生的新根进程也要再次接管。根进程发现必须排除带 `--type=` 的 Electron 子进程和 `codex app-server`，避免残留 crashpad/renderer 触发无意义重启。
+- 首次接管后，登录模式与普通启动共用常驻监测循环；Codex 关闭时保留同一 launcher 锁和 broker，静默等待用户再次打开，不主动弹窗。根进程发现必须排除带 `--type=` 的 Electron 子进程和 `codex app-server`，避免残留 crashpad/renderer 触发无意义重启。
 - 用户直接双击无参数 EXE 时，仍立即执行普通启动；它会停止等待中的登录实例，因此不会被后台 monitor 阻塞。
 - macOS LaunchAgent 必须设置 `AbandonProcessGroup=true`。账户 helper 是 launcher 的子进程，但切换事务会主动停止父 launcher；若由 `launchd` 默认管理整个进程组，父进程退出时 helper 也会被清理，事务会停在 `runtime.stop.started`，留下 `pending-action.json` 且无法重新拉起 launcher。
 - macOS LaunchAgent 必须使用 `ProcessType=Interactive`：登录模式虽然多数时间只是后台等待，但它会直接派生官方 Codex GUI 进程。`Background` 资源策略会继承到子进程，令官方应用以后台优先级运行；不能只把启动器按后台任务分类。修改已安装 plist 后须等下次登录或重新加载该 job 才会影响 `launchd` 已持有的配置。
@@ -19,11 +19,20 @@
 ## 普通启动
 
 1. 结束当前 EXE 的旧实例、已知旧 launcher 名称 `codex-plus-plus`，以及属于 OpenAI Codex/ChatGPT 安装的 `ChatGPT.exe`/`Codex.exe`；排除当前 PID 并核对目标路径。
-2. 确认目标进程退出后获取 `%LOCALAPPDATA%\codex-plus\launcher.lock` 独占锁。
+2. 确认目标进程退出后获取仓库 `.codex-plus/launcher.lock` 独占锁。
 3. 启动本机 API broker，并增量核对 Codex provider 配置；详见 `api-provider-routing.md`。
 4. 解析 Microsoft Store OpenAI 包或受支持的独立安装路径；优先以 `--remote-debugging-port=9229` 启动。若旧进程退出后 9229 仍无法在本机绑定（包括 Windows 遗留的失效监听端点），自动选择一个空闲本机端口，并让启动、注入 watchdog 与退出监测全程使用同一端口。
 5. 选择主 `app://-/index.html` target，安装 CDP binding、账户/API UI、模型目录和路由脚本。
-6. launcher 保持运行；target 重建或连接丢失时重新发现并注入。常驻退出监测持有本次启动的 Codex 根进程句柄，根进程存活时不得周期性枚举全机进程或探测 CDP；只有根进程退出后才用 CDP 端点确认是否仍有接管后的 Codex 实例。登录自启等待模式可枚举进程，但必须复用轻量 monitor、只刷新名称、可执行路径和一次性命令行，并使用低频轮询。
+6. 普通启动、网页登录、登录自启接管及仅附加模式共用常驻监测循环；target 重建或连接丢失时重新发现并注入。常驻退出监测持有本次启动或观察到的 Codex 根进程，根进程存活时不得周期性枚举全机进程；只有根进程退出后才用 CDP 主页面确认是否仍有接管后的 Codex 实例。观察已有进程时同时核对 PID 和创建时间，避免 PID 复用误判。等待新进程时复用轻量 monitor，只刷新名称、可执行路径和一次性命令行，每两秒查询一次。
+
+### 关闭、重启与重新接管
+
+- 旧实现仅登录自启模式有外层循环，普通启动和网页登录随第一轮 Codex 退出而结束；仅附加模式则永远轮询旧端口。三者现统一进入常驻 supervisor。
+- Codex 退出后保留同一个 launcher、desktop helper、API broker、provider 配置和独占锁；broker 端口不会因界面重启而变化，也不重复启动 Tunnel。CDP 没有主页面或仅有无关 HTTP 响应不算实例存活；连续五次缺失后进入 `launcher.codex.rearmed`，不重新打开已关闭的 Codex。
+- 用户重新打开或官方自重启后，读取新根进程真实的 `--remote-debugging-port`（支持等号及独立参数、动态端口）。已有端口直接重新注入，不终止新进程；同端口重启由原 watchdog 直接重连。
+- 新进程没有 CDP 参数时无法直接注入，须按既定启动方式仅受控重启官方 Codex，重新解析安装位置并补齐 CDP 参数；不能调用会同时结束其他 launcher 的完整停止流程，也不能销毁当前 broker。失败写 `launcher.codex.recovery_failed` 后继续等待，不把暂时接管失败变成常驻进程退出。
+- `--attach-existing` 同样持有 launcher 独占锁，避免两个注入 owner 和两个 broker 同时存在；它仅用于没有其他 launcher 持锁的现有 CDP 实例。账户切换 helper 仍按原设计停止整个旧 launcher，不能被常驻等待逻辑拦截。
+- 回归只使用隔离 state/CODEX_HOME、mock CDP 和 broker，覆盖多轮关闭/重开、broker 稳定、动态端口、PID 复用、无进程句柄时端点消失；不会重启生产 Codex 或发送真实对话。
 
 注入 observer 只响应新增或变化的原生菜单节点；聊天流、终端输出和其他无关 DOM 变化不得触发全页面菜单扫描。CDP 健康心跳只在 observer/style 缺失时重新安装注入，不应把健康检查本身变成固定频率的 DOM 扫描。
 
