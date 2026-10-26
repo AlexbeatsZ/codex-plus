@@ -6,7 +6,7 @@
 
 # Current State
 
-- 2026-10-25：修复普通启动/网页登录随首轮 Codex 退出而结束、attach 固守旧端口的问题；所有入口现共用常驻 supervisor，关闭时保留 launcher 锁和原 broker，重新打开后读取真实 CDP 端口再注入，无 CDP 参数时仅受控重启官方应用。当前仅源码与隔离回归，未替换正式 EXE、未重启/附加现有实例；设计见 `docs/design/account-switch-lifecycle.md`。
+- 2026-10-25：常驻重启接管修复已文件部署 OMEN/ROG/Mac（0.3.3-omen / 0.3.3-rog / 0.3.3）。所有入口在 Codex 关闭后保留 launcher 锁和原 broker，重开时读取实际 CDP 端口再注入，无 CDP 参数时仅受控重启官方应用。Windows 109 项 Rust、Mac 113 项 Rust、两端各 54 项 JS 及 Mac 稳定签名验证通过；未重启/热附加任何现有实例，须用户自行启动新版 codex-plus 后生效。设计见 `docs/design/account-switch-lifecycle.md`，各端实际产物来源见 `.codex-plus/release.json`。
 
 - 2026-10-25：外部 API 模型发现保留 `display_name` / `displayName` / `name` 友好名称；旧名称为空或等于 ID 时在重新读取后更新，自定义别名、可见性和路由不变。已文件部署 OMEN/ROG/Mac，分别为 `0.3.3-omen` / `0.3.3-rog` / `0.3.3`；Windows 103 项 Rust、Mac 107 项 Rust及两端 54 项 JS 回归通过，Mac 保持稳定证书签名。未重启或附加任何当前 Codex/launcher/Tunnel，运行实例仍是旧代码；用户下次显式启动新版 launcher 后需重新“读取模型”并保存。部署记录见各端 `.codex-plus/release.json`，设计见 `docs/design/api-provider-routing.md`。
 
