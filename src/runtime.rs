@@ -188,6 +188,14 @@ fn requirement_uses_stable_identity(requirement: &str) -> bool {
 }
 
 pub fn stop_existing_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
+    stop_runtime_processes(paths, true)
+}
+
+pub fn stop_codex_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
+    stop_runtime_processes(paths, false)
+}
+
+fn stop_runtime_processes(paths: &AccountPaths, include_launchers: bool) -> anyhow::Result<()> {
     let current_pid = std::process::id();
     let current_exe = std::env::current_exe().context("无法定位 codex-plus.exe")?;
     let current_key = normalized_path(&current_exe);
@@ -206,7 +214,7 @@ pub fn stop_existing_runtime(paths: &AccountPaths) -> anyhow::Result<()> {
                 .is_some_and(|path| normalized_path(path) == current_key);
             let known_launcher = is_codex_plus_launcher(process.name());
             let codex = is_openai_codex_process(process.name(), process.exe());
-            (same_launcher || known_launcher || codex)
+            (codex || (include_launchers && (same_launcher || known_launcher)))
                 .then_some((*pid, process.name().to_string_lossy().to_string()))
         })
         .collect::<Vec<_>>();
@@ -250,6 +258,11 @@ impl CodexAppTarget {
 
 pub enum CodexProcess {
     Child(Child),
+    Observed {
+        pid: Pid,
+        start_time: u64,
+        system: System,
+    },
     #[cfg(windows)]
     Handle {
         pid: u32,
@@ -261,6 +274,7 @@ impl CodexProcess {
     pub fn id(&self) -> u32 {
         match self {
             Self::Child(child) => child.id(),
+            Self::Observed { pid, .. } => pid.as_u32(),
             #[cfg(windows)]
             Self::Handle { pid, .. } => *pid,
         }
@@ -269,6 +283,20 @@ impl CodexProcess {
     pub fn is_running(&mut self) -> anyhow::Result<bool> {
         match self {
             Self::Child(child) => Ok(child.try_wait()?.is_none()),
+            Self::Observed {
+                pid,
+                start_time,
+                system,
+            } => {
+                system.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&[*pid]),
+                    true,
+                    ProcessRefreshKind::nothing(),
+                );
+                Ok(system
+                    .process(*pid)
+                    .is_some_and(|process| process.start_time() == *start_time))
+            }
             #[cfg(windows)]
             Self::Handle { handle, .. } => {
                 use windows::Win32::Foundation::WAIT_TIMEOUT;
@@ -692,19 +720,60 @@ fn codex_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
-pub async fn wait_until_codex_starts() {
+pub struct DiscoveredCodex {
+    pub process: CodexProcess,
+    pub debug_port: Option<u16>,
+}
+
+pub async fn wait_until_codex_starts() -> DiscoveredCodex {
     let mut system = System::new();
     loop {
         refresh_process_discovery(&mut system);
-        if system
+        if let Some(process) = system
             .processes()
             .values()
-            .any(is_openai_codex_root_process)
+            .find(|process| is_openai_codex_root_process(process))
         {
-            return;
+            let pid = process.pid();
+            let start_time = process.start_time();
+            let debug_port = debug_port_from_command(process.cmd());
+            return DiscoveredCodex {
+                process: CodexProcess::Observed {
+                    pid,
+                    start_time,
+                    system,
+                },
+                debug_port,
+            };
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+pub fn observe_codex_on_port(debug_port: u16) -> Option<CodexProcess> {
+    let mut system = System::new();
+    refresh_process_discovery(&mut system);
+    let process = system.processes().values().find(|process| {
+        is_openai_codex_root_process(process)
+            && debug_port_from_command(process.cmd()) == Some(debug_port)
+    })?;
+    Some(CodexProcess::Observed {
+        pid: process.pid(),
+        start_time: process.start_time(),
+        system,
+    })
+}
+
+fn debug_port_from_command(command: &[std::ffi::OsString]) -> Option<u16> {
+    command.iter().enumerate().find_map(|(index, argument)| {
+        let argument = argument.to_str()?;
+        let value = if argument == "--remote-debugging-port" {
+            command.get(index + 1)?.to_str()?
+        } else {
+            argument.strip_prefix("--remote-debugging-port=")?
+        };
+        value.parse::<u16>().ok().filter(|port| *port != 0)
+    })
 }
 
 fn refresh_process_discovery(system: &mut System) {
@@ -718,18 +787,17 @@ fn refresh_process_discovery(system: &mut System) {
 }
 
 pub async fn wait_until_codex_stops(
-    mut root_process: CodexProcess,
+    mut root_process: Option<CodexProcess>,
     debug_port: u16,
 ) -> anyhow::Result<()> {
     let mut missing = 0_u8;
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        if root_process
-            .is_running()
-            .context("无法查询 Codex 主进程状态")?
-        {
-            missing = 0;
-            continue;
+        if let Some(process) = root_process.as_mut() {
+            if process.is_running().context("无法查询 Codex 主进程状态")? {
+                missing = 0;
+                continue;
+            }
         }
 
         if !crate::cdp::endpoint_available(debug_port).await {
@@ -959,6 +1027,63 @@ mod tests {
             "ChatGPT.exe".into(),
             "--remote-debugging-port=9229".into(),
         ]));
+    }
+
+    #[test]
+    fn discovers_actual_debug_port_and_rejects_missing_or_invalid_ports() {
+        for (arguments, expected) in [
+            (
+                vec!["ChatGPT.exe", "--remote-debugging-port=59833"],
+                Some(59833),
+            ),
+            (
+                vec!["ChatGPT", "--remote-debugging-port", "9229"],
+                Some(9229),
+            ),
+            (vec!["ChatGPT.exe"], None),
+            (vec!["ChatGPT.exe", "--remote-debugging-port=0"], None),
+            (vec!["ChatGPT.exe", "--remote-debugging-port=65536"], None),
+            (vec!["ChatGPT.exe", "--remote-debugging-port"], None),
+        ] {
+            let arguments = arguments.into_iter().map(Into::into).collect::<Vec<_>>();
+            assert_eq!(debug_port_from_command(&arguments), expected);
+        }
+    }
+
+    #[test]
+    fn observed_process_uses_start_time_to_reject_reused_pids() {
+        let pid = Pid::from_u32(std::process::id());
+        let mut system = System::new();
+        refresh_process_identity(&mut system, ProcessesToUpdate::Some(&[pid]));
+        let start_time = system.process(pid).unwrap().start_time();
+        let mut process = CodexProcess::Observed {
+            pid,
+            start_time,
+            system,
+        };
+        assert!(process.is_running().unwrap());
+        if let CodexProcess::Observed { start_time, .. } = &mut process {
+            *start_time += 1;
+        }
+        assert!(!process.is_running().unwrap());
+    }
+
+    #[tokio::test]
+    async fn attached_session_without_process_handle_ends_when_debug_endpoint_is_gone() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        tokio::time::timeout(
+            Duration::from_secs(8),
+            wait_until_codex_stops(None, server.address().port()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     }
 
     #[test]

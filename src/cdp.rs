@@ -48,15 +48,9 @@ struct BridgeRequest {
 }
 
 pub async fn endpoint_available(port: u16) -> bool {
-    let Ok(client) = local_client() else {
-        return false;
-    };
-    client
-        .get(format!("http://127.0.0.1:{port}/json"))
-        .timeout(Duration::from_secs(1))
-        .send()
+    discover_targets(port)
         .await
-        .is_ok()
+        .is_ok_and(|targets| pick_main_target(targets).is_some())
 }
 
 pub async fn run_watchdog(port: u16, service: BridgeService) -> anyhow::Result<()> {
@@ -537,6 +531,37 @@ fn local_client() -> anyhow::Result<reqwest::Client> {
 mod tests {
     use super::*;
     use crate::accounts::AccountPaths;
+
+    #[tokio::test]
+    async fn endpoint_liveness_requires_a_real_codex_page() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+
+        let server = MockServer::start().await;
+        let port = server.address().port();
+        for (status, payload, expected) in [
+            (500, json!({}), false),
+            (200, json!({"status": "ok"}), false),
+            (200, json!([]), false),
+            (
+                200,
+                json!([{
+                    "id": "restarted-codex",
+                    "type": "page",
+                    "title": "Codex",
+                    "url": "app://-/index.html",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/restarted-codex"
+                }]),
+                true,
+            ),
+        ] {
+            server.reset().await;
+            Mock::given(path("/json"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(payload))
+                .mount(&server)
+                .await;
+            assert_eq!(endpoint_available(port).await, expected);
+        }
+    }
 
     fn target(url: &str, kind: &str) -> Target {
         Target {

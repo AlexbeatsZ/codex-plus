@@ -128,52 +128,40 @@ async fn main_impl() -> anyhow::Result<()> {
 }
 
 async fn run_attach_existing(paths: AccountPaths, debug_port: u16) -> anyhow::Result<()> {
+    let _guard = runtime::acquire_launcher_guard(&paths)?;
     let service = BridgeService::new(paths.clone());
     runtime::append_log(
         &paths,
         "launcher.attach_existing",
         json!({"port": debug_port}),
     );
-    let mut broker = broker::start(broker::PREFERRED_BROKER_PORT, service.apis.clone()).await?;
+    let broker = broker::start(broker::PREFERRED_BROKER_PORT, service.apis.clone()).await?;
     log_broker_port_selection(&paths, &broker);
     config::reconcile_codex_config(&paths, broker.port())?;
-    let result = tokio::select! {
-        result = cdp::run_watchdog(debug_port, service) => result,
-        result = broker.wait() => result.context("API broker 意外结束"),
+    let session = CodexSession {
+        process: runtime::observe_codex_on_port(debug_port),
+        debug_port,
     };
-    broker.shutdown().await;
-    result
+    run_resident_launcher(paths, service, broker, session).await
 }
 
 async fn run_login_startup(paths: AccountPaths) -> anyhow::Result<()> {
-    let mut first_wait = true;
-    loop {
-        let monitor_guard = match runtime::acquire_launcher_guard(&paths) {
-            Ok(guard) => guard,
-            Err(error) => {
-                runtime::append_log(
-                    &paths,
-                    "launcher.login_startup.skipped",
-                    json!({"reason": "launcherAlreadyRunning", "message": error.to_string()}),
-                );
-                return Ok(());
-            }
-        };
-        runtime::append_log(
-            &paths,
-            if first_wait {
-                "launcher.login_startup.waiting"
-            } else {
-                "launcher.login_startup.rearmed"
-            },
-            json!({}),
-        );
-        first_wait = false;
-        runtime::wait_until_codex_starts().await;
-        runtime::append_log(&paths, "launcher.login_startup.detected", json!({}));
-        drop(monitor_guard);
-        run_managed_codex(paths.clone(), "launcher.login_startup.takeover", false).await?;
-    }
+    let monitor_guard = match runtime::acquire_launcher_guard(&paths) {
+        Ok(guard) => guard,
+        Err(error) => {
+            runtime::append_log(
+                &paths,
+                "launcher.login_startup.skipped",
+                json!({"reason": "launcherAlreadyRunning", "message": error.to_string()}),
+            );
+            return Ok(());
+        }
+    };
+    runtime::append_log(&paths, "launcher.login_startup.waiting", json!({}));
+    runtime::wait_until_codex_starts().await;
+    runtime::append_log(&paths, "launcher.login_startup.detected", json!({}));
+    drop(monitor_guard);
+    run_managed_codex(paths, "launcher.login_startup.takeover", false).await
 }
 
 async fn run_managed_codex(
@@ -194,7 +182,7 @@ async fn run_managed_codex(
     );
     runtime::stop_existing_runtime(&paths)?;
     let _guard = runtime::acquire_launcher_guard(&paths)?;
-    let mut broker = broker::start(broker::PREFERRED_BROKER_PORT, service.apis.clone()).await?;
+    let broker = broker::start(broker::PREFERRED_BROKER_PORT, service.apis.clone()).await?;
     log_broker_port_selection(&paths, &broker);
     config::reconcile_codex_config(&paths, broker.port())?;
     let debug_port = runtime::select_debug_port(DEBUG_PORT)?;
@@ -221,13 +209,101 @@ async fn run_managed_codex(
         tokio::spawn(runtime::capture_web_login(paths.clone()));
     }
 
+    let session = CodexSession {
+        process: Some(codex_process),
+        debug_port: debug_port.port,
+    };
+    run_resident_launcher(paths, service, broker, session).await
+}
+
+struct CodexSession {
+    process: Option<runtime::CodexProcess>,
+    debug_port: u16,
+}
+
+async fn run_resident_launcher(
+    paths: AccountPaths,
+    service: BridgeService,
+    mut broker: broker::BrokerHandle,
+    session: CodexSession,
+) -> anyhow::Result<()> {
     let result = tokio::select! {
-        result = cdp::run_watchdog(debug_port.port, service) => result.context("注入监测意外结束"),
+        result = supervise_codex(
+            session,
+            |session| monitor_codex_session(service.clone(), session),
+            || recover_codex_session(&paths),
+        ) => result,
         result = broker.wait() => result.context("API broker 意外结束"),
-        result = runtime::wait_until_codex_stops(codex_process, debug_port.port) => result.context("Codex 退出监测意外结束"),
     };
     broker.shutdown().await;
     result
+}
+
+async fn supervise_codex<Session, MonitorFuture, RecoverFuture>(
+    mut session: Session,
+    mut monitor: impl FnMut(Session) -> MonitorFuture,
+    mut recover: impl FnMut() -> RecoverFuture,
+) -> anyhow::Result<()>
+where
+    MonitorFuture: std::future::Future<Output = anyhow::Result<()>>,
+    RecoverFuture: std::future::Future<Output = anyhow::Result<Session>>,
+{
+    loop {
+        monitor(session).await?;
+        session = recover().await?;
+    }
+}
+
+async fn monitor_codex_session(
+    service: BridgeService,
+    session: CodexSession,
+) -> anyhow::Result<()> {
+    tokio::select! {
+        result = cdp::run_watchdog(session.debug_port, service) => result.context("注入监测意外结束"),
+        result = runtime::wait_until_codex_stops(session.process, session.debug_port) => result.context("Codex 退出监测意外结束"),
+    }
+}
+
+async fn recover_codex_session(paths: &AccountPaths) -> anyhow::Result<CodexSession> {
+    runtime::append_log(paths, "launcher.codex.rearmed", json!({}));
+    loop {
+        let discovered = runtime::wait_until_codex_starts().await;
+        runtime::append_log(
+            paths,
+            "launcher.codex.detected",
+            json!({"pid": discovered.process.id(), "debugPort": discovered.debug_port}),
+        );
+        if let Some(debug_port) = discovered.debug_port {
+            return Ok(CodexSession {
+                process: Some(discovered.process),
+                debug_port,
+            });
+        }
+        let result: anyhow::Result<CodexSession> = (|| {
+            let target = runtime::resolve_codex_target()?;
+            runtime::stop_codex_runtime(paths)?;
+            let debug_port = runtime::select_debug_port(DEBUG_PORT)?;
+            let process = runtime::launch_codex(&target, debug_port.port)?;
+            runtime::append_log(
+                paths,
+                "launcher.codex.restarted",
+                json!({"pid": process.id(), "debugPort": debug_port.port}),
+            );
+            Ok(CodexSession {
+                process: Some(process),
+                debug_port: debug_port.port,
+            })
+        })();
+        match result {
+            Ok(session) => return Ok(session),
+            Err(error) => runtime::append_log(
+                paths,
+                "launcher.codex.recovery_failed",
+                json!({"message": format!("{error:#}")}),
+            ),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
 }
 
 fn log_broker_port_selection(paths: &AccountPaths, broker: &broker::BrokerHandle) {
@@ -282,6 +358,85 @@ mod tests {
             LaunchMode::from_args(&args(&["--attach-existing-port=59833"])),
             LaunchMode::AttachExisting(59833)
         );
+    }
+
+    #[tokio::test]
+    async fn resident_launcher_rearms_after_repeated_exits_without_replacing_broker() {
+        use std::cell::{Cell, RefCell};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let paths = AccountPaths {
+            codex_home: temp.path().join("codex"),
+            state_dir: temp.path().join("state"),
+            usage_endpoint: String::new(),
+        };
+        let mut broker = broker::start_on_port(paths, 0).await.unwrap();
+        let broker_port = broker.port();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let sessions = RefCell::new(Vec::new());
+        let next_port = Cell::new(59833_u16);
+        let monitor = |debug_port| {
+            sessions.borrow_mut().push(debug_port);
+            let client = client.clone();
+            async move {
+                assert_eq!(
+                    client
+                        .get(format!("http://127.0.0.1:{broker_port}/health"))
+                        .send()
+                        .await?
+                        .text()
+                        .await?,
+                    "ok"
+                );
+                if debug_port == 59834 {
+                    anyhow::bail!("finished isolated lifecycle test");
+                }
+                Ok(())
+            }
+        };
+        let recover = || {
+            let debug_port = next_port.get();
+            next_port.set(debug_port + 1);
+            std::future::ready(Ok(debug_port))
+        };
+        let result = tokio::select! {
+            result = supervise_codex(DEBUG_PORT, monitor, recover) => result,
+            _ = broker.wait() => panic!("broker stopped between Codex sessions"),
+        };
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("isolated lifecycle")
+        );
+        assert_eq!(*sessions.borrow(), [DEBUG_PORT, 59833, 59834]);
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resident_launcher_waits_for_user_reopen_instead_of_exiting_or_relaunching() {
+        use std::cell::Cell;
+
+        let monitored = Cell::new(0);
+        let waiting = Cell::new(false);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            supervise_codex(
+                (),
+                |_| {
+                    monitored.set(monitored.get() + 1);
+                    std::future::ready(Ok(()))
+                },
+                || {
+                    waiting.set(true);
+                    std::future::pending::<anyhow::Result<()>>()
+                },
+            ),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(monitored.get(), 1);
+        assert!(waiting.get());
     }
 }
 
