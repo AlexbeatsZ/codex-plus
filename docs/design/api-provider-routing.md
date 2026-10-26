@@ -71,6 +71,10 @@ v19 在真实 `model/list` 探测成功后直接记录官方模型 ID 与显示�
 
 跨 provider 发送仅允许空闲或上一轮失败的任务，并采用明确确认的历史分支流程。确认后调用新版原生 helper（scope、hostId、sourceConversationId/model），由它提供原生 resume inputs、历史投影和任务注册；最低层路由同时写入目标 model/provider。必须确认返回 `status=created`、`synchronization.status=complete`，再 `thread/read` 验证 provider，最后才发送到新 threadId、复制原标题并导航。用户取消或任一步失败时恢复选择并阻止发送，保留原任务。v17 不再用裸 `thread/fork` fallback 创建未被 UI 注册的任务。
 
+v21 将跨 provider 迁移提升到原生 manager 的 `executeTurnStart` 事务入口，在原生创建乐观 turn、登记 completion observer 和执行队列之前完成确认、分支和 provider 核对，并用目标会话 ID 同时调用原生事务及其 request。旧版只在 `enqueueRequest("turn/start")` 改 threadId，会让源会话持有永远收不到目标完成事件的 inProgress turn；底层现在只做同 provider 路由，发现漏过的跨 provider 请求则阻发，不能再补做隐式分支。
+
+原生模型选择器还会先发 `thread/settings/update`。跨 provider 的 model/effort 按 hostId 与 threadId 暂存，不把目标路由写进旧 provider 的持久配置；空输入续跑从同一会话暂存恢复目标，不能读取全局选择。分支确认后恢复源会话的原生 model/effort，再在目标会话调用完整原生发送事务；取消或验证失败也恢复源设置，且不创建原生 pending turn。附件、稳定消息 ID、协作模式、调度回调和 trace 原样保留；同 provider 的模型设置仍走官方路径。单会话切换在途时拒绝重复发送，其他会话互不干扰。真实官方应用的 manager 能力需只读核对；mock 事务回归不等于已加载新版或真实生产切换验收。
+
 旧版 `26.810.4967.0` 的 `excludeTurns` 限制不能直接套在新版上：`26.928` 原生普通 fork 为分页历史也会提交 `excludeTurns:true`，并通过自己的 history projection/resume 处理继承内容。保持原生 helper 的历史流程；不要自行添加该字段或靠返回的 turns 是否为空判断持久历史是否丢失。
 
 ## 验收不变量
