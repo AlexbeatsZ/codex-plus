@@ -6,7 +6,9 @@
 
 # Current State
 
-- 2026-10-28：0.3.5 修复订阅请求头拼写，原样转发官方 `session-id` / `thread-id` 恢复缓存亲和性，保留 `prompt_cache_key`；用户要求不测试，只构建发布，运行效果待加载新版后自然观察。原生上下文浮窗输入/输出/缓存命中统计仍待实现。
+- 2026-10-28：0.3.6 在原生上下文浮窗追加会话累计输入、缓存输入、命中率、输出及推理，复用原生用量状态、无额外推理请求；包含 0.3.5 缓存会话请求头修复。按用户要求不测试，编译发布后需显式启动新版 launcher 生效。设计见 `docs/design/context-usage.md`。
+
+- 2026-10-28：0.3.5 修复订阅请求头拼写，原样转发官方 `session-id` / `thread-id` 恢复缓存亲和性，保留 `prompt_cache_key`；用户要求不测试，只构建发布，运行效果待加载新版后自然观察。
 
 - 2026-10-28：公共版本 0.3.4 修复订阅额度提前恢复后仍跳过账户：额度限制最多冷却 60 秒后重试；账户额度刷新同步池缓存，确认可用后解除旧额度冷却，但不清除频率/模型/凭据限制，不绕过保留阈值。未重启或热附加任何生产实例；运行生效及文件部署仍以各端 release.json 为准。设计见 docs/design/account-pool.md。
 
@@ -198,6 +200,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 
 # Docs Index
 
+- `docs/design/context-usage.md`：原生上下文浮窗的输入、输出与缓存统计。
 - `CONTEXT.md`：账户、订阅 API、模型路由与凭据状态术语。
 - `docs/design/account-pool.md`：固定订阅 API、顺序、失败跳过、凭据续期及验收。
 - `docs/design/account-switch-lifecycle.md`：手动切换、未登录入口、生命周期。
