@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/renderer.test.mjs tests/usage-renderer.test.mjs tests/pdf-preview.test.mjs tests/subscription-reserve.test.mjs tests/provider-switch.test.mjs",
-    "check": "node --check assets/bridge.js && node --check assets/renderer.js && node --check assets/api-providers.js && node --check assets/model-routing.js && node --check assets/pdf-preview.js && node --check macos/release.mjs",
+    "check": "node --check assets/bridge.js && node --check assets/renderer.js && node --check assets/api-providers.js && node --check assets/model-routing.js && node --check assets/context-usage.js && node --check assets/pdf-preview.js && node --check macos/release.mjs",
     "macos:test": "node --test tests/macos-release.test.mjs",
     "local-tools:install": "npm --prefix local-tools install",
     "local-tools:build": "npm --prefix local-tools run build",
