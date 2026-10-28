@@ -1,6 +1,8 @@
 {
   "channel": "base",
   "branch": "main",
-  "version": "0.3.4",
-  "components": ["local-tools"]
+  "version": "0.3.5",
+  "components": [
+    "local-tools"
+  ]
 }
