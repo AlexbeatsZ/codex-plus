@@ -229,9 +229,8 @@ impl QuotaTracker {
 impl SubscriptionApi {
     pub async fn fetch_usage(&self, id: &str) -> anyhow::Result<Usage> {
         let started = Instant::now();
-        let client = SubscriptionConfig::load(&self.paths)?.client()?;
         let usage = AccountVault::new(self.paths.clone())
-            .fetch_usage_with_client(id, &client, &self.refresh_url)
+            .fetch_usage(id)
             .await?;
         let usage = self.quota.observe(id, Some(usage), Some(started)).unwrap();
         let available =
