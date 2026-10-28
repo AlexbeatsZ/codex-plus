@@ -81,9 +81,7 @@ impl BridgeService {
 
     async fn usage(&self, payload: Value) -> anyhow::Result<Value> {
         let record_id = required_record_id(&payload)?;
-        let usage = AccountVault::new(self.paths.as_ref().clone())
-            .fetch_usage(&record_id)
-            .await?;
+        let usage = self.apis.subscription.fetch_usage(&record_id).await?;
         Ok(json!({"status": "ok", "recordId": record_id, "usage": usage}))
     }
 

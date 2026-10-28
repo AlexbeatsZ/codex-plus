@@ -347,6 +347,36 @@ async fn quota_fails_over_and_next_request_skips_cooled_account() {
     assert!(!f.router.cooling(&f.ids[0], "other-model"));
 }
 #[tokio::test]
+async fn exhausted_account_without_reserves_is_retried_after_a_bounded_cooldown() {
+    let f = fixture().await;
+    mount(
+        &f,
+        "a",
+        429,
+        json!({"error":{
+            "type":"usage_limit_reached","resets_at":unix_now()+18000
+        }})
+        .to_string(),
+    )
+    .await;
+    mount(&f, "b", 200, success()).await;
+    assert_eq!(send(&f).await.0, StatusCode::OK);
+    assert!(f.router.cooling(&f.ids[0], "gpt-test"));
+    f.server.reset().await;
+    f.router
+        .state
+        .lock()
+        .unwrap()
+        .get_mut(&(f.ids[0].clone(), "gpt-test".into()))
+        .unwrap()
+        .retry_at = unix_now() - 1;
+    mount(&f, "a", 200, success()).await;
+    assert_eq!(send(&f).await.0, StatusCode::OK);
+    let requests = f.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].headers.get("chatgpt-account-id").unwrap(), "a");
+}
+#[tokio::test]
 async fn http_200_quota_before_output_discards_failed_stream() {
     let f = fixture().await;
     mount(&f,"a",200,event(json!({"type":"response.created","response":{"id":"discard-a"}}))+&event(json!({"type":"response.failed","response":{"error":{"code":"usage_limit_reached"}}}))).await;
