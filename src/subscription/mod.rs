@@ -51,6 +51,8 @@ struct AccountState {
     model: String,
     reason: String,
     retry_at: u64,
+    #[serde(skip)]
+    observed_at: std::time::Instant,
 }
 
 impl SubscriptionApi {
@@ -121,6 +123,11 @@ impl SubscriptionApi {
     }
 
     fn cool(&self, id: &str, model: &str, reason: &str, retry_at: u64) {
+        let retry_at = if reason == "额度限制" {
+            retry_at.min(unix_now() + 60)
+        } else {
+            retry_at
+        };
         let mut states = self.state.lock().unwrap();
         states.retain(|_, s| s.retry_at > unix_now());
         if states.len() >= 2048 {
@@ -133,6 +140,7 @@ impl SubscriptionApi {
                 model: model.into(),
                 reason: reason.into(),
                 retry_at,
+                observed_at: std::time::Instant::now(),
             },
         );
     }

@@ -462,3 +462,171 @@ async fn spent_query_budget_skips_unknown_but_can_still_use_fresh_cached_quota()
     );
     assert!(f.server.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn quota_cooldown_retries_before_the_original_five_hour_reset() {
+    let f = fixture().await;
+    let now = unix_now();
+    f.router
+        .cool(&f.ids[0], "gpt-test", "额度限制", now + 18000);
+    assert!(f.router.cooling(&f.ids[0], "gpt-test"));
+    let retry_at = f.router.view().unwrap()["accountStates"][0]["retryAt"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        retry_at <= now + 60,
+        "quota retry is still locked until {retry_at}"
+    );
+    f.router
+        .state
+        .lock()
+        .unwrap()
+        .get_mut(&(f.ids[0].clone(), "gpt-test".into()))
+        .unwrap()
+        .retry_at = now - 1;
+    mount_usage(&f, 200, serde_json::to_value(usage(0.0, 0.0)).unwrap()).await;
+    mount_response(&f, "a", success()).await;
+    let (status, id, _) = send(&f).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(id, f.ids[0]);
+}
+
+#[tokio::test]
+async fn account_usage_refresh_reactivates_quota_and_replaces_reserve_cache() {
+    let f = fixture().await;
+    f.router.quota.record(&f.ids[0], Some(usage(100.0, 0.0)));
+    f.router
+        .cool(&f.ids[0], "gpt-test", "额度限制", unix_now() + 18000);
+    mount_usage(&f, 200, serde_json::to_value(usage(0.0, 0.0)).unwrap()).await;
+    mount_response(&f, "a", success()).await;
+    mount_response(&f, "b", success()).await;
+    let mut service = crate::service::BridgeService::new(f.router.paths.clone());
+    service.apis = crate::integrations::ApiIntegrations::with_subscription(
+        f.router.paths.clone(),
+        f.router.clone(),
+    );
+    let result = service
+        .handle("/accounts/usage", json!({"recordId":f.ids[0]}))
+        .await;
+    assert_eq!(result["status"], "ok", "{result}");
+    assert!(!f.router.cooling(&f.ids[0], "gpt-test"));
+    let (status, id, _) = send(&f).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(id, f.ids[0]);
+}
+
+#[test]
+fn quota_retry_keeps_shorter_resets_and_does_not_shorten_other_restrictions() {
+    let temp = tempfile::tempdir().unwrap();
+    let router = SubscriptionApi::new(AccountPaths {
+        codex_home: temp.path().join("home"),
+        state_dir: temp.path().join("state"),
+        usage_endpoint: String::new(),
+    });
+    let now = unix_now();
+    router.cool("a", "quota", "额度限制", now + 10);
+    router.cool("a", "rate", "请求频率限制", now + 3600);
+    router.cool("a", "model", "该账户不可用此模型", now + 3600);
+    let states = router.state.lock().unwrap();
+    assert_eq!(states[&("a".into(), "quota".into())].retry_at, now + 10);
+    assert_eq!(states[&("a".into(), "rate".into())].retry_at, now + 3600);
+    assert_eq!(states[&("a".into(), "model".into())].retry_at, now + 3600);
+}
+
+#[tokio::test]
+async fn quota_refresh_keeps_unavailable_unknown_and_failed_accounts_cooled() {
+    for (status, value) in [
+        (200, serde_json::to_value(usage(100.0, 0.0)).unwrap()),
+        (200, json!({})),
+        (
+            200,
+            json!({"rate_limit":{"allowed":false,"primary_window":{
+                "used_percent":0,"limit_window_seconds":604800
+            }}}),
+        ),
+        (
+            200,
+            json!({"rate_limit":{"limit_reached":true,"primary_window":{
+                "used_percent":0,"limit_window_seconds":604800
+            }}}),
+        ),
+        (403, json!({"error":"denied"})),
+    ] {
+        let f = fixture().await;
+        f.router
+            .cool(&f.ids[0], "gpt-test", "额度限制", unix_now() + 18000);
+        mount_usage(&f, status, value).await;
+        let result = f.router.fetch_usage(&f.ids[0]).await;
+        assert_eq!(result.is_ok(), status == 200);
+        assert!(f.router.cooling(&f.ids[0], "gpt-test"));
+    }
+}
+
+#[tokio::test]
+async fn weekly_quota_refresh_preserves_rate_model_and_credential_restrictions() {
+    let f = fixture().await;
+    f.router
+        .cool(&f.ids[0], "gpt-test", "额度限制", unix_now() + 18000);
+    f.router
+        .cool(&f.ids[0], "rate", "请求频率限制", unix_now() + 3600);
+    f.router
+        .cool(&f.ids[0], "model", "该账户不可用此模型", unix_now() + 3600);
+    f.router
+        .cool(&f.ids[0], "*", "凭据暂时不可用", unix_now() + 60);
+    let revision = AccountVault::new(f.router.paths.clone())
+        .credential_revision(&f.ids[0])
+        .unwrap();
+    f.router.reject(&f.ids[0], revision);
+    mount_usage(
+        &f,
+        200,
+        json!({"rate_limit":{"allowed":true,"primary_window":{
+            "used_percent":0,"limit_window_seconds":604800,"reset_at":unix_now()+604800
+        }}}),
+    )
+    .await;
+    f.router.fetch_usage(&f.ids[0]).await.unwrap();
+    let states = f.router.state.lock().unwrap();
+    assert!(!states.contains_key(&(f.ids[0].clone(), "gpt-test".into())));
+    for model in ["rate", "model", "*"] {
+        assert!(states.contains_key(&(f.ids[0].clone(), model.into())));
+    }
+    drop(states);
+    assert!(f.router.is_rejected_current(&f.ids[0]));
+}
+
+#[tokio::test]
+async fn refreshed_quota_still_obeys_the_account_reserve() {
+    let f = fixture().await;
+    f.router
+        .cool(&f.ids[0], "gpt-test", "额度限制", unix_now() + 18000);
+    mount_usage(&f, 200, serde_json::to_value(usage(85.0, 0.0)).unwrap()).await;
+    mount_response(&f, "b", success()).await;
+    f.router.fetch_usage(&f.ids[0]).await.unwrap();
+    assert!(!f.router.cooling(&f.ids[0], "gpt-test"));
+    let (status, id, _) = send(&f).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(id, f.ids[1]);
+    assert_eq!(f.server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn usage_query_started_before_a_new_quota_failure_cannot_clear_it() {
+    let f = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/usage"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::to_value(usage(0.0, 0.0)).unwrap())
+                .set_delay(Duration::from_millis(75)),
+        )
+        .mount(&f.server)
+        .await;
+    let (result, ()) = tokio::join!(f.router.fetch_usage(&f.ids[0]), async {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        f.router
+            .cool(&f.ids[0], "gpt-test", "额度限制", unix_now() + 18000);
+    });
+    result.unwrap();
+    assert!(f.router.cooling(&f.ids[0], "gpt-test"));
+}

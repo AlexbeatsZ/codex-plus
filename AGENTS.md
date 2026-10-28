@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-10-28：公共版本 0.3.4 修复订阅额度提前恢复后仍跳过账户：额度限制最多冷却 60 秒后重试；账户额度刷新同步池缓存，确认可用后解除旧额度冷却，但不清除频率/模型/凭据限制，不绕过保留阈值。未重启或热附加任何生产实例；运行生效及文件部署仍以各端 release.json 为准。设计见 docs/design/account-pool.md。
+
 - 2026-10-26：路由 v21 修复跨 provider 发送事务归属。分支及 provider 验证提前到原生 executeTurnStart，避免只改 RPC threadId 而让旧会话永久等待；跨 provider 模型设置按会话暂存并恢复源设置，取消/失败不创建 pending turn。已按干净提交文件部署 OMEN/ROG/Mac（0.3.3-omen / 0.3.3-rog / 0.3.3），Windows 109 项 Rust、Mac 113 项 Rust及两端各 66 项 JS 通过，Mac 保持稳定证书签名。当前 Codex/launcher/Tunnel 均未重启或热附加，须用户自行显式启动新版 codex-plus 后生效，生产双向切换待验收；各端来源见 .codex-plus/release.json，设计见 docs/design/api-provider-routing.md。
 
 - 2026-10-25：常驻重启接管修复已文件部署 OMEN/ROG/Mac（0.3.3-omen / 0.3.3-rog / 0.3.3）。所有入口在 Codex 关闭后保留 launcher 锁和原 broker，重开时读取实际 CDP 端口再注入，无 CDP 参数时仅受控重启官方应用。Windows 109 项 Rust、Mac 113 项 Rust、两端各 54 项 JS 及 Mac 稳定签名验证通过；未重启/热附加任何现有实例，须用户自行启动新版 codex-plus 后生效。设计见 `docs/design/account-switch-lifecycle.md`，各端实际产物来源见 `.codex-plus/release.json`。
