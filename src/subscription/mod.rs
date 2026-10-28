@@ -188,7 +188,9 @@ impl SubscriptionApi {
                 request = request.json(body);
             }
             if let Some(headers) = headers {
-                for name in ["session_id", "conversation_id"] {
+                // Codex uses hyphenated HTTP headers for prompt-cache affinity.
+                // Underscored names are JSON metadata fields, not these headers.
+                for name in ["session-id", "thread-id"] {
                     if let Some(value) = headers.get(name) {
                         request = request.header(name, value);
                     }
