@@ -227,6 +227,33 @@ impl QuotaTracker {
 }
 
 impl SubscriptionApi {
+    pub async fn fetch_usage(&self, id: &str) -> anyhow::Result<Usage> {
+        let started = Instant::now();
+        let usage = AccountVault::new(self.paths.clone())
+            .fetch_usage(id)
+            .await?;
+        let usage = self.quota.observe(id, Some(usage), Some(started)).unwrap();
+        let available =
+            usage.rate_limit.as_ref().is_some_and(|rate| {
+                rate.allowed != Some(false) && rate.limit_reached != Some(true)
+            }) && windows(&usage).next().is_some()
+                && windows(&usage).all(|window| {
+                    window
+                        .limit_window_seconds
+                        .is_some_and(|seconds| seconds > 0)
+                        && window
+                            .reset_at
+                            .is_none_or(|reset| reset > unix_now() as i64)
+                        && remaining(window).is_some_and(|value| value > 0.0)
+                });
+        if available {
+            self.state.lock().unwrap().retain(|(record_id, _), state| {
+                record_id != id || state.reason != "额度限制" || state.observed_at > started
+            });
+        }
+        Ok(usage)
+    }
+
     pub(super) async fn check_reserve(
         &self,
         id: &str,

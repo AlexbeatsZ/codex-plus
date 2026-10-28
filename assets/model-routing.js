@@ -3,7 +3,7 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 21;
+  const VERSION = 22;
   const PROVIDER = "codex-plus-api";
   const POOL_PROVIDER = "codex-plus-account-pool";
   const SELECTED_KEY = "codex-plus:selected-model";
@@ -699,6 +699,7 @@
     setTransportForTest: (send) => { originalSendMessageFromView = send; },
     setNativeForkForTest: (fork, host = {}) => { nativeFork = fork; appServerHost = host; },
     state,
+    tokenUsage: (threadId, hostId = "local") => managersByHost.get(hostId)?.getConversation?.(threadId)?.latestTokenUsageInfo || null,
   };
   install();
 })();
