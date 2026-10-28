@@ -5,9 +5,9 @@ check that merely skips registration does not satisfy the OMEN component boundar
 
 | Branch | Release | Contents | Deployment |
 | --- | --- | --- | --- |
-| `main` | `0.3.4` | Shared launcher and ordinary local-tools; no AI Decision/Todoist adapter | Common development and macOS base release |
-| `codex/omen` | `0.3.4-omen` | Shared functionality; adapter source, imports, tests and compiled modules are absent | OMEN |
-| `codex/rog` | `0.3.3-rog` | Shared launcher and 41 generic development tools; business connector is independently deployed | ROG |
+| `main` | `0.3.6` | Shared launcher and ordinary local-tools; no AI Decision/Todoist adapter | Common development and macOS base release |
+| `codex/omen` | `0.3.6-omen` | Shared functionality; adapter source, imports, tests and compiled modules are absent | OMEN |
+| `codex/rog` | `0.3.6-rog` | Shared launcher and 41 generic development tools; business connector is independently deployed | ROG |
 
 `release-channel.json` records the branch, version and component inventory.
 Both hosts retain their existing project directory and `codex-plus.exe` entry
