@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-10-29：完成手机 Codex 外接 API/聚合订阅任务消失与模型不可选的研究，未改生产行为。当前内嵌 CLI 0.165.0-alpha.1.2 原生 mock 确认 thread/list 的 null/省略只返回默认 provider、[] 才全量，现有 renderer 强制 null 的旧假设失效；原生目录与 openai_base_url 统一 provider 原型可用，旧任务迁移及手机实机仍待验证。入口：docs/design/mobile-remote-providers.md、scripts/verify-native-mobile-providers.mjs。
+
 - 2026-10-29：空闲账户 5h 自动激活已同步并文件部署 ROG `0.3.7-rog` 与 Mac `0.3.7`，对应 GitHub Release 已上传；构建源码分别 `b7f2bbc` / `b1edff1`，Mac 保持原稳定证书签名。ROG Rust 127、Mac Rust 131 通过，两端 renderer 均 67/68（已有 routing v22/v21 断言失败）；MCP 与 Mac 原生签名发布回归通过。原 Codex/launcher/Tunnel PID 与启动时间不变，未启用开关、未发送真实模型请求；各端需显式启动新版 codex-plus 后在现有订阅设置开启，真实计时待自然观察。OMEN 固定入口仍为 0.3.6-omen，0.3.7-omen 候选及 Release 已存在；本次未变更 OMEN 运行/部署状态。各端实际来源见 `.codex-plus/release.json`。
 
 - 2026-10-29：公共版本 0.3.7 新增默认关闭的 `autoActivate`：在现有订阅面板显式启用后，每 5 分钟检查已选空闲账户，仅真实 5h 剩余 100%、周剩余 >0% 且高于保留阈值时发送独立 OK 请求。跳过当前登录、最近分配和在途账户，持久化至少 5h 防重复，前台优先。只做 mock 回归，不启用生产配置、不发送真实验证请求、不重启或热附加现有实例；真实计时待自然观察。设计见 `docs/design/account-pool.md`，各端文件发布以 `.codex-plus/release.json` 为准。
@@ -205,6 +207,8 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - Windows Microsoft Store (MSIX / AppX) 安装的桌面应用在 `C:\Program Files\WindowsApps\` 下具有 NTFS 条件访问控制列表（Conditional ACE：`WIN://SYSAPPID Contains "<PackageFamilyName>"`）。普通非打包 Win32 进程直接调用 `CreateProcessW` / `Command::spawn()` 会因调用令牌缺少该包 Claim 而被操作系统内核安全模型直接拦截，返回 `拒绝访问。(os error 5)`（`0x80070005`）。必须通过 Windows Shell COM 接口 `IApplicationActivationManager::ActivateApplication` 传入 Application User Model ID (`AUMID: <PackageFamilyName>!App`) 和启动参数（如 `--remote-debugging-port`）由 DCOM 系统服务代理创建具备合法包身份的进程；再通过返回的 PID 用 `OpenProcess` 获取句柄后下调为 `BELOW_NORMAL_PRIORITY_CLASS` 并监听退出。
 
 # Docs Index
+
+- `docs/design/mobile-remote-providers.md`：手机 Remote 的任务/provider 过滤、原生模型目录与社区方案研究（待实现）。
 
 - `docs/design/context-usage.md`：原生上下文浮窗的输入、输出与缓存统计。
 - `CONTEXT.md`：账户、订阅 API、模型路由与凭据状态术语。

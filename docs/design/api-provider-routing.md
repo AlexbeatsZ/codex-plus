@@ -47,6 +47,10 @@ broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 mod
 
 ## 原生模型目录与路由
 
+2026-10-29 手机 Remote 可见性研究见 [mobile-remote-providers.md](mobile-remote-providers.md)。
+当前内嵌 CLI `0.165.0-alpha.1.2` 的隔离实测表明，下文历史设计中的 `modelProviders:null`
+实际只选默认 provider，`[]` 才表示全部；现有实现尚未修正，桌面注入也未覆盖手机模型目录。
+
 注入模型 descriptor 时：
 
 - `model/id` 使用 routeId；
