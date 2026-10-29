@@ -6,7 +6,7 @@
 
 # Current State
 
-- 2026-10-29：0.3.8 已实现手机 Remote 的原生目录与统一 openai 网关：新 API/订阅任务保持 openai 身份，由现有 broker 内部分流；旧 provider 表保留，API 面板可显式为旧任务创建完整历史分支。当前 Mac 原生 mock 已覆盖目录、同任务三渠道、订阅压缩续接、历史 fork 和默认列表可见；未发送真实模型请求、未改当前运行实例。正在构建并文件部署 Mac/ROG/OMEN，实际生效以各端 release.json 为准；OMEN 既有未提交源码须原样保留。设计：docs/design/mobile-remote-providers.md。
+- 2026-10-29：0.3.8 已实现手机 Remote 的原生目录与统一 openai 网关：新 API/订阅任务保持 openai 身份，由现有 broker 内部分流；旧 provider 表保留，API 面板可显式为旧任务创建完整历史分支。已文件部署并上传 Release：Mac 0.3.8 / ROG 0.3.8-rog / OMEN 0.3.8-omen，源码分别 08efc78 / ddc1b15 / 9a04fdb。Mac Rust 138、JS 71、MCP 13+1 skip、签名回归通过；两条 Windows 渠道在 ROG 同路径构建，各 Rust 134、JS 71、MCP 14 通过，含 CLI 0.163 原生验证。原根进程/launcher/Tunnel 保持 PID 与启动时间，未发送真实验证请求；须显式启动新版生效。OMEN 13 个既有未提交文件逐字保留，仅部署二进制；源码尚在旧 HEAD，后续同步须先处理这些改动。设计：docs/design/mobile-remote-providers.md。
 
 - 2026-10-29：完成手机 Codex 外接 API/聚合订阅任务消失与模型不可选的研究，未改生产行为。当前内嵌 CLI 0.165.0-alpha.1.2 原生 mock 确认 thread/list 的 null/省略只返回默认 provider、[] 才全量，原 renderer 强制 null 的旧假设失效；后续 0.3.8 已实现，手机实机仍待验证。入口：docs/design/mobile-remote-providers.md、scripts/verify-native-mobile-providers.mjs。
 

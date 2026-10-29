@@ -11,7 +11,8 @@
 - 账户令牌只保存在本机，不返回给注入页面，也不写入日志。
 - 可同时保存多个 OpenAI 兼容 API，通过 `/models` 自动发现模型，并选择模型、设置显示别名。
 - “API 接入”内置固定的“ChatGPT 订阅 API”，直接复用已导入 auth.json；可选择允许使用额度的账户及优先顺序，额度受限时自动尝试后续账户，失效凭据持续跳过直到更新。
-- 官方登录模型保持 `openai` provider；API 模型通过本机 `codex-plus-api` broker 按稳定 `routeId` 分发，不切换全局 provider。
+- 0.3.8 起，新任务的官方、外接 API、聚合订阅模型共用内置 `openai` 会话身份，由同一本机 broker 按稳定 `routeId` 精确分流；手机 Codex 可从主机原生模型目录发现外接模型。
+- 现有“API 接入 → 迁移旧任务”可为旧自定义 provider 任务创建保留完整历史的新分支，原任务保留。
 - 原生支持 Responses；Chat Completions 会在本机转换 Responses 请求、SSE、工具调用与推理字段。
 - 内置 `local-tools/` tool-only MCP，可为 ChatGPT/Codex Chat 模式提供工作区文件、搜索、补丁、命令和 Git 工具；MCP 初始化时直接注入本机 Codex 可见的全局与工作区根 `AGENTS` 指令链，Skills 继续渐进加载。
 - `codex-plus.exe --login-startup` 会立即幂等启动 Tunnel 与 MCP，但仍不会主动打开官方 Codex 窗口。
@@ -30,7 +31,7 @@
 
 导入只保存账户，不会自动切换；切换账户会自动重启 Codex。当前有效 ChatGPT 登录会自动加入本地账户列表。
 
-使用订阅轮换时，在“API 接入 → ChatGPT 订阅 API → 配置”中勾选参与账户，用上下箭头调整优先顺序，读取模型、设置别名和可见性，再启用并保存。在 Codex 原生模型选择器选择“订阅 · …”模型即可。默认关闭；未勾选账户不消耗额度，新导入账户也需手动勾选。同一订阅对话中换账户不需要切换登录或重启。第一次从官方模型切到订阅模型仍遵循原生跨 provider 的历史分支确认。
+使用订阅轮换时，在“API 接入 → ChatGPT 订阅 API → 配置”中勾选参与账户，用上下箭头调整优先顺序，读取模型、设置别名和可见性，再启用并保存。在 Codex 原生模型选择器选择“订阅 · …”模型即可。默认关闭；未勾选账户不消耗额度，新导入账户也需手动勾选。同一订阅对话中换账户不需要切换登录或重启。新版新任务在这些渠道之间切换不再需要跨 provider 分支；旧自定义 provider 任务可在“API 接入 → 迁移旧任务”中选择任务与目标模型，确认后创建手机可见的历史分支。
 
 401 最多续期并重试一次；凭据确认失效后跳过，重新导入有效凭据后恢复。额度冷却和模型不可用按账户、模型分别处理，全部参与账户不可用时明确报错。已经输出文本或工具调用后的错误不会透明重放，以免重复执行工具。详情见 [固定订阅 API 设计](docs/design/account-pool.md)。
 
@@ -58,7 +59,9 @@ Tunnel key 只作为 `tunnel-client` 子进程的 `CONTROL_PLANE_API_KEY` 环境
 
 账户快照位于 `%LOCALAPPDATA%\codex-plus\accounts\`，API 配置位于 `%LOCALAPPDATA%\codex-plus\providers.json`，运行日志位于 `%LOCALAPPDATA%\codex-plus\codex-plus.log`。按产品约定 API Key 在 `providers.json` 中明文保存，但不会返回 renderer 或写入日志。
 
-codex-plus 只增量维护用户级 `config.toml` 的 `[model_providers.codex-plus-api]` 表，并在第一次修改前创建 `config.toml.codex-plus.bak`；顶层 `model_provider`、官方 `auth.json` 和其他配置保持不变。
+codex-plus 增量维护用户级 `config.toml` 的两张旧 provider 兼容表，并通过受能力值保护的 `openai_base_url` 将内置 openai 的模型流量交给本机 broker；原端点和可选静态目录来源保存在忽略的 `.codex-plus/native-gateway.json`。首次修改前保留 `config.toml.codex-plus.bak`；官方 `auth.json` 与远程配对保持原样，其他未知配置不覆盖。纯第三方默认 provider 不会被静默接管。
+
+手机已连接电脑后，显式启动一次新版 codex-plus，再从手机刷新该主机的任务和模型列表。目录更新受官方客户端缓存影响；显式静态目录模式在启动时更新。旧任务需在电脑上使用上述迁入入口创建新分支。详见 [手机兼容设计与验收](docs/design/mobile-remote-providers.md)。
 
 ## 构建与测试
 
