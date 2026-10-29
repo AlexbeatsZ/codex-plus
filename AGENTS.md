@@ -6,7 +6,7 @@
 
 # Current State
 
-- 2026-10-29：新增默认关闭的订阅账户 `autoActivate` 开关：broker 每 5 分钟检查已选空闲账户，仅在真实 5h 剩余 100%、周剩余 >0% 且高于保留阈值时发送独立 OK 请求；跳过当前登录/最近分配/在途账户，持久化至少 5h 防重复，前台请求优先。只做本地 mock 回归，未启用生产配置、未发送真实请求、未重启或附加现有实例；真实计时待自然观察。设计见 `docs/design/account-pool.md`。
+- 2026-10-29：`0.3.7-omen` 新增默认关闭的订阅账户 `autoActivate` 开关：broker 每 5 分钟检查已选空闲账户，仅在真实 5h 剩余 100%、周剩余 >0% 且高于保留阈值时发送独立 OK 请求；跳过当前登录/最近分配/在途账户，持久化至少 5h 防重复，前台请求优先。干净源码 Rust 127 通过、JS 67/68（已有路由 v22/v21 断言失败），构建产物已上传 GitHub Release，位于 `target/windows-build/release/codex-plus.exe`；未替换固定入口（仍 0.3.6-omen），ROG/Mac 未同步。未启用生产配置、未发送真实请求，Codex/launcher/Tunnel PID 与启动时间不变；真实计时待自然观察。设计见 `docs/design/account-pool.md`。
 
 - 2026-10-28：缓存请求头修复和原生上下文 Token 浮窗已文件部署三端（OMEN 0.3.6-omen / ROG 0.3.6-rog / Mac 0.3.6），对应 GitHub Release 已上传；Mac 稳定签名通过，ROG/Mac 原 launcher/Tunnel 保持运行。须显式启动新版 codex-plus 后生效，真实浮窗和长会话缓存待自然观察；隔离同会话后两次缓存均为 98.26%。
 
