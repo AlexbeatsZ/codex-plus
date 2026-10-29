@@ -5,8 +5,8 @@
   <key>CFBundleName</key><string>Codex Plus</string>
   <key>CFBundleDisplayName</key><string>Codex Plus</string>
   <key>CFBundleIdentifier</key><string>com.codex-plus.restart</string>
-  <key>CFBundleVersion</key><string>0.3.3</string>
-  <key>CFBundleShortVersionString</key><string>0.3.3</string>
+  <key>CFBundleVersion</key><string>0.3.8</string>
+  <key>CFBundleShortVersionString</key><string>0.3.8</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>codex-plus-launch</string>
   <key>CFBundleIconFile</key><string>app-icon.icns</string>

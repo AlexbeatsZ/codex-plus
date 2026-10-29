@@ -185,3 +185,53 @@ test("an active source cannot create a branch or an optimistic native turn", asy
     assert.equal(calls.some(call => call.method === "native-fork"), false);
   } finally { dom.window.close(); }
 });
+
+test("native gateway keeps API and subscription changes on the same openai thread", async () => {
+  const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "dangerously", url: "app://-/index.html" });
+  const unified = models.map(model => ({ ...model, nativeProviderId: "openai" }));
+  dom.window.codexPlusInvoke = async () => ({ models: unified });
+  dom.window.eval(script);
+  const routing = dom.window.__codexPlusModelRouting;
+  await routing.loadCatalog(true);
+  const calls = [];
+  const client = { hostId: "local", requestPromises: new Map(), async enqueueRequest(method, params) {
+    calls.push({ method, params });
+    if (method === "thread/read") return { thread: { id: "source", modelProvider: "openai", status: { type: "idle" } } };
+    return {};
+  }, sendRequest(...args) { return this.enqueueRequest(...args); } };
+  const manager = { requestClient: client, clearPrewarmedThreads() {}, forkConversationFromLatest() {}, async executeTurnStart(id, operation) { return client.sendRequest("turn/start", operation.request); } };
+  routing.installConversationManagerForTest(manager);
+  try {
+    for (const model of ["cp-api", "cp-pool", "gpt-5"]) await manager.executeTurnStart("source", { request: { threadId: "source", model, input: [] } });
+    assert.equal(calls.filter(call => call.method === "turn/start").length, 3);
+    assert.ok(calls.filter(call => call.method === "turn/start").every(call => call.params.threadId === "source"));
+    const started = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/start", params: { model: "cp-api" } } });
+    assert.equal(started.request.params.modelProvider, "openai");
+  } finally { dom.window.close(); }
+});
+
+test("explicit legacy migration uses the native history fork and verifies its provider", async () => {
+  const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "dangerously", url: "app://-/index.html" });
+  dom.window.codexPlusInvoke = async () => ({ models: [{ ...models[0], nativeProviderId: "openai" }] });
+  dom.window.confirm = () => true;
+  dom.window.eval(script);
+  const routing = dom.window.__codexPlusModelRouting;
+  await routing.loadCatalog(true);
+  const calls = [];
+  const client = { hostId: "local", requestPromises: new Map(), async enqueueRequest(method, params) {
+    calls.push({ method, params });
+    if (method === "thread/list") return { data: [{ id: "source", modelProvider: "codex-plus-api" }], nextCursor: null };
+    if (method === "thread/read") return { thread: { id: params.threadId, model: "cp-api-other", modelProvider: params.threadId === "source" ? "codex-plus-api" : "openai", status: { type: "idle" } } };
+    return {};
+  }, sendRequest(...args) { return this.enqueueRequest(...args); } };
+  routing.installRequestClientForTest(client);
+  routing.setNativeForkForTest(async (_, __, params) => { calls.push({ method: "native-fork", params }); return { status: "created", conversationId: "child", synchronization: { status: "complete" } }; });
+  try {
+    assert.equal((await routing.legacyThreads()).length, 1);
+    assert.deepEqual(Array.from(calls[0].params.modelProviders), ["codex-plus-api", "codex-plus-account-pool"]);
+    const result = await routing.migrateLegacyThread("source", "cp-api-other");
+    assert.equal(result.threadId, "child");
+    assert.equal(calls.filter(call => call.method === "native-fork").length, 1);
+    assert.equal(calls.some(call => call.method === "turn/start" || call.method === "thread/settings/update"), false);
+  } finally { dom.window.close(); }
+});

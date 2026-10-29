@@ -3,7 +3,7 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 22;
+  const VERSION = 23;
   const PROVIDER = "codex-plus-api";
   const POOL_PROVIDER = "codex-plus-account-pool";
   const SELECTED_KEY = "codex-plus:selected-model";
@@ -178,7 +178,13 @@
     rememberOfficialModels(array);
     // Replace our descriptors so aliases, visibility and deletions reach cached lists.
     const official = array.filter((item) => !/^cp-/.test(String(item.model || item.id || "")));
-    array.splice(0, array.length, ...official, ...state.catalog.map(descriptor));
+    const native = new Map(array.map(item => [String(item.model || item.id || ""), item]));
+    const api = state.catalog.map(model => {
+      const original = native.get(model.routeId);
+      if (model.nativeProviderId !== "openai" || !original) return descriptor(model);
+      return { ...original, displayName: model.providerId === "chatgpt-subscription" ? model.displayName : `${model.providerName || "API"} · ${model.displayName}`, description: `${model.providerName || "API"} · ${model.modelId}` };
+    });
+    array.splice(0, array.length, ...official, ...api);
     return true;
   }
 
@@ -224,7 +230,7 @@
   }
 
   function routeParams(method, params = {}) {
-    if (method === "thread/list") return { ...params, modelProviders: null };
+    if (method === "thread/list") return { ...params, modelProviders: [] };
     if (method === "thread/start" || method === "thread/resume" || method === "thread/fork") {
       const targetProvider = providerForModel(params.model);
       return targetProvider ? { ...params, modelProvider: targetProvider } : params;
@@ -652,6 +658,36 @@
     return forkThreadWithClient(activeRequestClient, clientOriginals.get(activeRequestClient), { threadId, currentModel, currentProvider, targetModel, targetProvider, idle, ask: false });
   }
 
+  async function legacyThreads() {
+    if (!activeRequestClient || String(activeRequestClient.hostId || "local") !== "local") throw new Error("请先打开本机任务，等待模型接口就绪");
+    const raw = clientOriginals.get(activeRequestClient);
+    const threads = [];
+    let cursor = null;
+    const seen = new Set();
+    do {
+      const page = await raw.call(activeRequestClient, "thread/list", { cursor, limit: 100, archived: false, modelProviders: [PROVIDER, POOL_PROVIDER], sourceKinds: ["vscode", "cli"], useStateDbOnly: true });
+      threads.push(...(page.data || []));
+      cursor = page.nextCursor;
+      if (cursor && seen.has(cursor)) throw new Error("原生任务列表重复分页，请稍后再试");
+      if (cursor) seen.add(cursor);
+    } while (cursor && threads.length < 1000);
+    return threads;
+  }
+
+  async function migrateLegacyThread(threadId, targetModel) {
+    await loadCatalog(true);
+    if (providerForModel(targetModel) !== "openai") throw new Error("原生手机路由尚未启用，请先启动新版 codex-plus");
+    const client = activeRequestClient;
+    if (!client || String(client.hostId || "local") !== "local") throw new Error("本机任务接口不可用");
+    const raw = clientOriginals.get(client);
+    const read = await raw.call(client, "thread/read", { threadId, includeTurns: false });
+    const currentProvider = String(read?.thread?.modelProvider || "");
+    if (![PROVIDER, POOL_PROVIDER].includes(currentProvider)) throw new Error("该任务已使用手机兼容的原生路由");
+    const result = await forkThreadWithClient(client, raw, { threadId, currentModel: read.thread.model || "", currentProvider, targetModel, targetProvider: "openai", idle: isIdleThread(read.thread) });
+    navigateToThread(result.threadId, "local");
+    return result;
+  }
+
   function install() {
     if (health().ready) return Promise.resolve(true);
     if (!state.clickListenerInstalled) {
@@ -693,6 +729,8 @@
     selectedModel,
     setSelectedModel,
     experimentalSwitchThread,
+    legacyThreads,
+    migrateLegacyThread,
     installRequestClientForTest: installRequestClient,
     installConversationManagerForTest: installConversationManager,
     refreshNativeModelQueries,

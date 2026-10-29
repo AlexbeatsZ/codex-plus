@@ -19,6 +19,9 @@ pub enum ModelRoute {
     Subscription,
 }
 impl ApiIntegrations {
+    pub fn paths(&self) -> &AccountPaths {
+        &self.paths
+    }
     pub fn new(paths: AccountPaths) -> Self {
         Self::with_subscription(paths.clone(), SubscriptionApi::new(paths))
     }
@@ -49,6 +52,11 @@ impl ApiIntegrations {
     pub fn catalog(&self) -> anyhow::Result<Vec<CatalogModel>> {
         let mut catalog = ProviderStore::load(&self.paths)?.catalog();
         catalog.extend(SubscriptionConfig::load(&self.paths)?.catalog());
+        if crate::native_gateway::Settings::load(&self.paths)?.is_some() {
+            for model in &mut catalog {
+                model.native_provider_id = "openai".into();
+            }
+        }
         Ok(catalog)
     }
     pub fn resolve(&self, route: &str) -> anyhow::Result<ModelRoute> {

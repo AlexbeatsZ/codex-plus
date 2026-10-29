@@ -34,6 +34,29 @@ function setup(invoke) {
   return dom;
 }
 
+test("legacy task migration stays in API settings and submits only the selected task and model", async () => {
+  const dom = setup(async () => ({ status: "ok", providers: [], models: [] }));
+  try {
+    await flush();
+    const submitted = [];
+    dom.window.__codexPlusModelRouting = {
+      loadCatalog: async () => {},
+      legacyThreads: async () => [{ id: "legacy-one", title: "Old <task>" }, { id: "legacy-two", title: "Second task" }],
+      state: { catalog: [{ routeId: "cp-selected", nativeProviderId: "openai", providerName: "API A", displayName: "Model" }] },
+      migrateLegacyThread: async (...args) => { submitted.push(args); return { threadId: "child" }; },
+    };
+    dom.window.__codexPlusApi.open(); await flush();
+    dom.window.document.querySelector("[data-api-mobile]").click(); await flush();
+    assert.equal(dom.window.document.querySelector("[data-mobile-thread] option").textContent, "Old <task>");
+    assert.equal(dom.window.document.querySelector("[data-api-body] task"), null);
+    dom.window.document.querySelector("[data-mobile-thread]").value = "legacy-two";
+    assert.equal(submitted.length, 0);
+    dom.window.document.querySelector("[data-mobile-create]").click(); await flush();
+    assert.deepEqual(submitted, [["legacy-two", "cp-selected"]]);
+    assert.equal(dom.window.document.querySelector("#codex-plus-api-modal"), null);
+  } finally { dom.window.close(); }
+});
+
 test("inserts Cable API item above one UsersRound account item", async () => {
   const dom = setup(async () => ({ status: "ok", accounts: [] }));
   await flush();
@@ -228,7 +251,7 @@ test("routes official and API thread starts with the native all-provider list se
   assert.equal(apiStart.request.params.model, "cp-route");
   assert.equal(apiStart.request.params.modelProvider, "codex-plus-api");
   const list = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/list", params: { modelProviders: ["openai"], sourceKinds: ["vscode"], archived: false } } });
-  assert.equal(list.request.params.modelProviders, null);
+  assert.deepEqual(Array.from(list.request.params.modelProviders), []);
   assert.deepEqual(list.request.params.sourceKinds, ["vscode"]);
   assert.equal(list.request.params.archived, false);
   const official = routing.patchRoutingMessage({ type: "mcp-request", request: { method: "thread/start", params: { model: "gpt-5" } } });
@@ -271,7 +294,7 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.version, 21);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 23);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option \{ color:var\(--cp-text\); background:var\(--cp-bg\); \}/);
 });
@@ -339,7 +362,7 @@ test("patches the real app-server client for native models and provider routing"
   await client.prewarmThreadStart({ model: "cp-route" });
   assert.equal(calls.filter((call) => call.method === "thread/start").at(-1).params.modelProvider, "codex-plus-api");
   await client.sendRequest("thread/list", { modelProviders: ["openai"] });
-  assert.equal(calls.find((call) => call.method === "thread/list").params.modelProviders, null);
+  assert.deepEqual(Array.from(calls.find((call) => call.method === "thread/list").params.modelProviders), []);
   await manager.executeTurnStart("existing", { request: { threadId: "existing", model: "cp-route", input: [] } });
   assert.deepEqual(calls.slice(-5).map((call) => call.method), ["thread/read", "native-fork", "thread/read", "native-title", "turn/start"]);
   assert.equal(calls.at(-4).params.model, "cp-route");

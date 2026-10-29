@@ -11,12 +11,12 @@
 失效凭据版本在 `.codex-plus/subscription-rejected.json`，不含 token。真实凭据仍只有账户 vault 一份。
 模型使用稳定的 `cp-pool-` routeId，显示为“订阅 · 模型别名”。
 
-订阅复用现有单一 broker，不增加程序或管理页面。原生 provider 为 `codex-plus-account-pool`，
+订阅复用现有单一 broker，不增加程序或管理页面。0.3.8 新任务的原生 provider 统一为 `openai`，通过本机能力值入口由 routeId 进入订阅池；旧任务的 `codex-plus-account-pool` 表继续保留，
 声明 `capabilities.remote_compaction="v2"`、HTTP/SSE 和无需官方登录认证；普通 API 的
 `codex-plus-api` 能力不变，两者监听同一端口。目录明确区分 API profile 的 `providerId`
 与原生 Codex 的 `nativeProviderId`，不能让渲染器从 profile ID 猜测原生 provider。
 同一订阅 provider 内换实际账户不重启 Codex、不改实时 auth.json，不产生新 thread。
-从官方或普通 API provider 迁入仍遵循现有跨 provider 原生分支确认流程。
+新 openai 任务在官方、外接 API 和订阅 route 间切换不再跨 provider；旧任务通过现有 API 面板显式创建原生历史分支迁入。
 
 订阅 provider 独立使用同一个 broker 的 `/subscription/v1`；普通 API 保持 `/v1`。
 官方 app-server 在 `ModelDownshift` 前置压缩时会沿用历史上一轮的真实模型 ID，
@@ -196,3 +196,5 @@ release.json 记录源 commit `323b56a`、分支 `codex/account-pool`，base 版
 订阅启用、账户参与和模型可见性；不修改官方全局样式。回归必须带同样的原生 reset。
 修复加载前，启用与账户参与仍可通过点击包裹 checkbox 的 label 文字切换；
 账户出现优先序号后才启用读取模型。用户自行选择参与账户，助手不代为勾选或启用额度。
+
+0.3.8 的原生网关裸 reviewer 请求使用当前官方账户；上述两个旧 provider 入口仍使用已启用订阅池的 reviewer。手机兼容及原生模型目录见 [mobile-remote-providers.md](mobile-remote-providers.md)。
