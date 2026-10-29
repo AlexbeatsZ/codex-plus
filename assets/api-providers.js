@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 10;
+  const VERSION = 11;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
@@ -157,7 +157,7 @@
   async function openSubscription() {
     state.subscriptionBusy = true;
     state.message = "";
-    state.subscription = { enabled: false, accountOrder: [], models: [], proxyUrl: "", accountReserves: {} };
+    state.subscription = { enabled: false, autoActivate: false, accountOrder: [], models: [], proxyUrl: "", accountReserves: {} };
     state.subscriptionAccounts = [];
     state.models = [];
     renderSubscription();
@@ -193,6 +193,8 @@
       return `<div class="cp-sub-row"><label><input type="checkbox" data-sub-account="${esc(id)}" ${index >= 0 ? "checked" : ""} ${busy ? "disabled" : ""}> ${index >= 0 ? `${index + 1}. ` : ""}${esc(account?.email || account?.name || "账户已删除，请移出")}${account?.plan ? ` · ${esc(account.plan)}` : ""}${health ? `<small>${esc(health)}</small>` : ""}</label><button type="button" class="cp-api-button" data-sub-up="${esc(id)}" aria-label="上移账户" ${busy || index <= 0 ? "disabled" : ""}>↑</button><button type="button" class="cp-api-button" data-sub-down="${esc(id)}" aria-label="下移账户" ${busy || index < 0 || index === order.length - 1 ? "disabled" : ""}>↓</button>${account ? reserveEditor(id, config.accountReserves?.[id], busy || index < 0) : ""}</div>`;
     }).join("");
     root.innerHTML = `${status()}<div class="cp-api-form"><div class="cp-api-actions"><strong>ChatGPT 订阅 API</strong><label><input type="checkbox" data-sub-enabled ${config.enabled ? "checked" : ""} ${busy ? "disabled" : ""}> 启用</label></div><p class="cp-sub-note">直接使用“切换账户”中已导入的 auth.json。勾选允许使用额度的账户，再按优先顺序排列；未勾选的账户不会参与请求。</p><p class="cp-sub-note">保留额度留空表示不限制；短期窗口不超过 24 小时，长期窗口超过 24 小时（如每周）。剩余 ≤ 设置值时换下一个账户；已开始的请求会完成，实际余量可能略低于设置值。</p><div class="cp-api-list">${rows || '<div class="cp-api-row">暂无导入账户，请先添加账户。</div>'}</div><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-accounts ${busy ? "disabled" : ""}>管理导入账户</button><span>失效凭据自动跳过，更新后恢复</span></div><label class="cp-api-field">HTTP 代理（可选）<input class="cp-api-input" data-sub-proxy value="${esc(config.proxyUrl)}" placeholder="留空使用环境或系统代理" ${busy ? "disabled" : ""}></label><div class="cp-api-actions"><span>模型与显示名称</span><button type="button" class="cp-api-button" data-sub-discover ${busy || !order.length ? "disabled" : ""}>${busy ? "处理中…" : "读取模型"}</button></div>${modelEditor()}<p class="cp-sub-note">已交付文本或工具调用后不会自动重放；所有参与账户不可用时明确报错。</p><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-back ${busy ? "disabled" : ""}>返回</button><button type="button" class="cp-api-button" data-primary="true" data-sub-save ${busy ? "disabled" : ""}>保存订阅 API</button></div></div>`;
+    root.querySelector(".cp-sub-note").insertAdjacentHTML("afterend", `<label class="cp-sub-note"><input type="checkbox" data-sub-auto-activate ${config.autoActivate ? "checked" : ""} ${busy ? "disabled" : ""}> 自动激活其他账户的 5h 计时</label><p class="cp-sub-note">仅在订阅 API 启用时，每 5 分钟检查已勾选的非当前、非正在使用账户：真实 5h 额度剩余 100%、周额度大于 0% 且高于保留阈值时，用第一个可见模型发送“仅回复 OK”的真实请求，会消耗少量额度。每账户至少间隔 5 小时，失败或重启也不重复；不写入聊天历史，是否启动计时以服务端为准。</p>`);
+    root.querySelector("[data-sub-auto-activate]").addEventListener("change", e => { config.autoActivate = e.target.checked; });
     root.querySelector("[data-sub-enabled]").addEventListener("change", e => { config.enabled = e.target.checked; });
     root.querySelector("[data-sub-proxy]").addEventListener("input", e => { config.proxyUrl = e.target.value; });
     root.querySelectorAll("[data-sub-reserve]").forEach(input => input.addEventListener("input", () => {
