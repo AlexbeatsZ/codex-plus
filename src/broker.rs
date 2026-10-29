@@ -2,9 +2,9 @@ use std::convert::Infallible;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, Request, Response, StatusCode, header};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -26,6 +26,7 @@ pub const PREFERRED_BROKER_PORT: u16 = 43121;
 #[derive(Clone)]
 struct BrokerState {
     apis: ApiIntegrations,
+    native_client: reqwest::Client,
 }
 
 pub struct BrokerHandle {
@@ -94,9 +95,16 @@ pub async fn start(preferred_port: u16, apis: ApiIntegrations) -> anyhow::Result
     };
     let port = listener.local_addr().map_err(anyhow::Error::from)?.port();
     let subscription = apis.subscription.clone();
-    let state = BrokerState { apis };
+    let state = BrokerState {
+        apis,
+        native_client: crate::native_gateway::http_client()?,
+    };
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route(
+            "/native/{capability}/backend-api/codex/{*tail}",
+            any(native_request),
+        )
         .route("/v1/models", get(models))
         .route("/models", get(models))
         .route("/v1/responses", post(responses))
@@ -120,6 +128,110 @@ pub async fn start(preferred_port: u16, apis: ApiIntegrations) -> anyhow::Result
         preferred_bind_error,
         task: Some(task),
     })
+}
+
+async fn native_request(
+    State(state): State<BrokerState>,
+    Path((capability, tail)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Response<Body> {
+    use crate::native_gateway::{self as gateway, failure};
+    let paths = state.apis.paths().clone();
+    let settings = match gateway::Settings::load(&paths) {
+        Ok(Some(settings)) if settings.capability == capability => settings,
+        _ => return failure(StatusCode::UNAUTHORIZED, "原生路由凭据无效"),
+    };
+    let method = request.method().clone();
+    let headers = request.headers().clone();
+    // The capability also protects the non-secret model catalog. Native Codex
+    // can refresh it before attaching an inference authorization header.
+    if method == axum::http::Method::GET && tail == "models" {
+        return gateway::models(
+            &state.native_client,
+            &paths,
+            &state.apis,
+            &settings,
+            &headers,
+            request.uri().query(),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            failure(
+                StatusCode::BAD_GATEWAY,
+                "原生模型目录尚未就绪，请检查官方目录或网络",
+            )
+        });
+    }
+    if method == axum::http::Method::GET && tail == "responses" {
+        // Codex's documented, session-scoped HTTP fallback avoids stateful WS
+        // continuations crossing independent API/subscription backends.
+        return failure(StatusCode::UPGRADE_REQUIRED, "本机模型路由使用 HTTP/SSE");
+    }
+    if method != axum::http::Method::POST
+        || !["responses", "responses/compact"].contains(&tail.as_str())
+    {
+        return failure(StatusCode::NOT_FOUND, "原生模型端点不受支持");
+    }
+    let body = match axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024).await {
+        Ok(body) => body,
+        Err(_) => return failure(StatusCode::PAYLOAD_TOO_LARGE, "原生模型请求过大"),
+    };
+    let mut value = match gateway::decode(&headers, &body) {
+        Ok(value) => value,
+        Err(_) => return failure(StatusCode::BAD_REQUEST, "原生模型请求格式无效"),
+    };
+    let Some(model) = value["model"].as_str().map(str::to_string) else {
+        return failure(StatusCode::BAD_REQUEST, "原生模型请求缺少 model");
+    };
+    let compact = tail.ends_with("/compact")
+        || value["input"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item["type"] == "compaction_trigger")
+        });
+    let route = match gateway::remember_route(&paths, &headers, &model, compact) {
+        Ok(route) => route,
+        Err(_) => return failure(StatusCode::INTERNAL_SERVER_ERROR, "无法保存原生会话路由"),
+    };
+    if route.starts_with("cp-") {
+        if route != model
+            && !state.apis.catalog().ok().is_some_and(|catalog| {
+                catalog
+                    .iter()
+                    .any(|entry| entry.route_id == route && entry.model_id == model)
+            })
+        {
+            return failure(
+                StatusCode::CONFLICT,
+                "无法确认压缩模型所属渠道，请重新选择模型",
+            );
+        }
+        value["model"] = json!(route);
+        let mut integration_headers = headers;
+        integration_headers.remove(header::CONTENT_ENCODING);
+        integration_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer codex-plus-loopback"),
+        );
+        let request = Request::builder()
+            .uri(format!("/v1/{tail}"))
+            .body(Body::from(value.to_string()))
+            .unwrap();
+        return handle_responses(state, integration_headers, request, false).await;
+    }
+    // Bare official models and the native auto-reviewer use this request's
+    // official credentials; they never borrow a selected pool account.
+    gateway::official(
+        &state.native_client,
+        &paths,
+        &settings,
+        headers,
+        method,
+        &tail,
+        body,
+    )
+    .await
+    .unwrap_or_else(|_| failure(StatusCode::BAD_GATEWAY, "官方模型上游连接失败"))
 }
 
 async fn models(State(state): State<BrokerState>, headers: HeaderMap) -> Response<Body> {

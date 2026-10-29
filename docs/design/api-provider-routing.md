@@ -41,7 +41,7 @@ wire_api = "responses"
 experimental_bearer_token = "codex-plus-loopback"
 ```
 
-以上是首选端口示例；发生回退时 `base_url` 使用本次 broker 实际持有的端口。不得改写顶层 `model_provider`、官方 `auth.json`、其他 provider 或未知配置。第一次变更前保留 `config.toml.codex-plus.bak`。
+以上是首选端口示例；发生回退时 `base_url` 使用本次 broker 实际持有的端口。0.3.8 增量维护顶层 `openai_base_url`，将内置 openai 的模型流量交给受能力值保护的同一 broker；原官方 URL 记录在忽略的 native-gateway.json 中。默认 provider 仅在原为 codex-plus 两个旧 provider 时迁回 openai，其他自定义默认 provider 明确拒绝接管；官方 auth.json、ChatGPT 控制平面、其他 provider 和未知配置保持原样。第一次变更前保留 `config.toml.codex-plus.bak`。
 
 broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 model ID，替换后并发转发。Responses 上游保持原协议和 SSE；Chat Completions 上游转换输入、非流式响应和流式事件，保留工具调用、推理内容、usage 与错误隔离。不存在、停用或隐藏的 routeId 必须明确失败，绝不回退到其他 API。
 
@@ -49,7 +49,7 @@ broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 mod
 
 2026-10-29 手机 Remote 可见性研究见 [mobile-remote-providers.md](mobile-remote-providers.md)。
 当前内嵌 CLI `0.165.0-alpha.1.2` 的隔离实测表明，下文历史设计中的 `modelProviders:null`
-实际只选默认 provider，`[]` 才表示全部；现有实现尚未修正，桌面注入也未覆盖手机模型目录。
+实际只选默认 provider，`[]` 才表示全部；0.3.8 已修正，并增加原生目录与统一 openai 网关。
 
 注入模型 descriptor 时：
 
@@ -67,7 +67,7 @@ v19 在真实 `model/list` 探测成功后直接记录官方模型 ID 与显示�
 
 安装路由包装时必须清除安装前已经创建的预热任务；原生选择器改变模型时也必须再次清除缓存。之后的普通创建、预热创建和首轮发送都从同一 `enqueueRequest` 包装进入，保证 routeId 与 `codex-plus-api` 同时提交，不能出现 routeId 搭配 `openai` 的混合状态。
 
-创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用目录明确给出的 `nativeProviderId`（普通 API 为 `codex-plus-api`，订阅为 `codex-plus-account-pool`），不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 固定为当前官方客户端使用的 `null` 全 provider 哨兵，同时原样保留 `sourceKinds`、`archived` 等目录范围参数；不得再使用旧的空数组语义扩大本地目录扫描范围。
+创建任务时以原生选择器实际提交的 `model` 为准，同时修正 `modelProvider`：官方模型使用 `openai`，routeId 模型使用目录明确给出的 `nativeProviderId`（网关已配置时均为 `openai`；两个旧 provider 仅用于旧任务兼容），不得用过期的 renderer 选择状态覆盖本次原生选择。`thread/list` 的 `modelProviders` 使用当前原生 CLI 已验证的 `[]` 全 provider 语义，同时原样保留 `sourceKinds`、`archived` 等目录范围参数，不改变原来源及项目范围。
 
 同 provider 的 API→API 切换只覆盖下一次 `turn/start.model`。Codex `26.803.10989.0` 的 provider 在任务 ID 创建时固定：`thread/resume` 不能改变 provider，`thread/shutdown` 已移除，二者都不得用于跨 provider 切换。
 
@@ -85,6 +85,8 @@ v21 将跨 provider 迁移提升到原生 manager 的 `executeTurnStart` 事务�
 
 - 密钥不出现在 bridge 返回值、模型目录或日志；renderer 只在用户正在编辑时保留密码输入框中的草稿；
 - 两个 API 可同时流式工作，相同真实模型名不会串线；
-- 官方 provider 不受 API 保存、删除或模型选择影响；
+- 官方裸模型始终归当前官方账户，外接及订阅路由精确隔离；
 - API 出错只影响命中的 routeId；
 - Codex 重建 target 后三类注入脚本可重复安装且不产生重复菜单项。
+
+手机原生目录、官方凭据补充边界、HTTP/SSE 回退与旧任务显式迁入入口见 [mobile-remote-providers.md](mobile-remote-providers.md)。

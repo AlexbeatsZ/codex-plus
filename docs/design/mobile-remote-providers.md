@@ -3,7 +3,7 @@
 ## 范围与状态
 
 2026-10-29 用户确认问题发生在手机 ChatGPT 的 Codex 远程电脑入口：外接 API / 聚合订阅任务
-不显示或刷新后消失，同时无法选择这些模型。本文件记录源码研究与隔离可行性验证，**尚未实现生产修复**。
+不显示或刷新后消失，同时无法选择这些模型。本文件记录研究与 0.3.8 的原生兼容实现；手机实机验收仍待加载新版后进行。
 普通 ChatGPT 聊天的 MCP Connector / Secure MCP Tunnel 不属于这次故障链路。
 
 基线为 main `920870a`；`git pull --ff-only` 已核对最新，Windows 两条远端分支无额外公共功能差异。
@@ -21,7 +21,7 @@
 - broker 的 `/v1/models` 返回 OpenAI 兼容 HTTP 目录，但手机 Codex 使用的原生 `model/list`
   没有自动接上该目录；仅向 broker 增加 HTTP endpoint 不能补齐这一层。
 
-当前代码还有一个可单独复现的协议漂移：`routeParams("thread/list")` 强制使用
+0.3.7 有一个可单独复现的协议漂移（0.3.8 已改为 `[]`）：`routeParams("thread/list")` 强制使用
 `modelProviders: null`，旧设计把它视为全 provider。当前官方内嵌 CLI 实测不是这个语义。
 
 ## 已验证的原生行为
@@ -37,7 +37,7 @@ loopback mock HTTP/SSE 服务，不读取真实登录凭据，不发送真实模
 | `[]` | `openai`、`codex-plus-api`、`codex-plus-account-pool` | 3 |
 | `["codex-plus-api"]` | `codex-plus-api` | 1 |
 
-因此当前桌面包装的 `null` 会让自定义 provider 任务被默认过滤。手机的实际 RPC 参数本轮没有抓取，
+因此旧桌面包装的 `null` 会让自定义 provider 任务被默认过滤。手机的实际 RPC 参数本轮没有抓取，
 不能宣称已观测到手机一定发送 `null`；其“刷新后消失”症状与原生默认过滤及社区报告一致。
 
 另做了两个可行性验证：
@@ -46,7 +46,7 @@ loopback mock HTTP/SSE 服务，不读取真实登录凭据，不发送真实模
    无需 renderer 改写返回值。这验证了主机原生目录的接入点，尚未证明手机选择器会原样展示。
 2. 使用顶层 `openai_base_url` 指向隔离 mock，保持任务 provider 为小写 `openai`。
    同一个任务先后用假外接 API route 和假聚合订阅 route 完成两轮，默认 `null` 列表仍能发现它。
-   这是统一 provider 的协议可行性，尚未把生产 broker 改造成该模式。
+   这是前期统一 provider 的协议原型；下文 0.3.8 已将该模式接入生产 broker。
 
 当前 CLI 会拒绝 `[model_providers.openai]`，报 reserved built-in provider ID；不能用覆盖该表
 冒充受支持的配置方案。保留小写 `openai` 的原型采用顶层 `openai_base_url`。
@@ -84,33 +84,54 @@ Windows 显式传入其官方内嵌 `codex.exe` 与本机目录模板路径；�
 当前官方开源 [thread_processor.rs](https://github.com/openai/codex/blob/875a1a78f06731a8ecd20dd45378f61bd9c7701d/codex-rs/app-server/src/request_processors/thread_processor.rs)
 也区分空数组与未指定 provider：空数组不设 provider filter，未指定使用当前配置 provider。
 
-## 建议的改造方向（未启用）
+## 0.3.8 实现
 
-两项需求必须分别落到原生服务层，再共同验收。
+原生目录与推理共用现有 broker，新增 `/native/<随机能力值>/backend-api/codex` 本机入口。
+启动时增量维护顶层 `openai_base_url`；保留小写 `openai` 身份、原有官方认证和两张旧 provider 表。
+`.codex-plus/native-gateway.json` 仅保存原始 URL、可选目录路径与本机能力值，不保存 OAuth 或 API Key。
+当前官方客户端会省略发往自定义 origin 的 OAuth；网关仅在转发到可信官方端点时只读补充实时登录，
+不续期、不改写 auth.json，不把该凭据送到外接 API。已有自定义原始端点不能自动借用官方登录。
+
+`/models` 返回原生模型信息，并在 3 秒内尝试更新官方模板，网络失败保留旧模板。
+模板依次采用用户显式目录、上次成功官方目录、本机 models_cache；滤除旧 cp-* 项后追加当前可见模型。
+匹配真实 ID 的模型保留原始能力，未知模型采用 32K / 文本 / 不声明推理档位的保守能力；外接 route 禁用 Responses Lite。
+原生客户端自行管理目录缓存；更改 API 后手机的出现时间取决于官方目录刷新。显式静态目录模式仅启动时更新。
+WebSocket 握手返回官方支持的 426，让同一原生会话切换为 HTTP/SSE，避免跨上游复用有状态连接。
+zstd 请求有解压上限，官方响应及凭据错误原样转发；cp-* 则使用原有精确 API/订阅路由，失效不回退。
+
+普通裸模型和原生 reviewer 归当前官方账户，旧 provider 的 reviewer 路由保持既有订阅池规则。
+原生 v2 compaction_trigger 和 /responses/compact 通过按 thread-id/session-id 持久化的最后渠道保持归属；
+无法核对历史真实模型与渠道时明确失败，不能误用官方账户。
+
+以下分工已落地：
 
 1. **原生模型目录**：从现有官方目录模板与已启用、可见的 API/订阅模型生成受管原生目录，
    保持稳定 routeId、友好名称与真实能力字段。让手机和桌面查询原生 `model/list` 都有结果；
    不能把所有模型盲目复制为相同上下文、工具能力或推理档位。
-2. **统一新任务的 provider**：评估保持小写 `openai`，由现有 broker 承接官方、外接 API 与
+2. **统一新任务的 provider**：保持小写 `openai`，由现有 broker 承接官方、外接 API 与
    聚合订阅的路由，避免手机默认枚举排除新任务。只将模型流量交给 broker；配对、插件及其他
    ChatGPT 控制平面继续使用原有官方登录。
 3. **显式区分实际渠道**：继续用稳定的 `cp-*` routeId 区分同名模型，复用当前启用、可见性、
    已选账户、额度保留与失败边界。官方模型仍应走当前官方账户，不静默消费订阅池；内部 reviewer、
    压缩、Responses Lite/WebSocket 等路径需要单独适配。保持单 launcher、单 broker 和现有面板。
 4. **旧任务独立处理**：新任务统一 provider 不会自动修复已存为 `codex-plus-*` 的旧任务。
-   优先验证官方支持的原生完整历史 fork 能否生成手机可见的 `openai` 分支；用户明确选择的旧任务
-   才迁入。不得直接批量 UPDATE 正在使用的 SQLite / rollout，也不得把模型目录修复说成历史迁移完成。
+   现有“API 接入 → 迁移旧任务”面板调用原生完整历史 fork，显式选择旧任务和目标模型后创建 `openai` 分支，
+   核对 provider 后导航；原任务保留。不得直接批量 UPDATE 正在使用的 SQLite / rollout，也不得把模型目录修复说成历史迁移完成。
 5. **桌面过滤修正**：当前 CLI 应使用 `[]` 表达全 provider，同时原样保留 sourceKinds、archived、
-   project/cwd 等范围参数。此项只能修桌面请求，不能独立代替手机兼容层。
+   project/cwd 等范围参数。此项修正桌面请求；手机的新任务由原生网关提供兼容。
 
-这会改变当前“官方 provider 不接入 broker”和跨 provider 分支的设计边界；实现前须同步
-`api-provider-routing.md` / `account-pool.md`，不能当作一次无行为变化的配置调整。
+此实现同步更新了 api-provider-routing.md / account-pool.md 的 provider 边界；旧 provider 仅保留给旧任务。
 若手机只接受固定模型目录或仍单独过滤 routeId，应继续调查官方远程主机协议；本轮没有手机实机验收。
 
-## 必须补齐的验收
+## 验收
 
 - 两个同名模型分属不同外接 API、聚合订阅与官方账户，手机能够区分和选择，broker 命中正确渠道。
 - 从手机创建、退出再进入、刷新后任务持续可见；电脑与手机交替续接仍保持 provider 与 route。
 - 旧任务完整历史分支在手机可见且能续接；原任务、附件、工具记录与原始会话保持完整。
 - 真实手机验证前先跑原生 mock 的官方/API/订阅、压缩、审批和失败路径；不隐式使用真实账户验证。
 - Windows 与 Mac 分别验证，源码、构建、文件部署与运行实例更新分别记录。
+
+2026-10-29 Mac 内嵌 CLI 原生 mock 已通过：动态 model/list、同任务三渠道、订阅压缩与续接、旧任务 fork 完整历史、默认列表可见、原任务保留。
+脚本 `scripts/verify-native-mobile-gateway.mjs` 由 Rust `native_mobile_gateway_uses_three_channels_and_preserves_fork_history` fixture 调用。
+探针的原生客户端使用无已选工作区的假 ChatGPT 身份，绕开独立的实时 HTTPS 工作区发现；broker 保留单独的假实时账户。
+不代表真实配对或手机 UI 验收，未使用真实模型请求。

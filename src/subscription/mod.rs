@@ -25,8 +25,8 @@ pub const AUTO_REVIEW_MODEL: &str = "codex-auto-review";
 
 mod config;
 pub use config::SubscriptionConfig;
-mod quota;
 mod activation;
+mod quota;
 
 pub fn route_id(model: &str) -> String {
     format!(

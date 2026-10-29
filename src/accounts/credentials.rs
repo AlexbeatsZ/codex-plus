@@ -23,6 +23,15 @@ pub(crate) struct AccountCredential {
 }
 
 impl AccountVault {
+    pub(crate) fn live_credential(&self) -> Result<Option<AccountCredential>> {
+        read_live_chatgpt(&self.paths.live_auth()).map(|auth| {
+            auth.map(|auth| AccountCredential {
+                revision: credential_revision(&auth),
+                access_token: auth.access_token,
+                account_id: auth.account_id,
+            })
+        })
+    }
     pub(super) fn credential_lock(&self, id: &str) -> Result<File> {
         validate_record_id(id)?;
         ensure_vault_dir(&self.paths.accounts_dir())?;
