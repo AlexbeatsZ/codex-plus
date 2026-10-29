@@ -1,6 +1,6 @@
 [package]
 name = "codex-plus"
-version = "0.3.7-rog"
+version = "0.3.8-rog"
 edition = "2024"
 license = "MIT"
 description = "A Windows launcher for OpenAI Codex with account, provider, and local MCP tools"
@@ -28,6 +28,7 @@ tokio-tungstenite = "0.26"
 toml = "0.8"
 toml_edit = "0.22"
 uuid = { version = "1", features = ["v4"] }
+zstd = "0.13"
 
 [dev-dependencies]
 tempfile = "3"

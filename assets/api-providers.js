@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 11;
+  const VERSION = 12;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
@@ -132,8 +132,31 @@
     const root = body(); if (!root) return;
     root.innerHTML = `${status()}<div class="cp-api-toolbar"><span>${state.loading ? "正在读取…" : `已配置 ${state.providers.length} 个 API`}</span><button class="cp-api-button" data-api-new data-primary="true">添加 API</button></div>${state.providers.length ? `<div class="cp-api-list">${state.providers.map((p) => `<div class="cp-api-row"><div><div class="cp-api-name">${esc(p.name)}${p.enabled ? "" : " · 已停用"}</div><div class="cp-api-meta">${p.kind === "subscription" ? "复用已导入账户的订阅额度" : `${esc(p.baseUrl)} · ${esc(p.protocol)}`} · ${p.models.filter((m) => m.visible).length} 个模型</div></div><div><button class="cp-api-button" data-api-edit="${esc(p.id)}">${p.kind === "subscription" ? "配置" : "编辑"}</button>${p.kind === "subscription" ? "" : ` <button class="cp-api-button" data-danger="true" data-api-delete="${esc(p.id)}">删除</button>`}</div></div>`).join("")}</div>` : '<div class="cp-api-empty">尚未接入 API。支持 OpenAI 兼容的 Responses 与 Chat Completions。</div>'}`;
     root.querySelector("[data-api-new]")?.addEventListener("click", () => edit(null));
+    root.insertAdjacentHTML("beforeend", '<div class="cp-api-actions" style="margin-top:14px"><span>旧 API / 订阅任务可创建保留历史的手机可见分支</span><button class="cp-api-button" data-api-mobile>迁移旧任务</button></div>');
+    root.querySelector("[data-api-mobile]").addEventListener("click", () => void mobileMigration());
     root.querySelectorAll("[data-api-edit]").forEach((button) => button.addEventListener("click", () => edit(state.providers.find((p) => p.id === button.dataset.apiEdit))));
     root.querySelectorAll("[data-api-delete]").forEach((button) => button.addEventListener("click", () => void removeProvider(button.dataset.apiDelete)));
+  }
+
+  async function mobileMigration() {
+    const root = body(); if (!root) return;
+    root.innerHTML = '<div class="cp-api-status">正在读取旧任务…</div>';
+    try {
+      const routing = window.__codexPlusModelRouting;
+      await routing.loadCatalog(true);
+      const threads = await routing.legacyThreads();
+      if (!body() || body() !== root) return;
+      root.innerHTML = `<div class="cp-api-form"><p class="cp-sub-note">为选中的旧任务创建一个保留完整历史的新分支，供手机访问。原任务保留；运行中的任务须先结束。</p><label class="cp-api-field">旧任务<select class="cp-api-input" data-mobile-thread>${threads.map(t => `<option value="${esc(t.id)}">${esc(t.name || t.title || t.preview || t.id)}</option>`).join("")}</select></label><label class="cp-api-field">新分支使用的模型<select class="cp-api-input" data-mobile-model>${routing.state.catalog.filter(m => m.nativeProviderId === "openai").map(m => `<option value="${esc(m.routeId)}">${esc(m.providerName)} · ${esc(m.displayName)}</option>`).join("")}</select></label><div class="cp-api-status" data-mobile-status>${threads.length ? "" : "没有需要迁移的旧任务"}</div><div class="cp-api-actions"><button class="cp-api-button" data-mobile-back>返回</button><button class="cp-api-button" data-primary="true" data-mobile-create ${threads.length ? "" : "disabled"}>创建手机可见分支</button></div></div>`;
+      root.querySelector("[data-mobile-back]").onclick = renderList;
+      root.querySelector("[data-mobile-create]").onclick = async () => {
+        const button = root.querySelector("[data-mobile-create]"); button.disabled = true;
+        try {
+          await routing.migrateLegacyThread(root.querySelector("[data-mobile-thread]").value, root.querySelector("[data-mobile-model]").value);
+          close();
+        } catch (error) { root.querySelector("[data-mobile-status]").textContent = error.message; }
+        finally { button.disabled = false; }
+      };
+    } catch (error) { state.message = error.message; state.error = true; renderList(); }
   }
 
   function edit(provider) {

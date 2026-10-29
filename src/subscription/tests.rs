@@ -62,6 +62,81 @@ async fn fixture() -> Fixture {
 fn event(value: Value) -> String {
     format!("data: {value}\n\n")
 }
+
+#[tokio::test]
+async fn native_mobile_gateway_uses_three_channels_and_preserves_fork_history() {
+    let Some(binary) = std::env::var_os("CODEX_PLUS_NATIVE_BIN") else {
+        return;
+    };
+    let f = fixture().await;
+    std::fs::create_dir_all(&f.router.paths.codex_home).unwrap();
+    std::fs::write(f.router.paths.live_auth(), auth("live-official", false)).unwrap();
+    std::fs::write(
+        f.router.paths.codex_config(),
+        format!(
+            "openai_base_url='{}'\nweb_search='disabled'\ncli_auth_credentials_store='file'\n[features]\nplugins=false\napps=false\n",
+            f.server.uri()
+        ),
+    )
+    .unwrap();
+    Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
+        let body = crate::native_gateway::decode(&request.headers, &Bytes::copy_from_slice(&request.body)).unwrap_or(Value::Null);
+        let compact = body["input"].as_array().is_some_and(|items| items.iter().any(|item| item["type"] == "compaction_trigger"));
+        let item = if compact { json!({"type":"compaction","encrypted_content":"offline-fixture"}) } else { json!({"type":"message","id":"fixture-message","role":"assistant","content":[{"type":"output_text","text":"OK"}]}) };
+        ResponseTemplate::new(200).insert_header("content-type","text/event-stream").set_body_string(
+            event(json!({"type":"response.created","response":{"id":"fixture-response"}}))
+            + &event(json!({"type":"response.output_item.done","output_index":0,"item":item}))
+            + &event(json!({"type":"response.completed","response":{"id":"fixture-response","status":"completed","output":[item],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}))
+        )
+    }).mount(&f.server).await;
+    let mut store = crate::providers::ProviderStore::default();
+    store.upsert(serde_json::from_value(json!({"name":"External fixture","baseUrl":f.server.uri(),"apiKey":"external-only","protocol":"responses","enabled":true,"models":[{"modelId":"gpt-test","visible":true}]})).unwrap()).unwrap();
+    let external = store.catalog()[0].route_id.clone();
+    store.save(&f.router.paths).unwrap();
+    let apis = crate::integrations::ApiIntegrations::with_subscription(
+        f.router.paths.clone(),
+        f.router.clone(),
+    );
+    let mut broker = crate::broker::start(0, apis).await.unwrap();
+    crate::config::reconcile_codex_config(&f.router.paths, broker.port()).unwrap();
+    let output = tokio::process::Command::new("node")
+        .arg(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts/verify-native-mobile-gateway.mjs"),
+        )
+        .arg(binary)
+        .arg(&f.router.paths.codex_home)
+        .arg(external)
+        .arg(route_id("gpt-test"))
+        .output()
+        .await
+        .unwrap();
+    broker.shutdown().await;
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    let requests = f.server.received_requests().await.unwrap();
+    let posts: Vec<_> = requests.iter().filter(|r| r.method == "POST").collect();
+    assert!(posts.iter().any(|r| {
+        r.headers
+            .get("authorization")
+            .is_some_and(|h| h.to_str().is_ok_and(|v| v.starts_with("Bearer header.")))
+    }));
+    assert!(posts.iter().any(|r| {
+        r.headers
+            .get("authorization")
+            .is_some_and(|h| h == "Bearer external-only")
+    }));
+    assert!(posts.iter().any(|r| {
+        r.headers
+            .get("chatgpt-account-id")
+            .is_some_and(|h| h == "a")
+    }));
+}
 fn success() -> String {
     event(json!({"type":"response.created","response":{"id":"b-response"}}))
         + &event(json!({"type":"response.output_text.delta","delta":"OK"}))

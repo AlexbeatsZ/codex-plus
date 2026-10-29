@@ -6,6 +6,10 @@
 
 # Current State
 
+- 2026-10-29：0.3.8 已实现手机 Remote 的原生目录与统一 openai 网关：新 API/订阅任务保持 openai 身份，由现有 broker 内部分流；旧 provider 表保留，API 面板可显式为旧任务创建完整历史分支。当前 Mac 原生 mock 已覆盖目录、同任务三渠道、订阅压缩续接、历史 fork 和默认列表可见；未发送真实模型请求、未改当前运行实例。正在构建并文件部署 Mac/ROG/OMEN，实际生效以各端 release.json 为准；OMEN 既有未提交源码须原样保留。设计：docs/design/mobile-remote-providers.md。
+
+- 2026-10-29：完成手机 Codex 外接 API/聚合订阅任务消失与模型不可选的研究，未改生产行为。当前内嵌 CLI 0.165.0-alpha.1.2 原生 mock 确认 thread/list 的 null/省略只返回默认 provider、[] 才全量，原 renderer 强制 null 的旧假设失效；后续 0.3.8 已实现，手机实机仍待验证。入口：docs/design/mobile-remote-providers.md、scripts/verify-native-mobile-providers.mjs。
+
 - 2026-10-29：空闲账户 5h 自动激活已同步并文件部署 ROG `0.3.7-rog` 与 Mac `0.3.7`，对应 GitHub Release 已上传；构建源码分别 `b7f2bbc` / `b1edff1`，Mac 保持原稳定证书签名。ROG Rust 127、Mac Rust 131 通过，两端 renderer 均 67/68（已有 routing v22/v21 断言失败）；MCP 与 Mac 原生签名发布回归通过。原 Codex/launcher/Tunnel PID 与启动时间不变，未启用开关、未发送真实模型请求；各端需显式启动新版 codex-plus 后在现有订阅设置开启，真实计时待自然观察。OMEN 固定入口仍为 0.3.6-omen，0.3.7-omen 候选及 Release 已存在；本次未变更 OMEN 运行/部署状态。各端实际来源见 `.codex-plus/release.json`。
 
 - 2026-10-29：公共版本 0.3.7 新增默认关闭的 `autoActivate`：在现有订阅面板显式启用后，每 5 分钟检查已选空闲账户，仅真实 5h 剩余 100%、周剩余 >0% 且高于保留阈值时发送独立 OK 请求。跳过当前登录、最近分配和在途账户，持久化至少 5h 防重复，前台优先。只做 mock 回归，不启用生产配置、不发送真实验证请求、不重启或热附加现有实例；真实计时待自然观察。设计见 `docs/design/account-pool.md`，各端文件发布以 `.codex-plus/release.json` 为准。
@@ -115,7 +119,7 @@
 - 0.2.0 已修复 WSL mirrored networking/FSE 将动态范围内的固定 broker 端口 57321 标记为不可绑定、导致登录接管在 `broker` 阶段以 `WSAEACCES 10013` 退出的问题；broker 改用动态范围外的首选端口 43121，任何绑定失败都直接持有系统分配的备用 listener，并用实际端口更新配置。
 - 0.2.0 已为账户列表增加非当前账户删除；Rust 层拒绝删除当前实时账户。列表底部同时提供 `auth.json` 导入和网页登录，后者用 pending action 保存当前账户、移走实时凭据、重启到原生登录页并自动捕获新账户。
 - 2026-08-14 已清理状态库中 142 条明确的临时记录（子代理、CLI/exec/未知来源及一条已确认的翻译校对侧会话），活动目录由 377 条降至 307 条；当时曾为回滚创建任务级副本，但误放在 `%LOCALAPPDATA%\codex-plus\backups\thread-cleanup-20260814-195125`，该副本现已清理，今后此类回滚副本必须使用 `%LOCALAPPDATA%\Temp\.agents\<任务名>\`。正常用户任务未按项目目录批量删除。
-- 路由脚本的 `thread/list.modelProviders` 已从旧空数组改为 Codex `26.810.4967.0` 原生使用的 `null` 全 provider 哨兵，并保留 `sourceKinds`、`archived` 等范围参数，避免再次放大共享会话目录。
+- 路由脚本在当前 CLI 使用 `thread/list.modelProviders=[]`，并保留 `sourceKinds`、`archived` 等范围参数；旧版本使用 null 的假设已被 2026-10-29 原生验证推翻。
 - Codex `26.803.10989.0` 不支持已有任务跨 provider 原地切换；v16 候选改为发送前明确询问，确认后以目标 model/provider 执行 `thread/fork`，验证新任务 provider，再把本条消息发送到继承完整历史的分支并自动导航。取消或验证失败时不发送且原任务不变。2026-08-14 审阅当前 `26.810.4967.0` app.asar 后，已移除普通 fork fallback 错误使用的 `excludeTurns: true`；自动化与隔离构建通过，尚未实机验收。
 
 - 文件部署已清理构建/脚本临时产物；ROG 的旧常驻 launcher 仍映射 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-upgrade-20261001\running-previous-codex-plus.exe`，Windows 拒绝删除该映像。保留至进程自然退出后清理，不为此停止 launcher。以前的 `.codex-plus/release-backups/20261001-package-identity` 属于上一轮恢复资料，本次未动。
@@ -184,7 +188,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - 模型目录显示 alias，但实际 `model` 必须保留稳定 routeId；描述中再显示 API 名称与真实 model ID，避免不同 API 的同名模型冲突。
 - Codex `26.803.5235.0` 的 `window.electronBridge` 不可扩展，且模型目录与任务请求绕开 window dispatch，直接走 React host runtime 中的 `AppServerRequestClient`。必须包装该 client，并刷新 `models/list` Query 缓存；bridge/window dispatch/Response patch 只能作为兼容补充，不能作为完成依据。
 - `AppServerRequestClient.prewarmThreadStart` 不调用 `sendRequest`，而是直接进入 `enqueueRequest`。provider 路由必须包装 `enqueueRequest`，并在安装及模型选择改变时清除旧预热任务；否则 routeId 会和默认 `openai` provider 组合，直到 ChatGPT 账户校验时报“不支持该模型”。
-- Codex `26.810.4967.0` 会把 `~/.codex/sessions` 与状态库同步到本地任务目录；临时侧会话的 `ephemeral` 身份只保存在运行时集合，状态库没有对应列，重启后可能重新表现为普通用户条目。清理时必须按明确来源/会话身份筛选并同时处理 rollout、`state_5.sqlite`、`session_index.jsonl` 与 `local_thread_catalog`，不能按翻译项目目录删除正常任务；`thread/list.modelProviders` 应使用官方的 `null` 哨兵而非空数组。
+- Codex `26.810.4967.0` 会把 `~/.codex/sessions` 与状态库同步到本地任务目录；临时侧会话的 `ephemeral` 身份只保存在运行时集合，状态库没有对应列，重启后可能重新表现为普通用户条目。清理时必须按明确来源/会话身份筛选并同时处理 rollout、`state_5.sqlite`、`session_index.jsonl` 与 `local_thread_catalog`，不能按翻译项目目录删除正常任务；`thread/list.modelProviders` 的 null/[] 必须按当前原生版本验证，0.165 已确认 [] 才表示全 provider。
 - Codex `26.803.10989.0` 已移除 `thread/shutdown`，且 `thread/unsubscribe` 后用不同 `modelProvider` 调用 `thread/resume` 仍返回原 provider；provider 在任务创建时固定。保留历史并跨 provider 的受支持入口是 `thread/fork`：必须先征得用户确认，同时提交目标 model/provider，读取并验证新任务后才发送和导航；失败时原任务不变并阻止发送。
 - Codex `26.810.4967.0` 的原生 `fork-conversation-from-latest` 最终调用普通 `thread/fork` 时不传 `excludeTurns`；`excludeTurns: true` 只用于 side conversation。跨 provider 完整历史分支的直接 fallback 同样必须省略该字段。
 - 删除账户必须在 vault 锁内重新读取实时 account ID；当前账户只禁用 UI 不够。网页登录必须先把当前实时凭据保存到 vault，再移走 `auth.json`，并在新 launcher 中捕获新登录凭据；启动失败时恢复旧文件。
@@ -205,6 +209,8 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - Windows Microsoft Store (MSIX / AppX) 安装的桌面应用在 `C:\Program Files\WindowsApps\` 下具有 NTFS 条件访问控制列表（Conditional ACE：`WIN://SYSAPPID Contains "<PackageFamilyName>"`）。普通非打包 Win32 进程直接调用 `CreateProcessW` / `Command::spawn()` 会因调用令牌缺少该包 Claim 而被操作系统内核安全模型直接拦截，返回 `拒绝访问。(os error 5)`（`0x80070005`）。必须通过 Windows Shell COM 接口 `IApplicationActivationManager::ActivateApplication` 传入 Application User Model ID (`AUMID: <PackageFamilyName>!App`) 和启动参数（如 `--remote-debugging-port`）由 DCOM 系统服务代理创建具备合法包身份的进程；再通过返回的 PID 用 `OpenProcess` 获取句柄后下调为 `BELOW_NORMAL_PRIORITY_CLASS` 并监听退出。
 
 # Docs Index
+
+- `docs/design/mobile-remote-providers.md`：手机 Remote 的原生模型目录、统一 provider 网关、旧任务迁入与验收。
 
 - `docs/design/context-usage.md`：原生上下文浮窗的输入、输出与缓存统计。
 - `CONTEXT.md`：账户、订阅 API、模型路由与凭据状态术语。

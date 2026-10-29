@@ -7,6 +7,7 @@ mod config;
 mod desktop;
 mod integrations;
 mod local_tools;
+mod native_gateway;
 mod pdf_preview;
 #[allow(dead_code)]
 mod protocol_proxy;

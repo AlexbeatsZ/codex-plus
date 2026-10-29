@@ -45,6 +45,7 @@ pub fn reconcile_codex_config(paths: &AccountPaths, port: u16) -> anyhow::Result
     pool["supports_websockets"] = value(false);
     pool["capabilities"]["remote_compaction"] = value("v2");
     providers[POOL_PROVIDER_ID] = Item::Table(pool);
+    crate::native_gateway::Settings::reconcile(paths, &mut document, port)?;
     let rendered = document.to_string();
     if rendered == original {
         return Ok(());
