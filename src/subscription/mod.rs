@@ -26,6 +26,7 @@ pub const AUTO_REVIEW_MODEL: &str = "codex-auto-review";
 mod config;
 pub use config::SubscriptionConfig;
 mod quota;
+mod activation;
 
 pub fn route_id(model: &str) -> String {
     format!(
@@ -42,6 +43,8 @@ pub struct SubscriptionApi {
     state: Arc<Mutex<HashMap<(String, String), AccountState>>>,
     rejected: Arc<Mutex<HashMap<String, String>>>,
     quota: Arc<quota::QuotaTracker>,
+    activity: Arc<Mutex<activation::Activity>>,
+    foreground: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone, Serialize)]
@@ -68,6 +71,8 @@ impl SubscriptionApi {
             state: Arc::new(Mutex::new(HashMap::new())),
             rejected: Arc::new(Mutex::new(rejected)),
             quota: Arc::new(quota::QuotaTracker::default()),
+            activity: Arc::default(),
+            foreground: Arc::default(),
         }
     }
 
@@ -95,6 +100,7 @@ impl SubscriptionApi {
 
     pub fn save(&self, config: SubscriptionConfig) -> anyhow::Result<Value> {
         config.save(&self.paths)?;
+        self.foreground.notify_waiters();
         self.quota.clear();
         self.view()
     }
@@ -410,6 +416,7 @@ impl SubscriptionApi {
                 }
             }
             tried += 1;
+            let activity = self.begin_foreground(id);
             let response = match self
                 .authenticated_request(id, &client, &endpoint, Some(&body), Some(&headers))
                 .await
@@ -488,6 +495,7 @@ impl SubscriptionApi {
                     let model = model.clone();
                     let track_quota = reserve.is_some();
                     let stream = async_stream::stream! {
+                        let _activity = activity;
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(prefix));
                         while !guard.terminal {
                             match tokio::time::timeout(IDLE_TIMEOUT, tail.next()).await {

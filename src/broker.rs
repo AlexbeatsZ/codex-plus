@@ -93,6 +93,7 @@ pub async fn start(preferred_port: u16, apis: ApiIntegrations) -> anyhow::Result
         }
     };
     let port = listener.local_addr().map_err(anyhow::Error::from)?.port();
+    let subscription = apis.subscription.clone();
     let state = BrokerState { apis };
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -109,9 +110,10 @@ pub async fn start(preferred_port: u16, apis: ApiIntegrations) -> anyhow::Result
         )
         .with_state(state);
     let task = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .map_err(anyhow::Error::from)
+        tokio::select! {
+            result = axum::serve(listener, app).into_future() => result.map_err(anyhow::Error::from),
+            _ = subscription.run_activation() => Ok(()),
+        }
     });
     Ok(BrokerHandle {
         port,

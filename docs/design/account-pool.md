@@ -25,6 +25,31 @@
 普通 `/v1` 不猜测裸模型属于哪个账户池；旧 `cp-pool-...` 请求继续兼容。
 上一模型未获订阅配置允许时明确失败，不自动消费隐藏模型或其他 API。
 
+## 空闲账户自动激活 5h 计时
+
+订阅配置新增 `autoActivate`，默认关闭，在现有订阅 API 面板内显式开启；账户池本身也必须已启用。
+broker 生命周期内每 5 分钟串行检查，启动时检查一次，不新增进程、管理页面或外部定时任务。
+仅检查 `accountOrder` 中已勾选、凭据有效且未冷却的账户；跳过官方当前登录账户、
+本机账户池最近分配的账户及仍有前台流的账户。前台请求或配置保存会中断正在进行的后台激活。
+
+每次发送前重新查询真实额度，不依赖 UI 四舍五入后的 100%：必须同时存在有效的
+`limit_window_seconds=18000` 和 `604800` 窗口（不假定 primary/secondary 顺序），
+前者 `used_percent=0`，后者 `0<=used_percent<100`，两者 reset_at 都必须在未来，
+不能处于 allowed=false / limit_reached=true，并且高于已有保留阈值。缺失、过期、查询失败均跳过。
+查询后再核对持久配置、账户身份与前台活动，避免用户取消勾选或切换时继续发送。
+
+使用第一个可见的普通订阅模型发送独立 `Reply only with OK.` 请求，`store=false`、
+`stream=true`、无工具、无 thread/conversation/previous_response_id；不创建本地聊天或写入实时 auth.json。
+凭据和代理仍复用现有订阅实现。请求最多 30 秒、流大小有界；不会因失败自动换账户重放。
+这是会消耗少量真实额度的生成请求，响应完成不等于服务端 5h 计时已被确认激活。
+
+发送前原子写入 `.codex-plus/subscription-activation.json`，以 recordId 记录至少 5 小时后的
+下次允许尝试时间；网络失败、取消、进程退出或额度仍显示 100% 都不立即重复。
+独立文件锁防止共享同一 state 的进程重复执行；记录损坏或写入失败时 fail closed。
+不同设备的独立 state 不共享去重记录，同时启用时可能各发送一次；不复制账户或凭据以协调。
+日志 `subscription.activation.attempt` 仅记录 recordId、model、结果和下次尝试时间，不保存提示词响应或令牌。
+功能默认关闭，mock 回归不消耗真实额度；真实计时行为需用户开启后的自然观察。
+
 ## 原生自动审批
 
 官方 `0.163.0-alpha.10.2` 的自动审批使用独立 reviewer 模型 `codex-auto-review`，

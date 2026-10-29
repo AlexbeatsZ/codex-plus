@@ -26,6 +26,32 @@ async function setup(config = {}, quotaStates = []) {
   return { dom, saves, input, set };
 }
 
+test("auto activation defaults off, persists through reorder and saves explicit opt-in", async () => {
+  const { dom, saves } = await setup();
+  try {
+    const checkbox = () => dom.window.document.querySelector("[data-sub-auto-activate]");
+    assert.equal(checkbox().checked, false);
+    checkbox().checked = true;
+    checkbox().dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    dom.window.document.querySelector('[data-sub-up="b"]').click();
+    assert.equal(checkbox().checked, true);
+    assert.match(dom.window.document.body.textContent, /会消耗少量额度/);
+    dom.window.document.querySelector("[data-sub-save]").click(); await flush();
+    assert.equal(saves[0].autoActivate, true);
+  } finally { dom.window.close(); }
+});
+
+test("auto activation can be disabled from an enabled configuration", async () => {
+  const { dom, saves } = await setup({ autoActivate: true });
+  try {
+    const checkbox = dom.window.document.querySelector("[data-sub-auto-activate]");
+    assert.equal(checkbox.checked, true);
+    checkbox.click();
+    dom.window.document.querySelector("[data-sub-save]").click(); await flush();
+    assert.equal(saves[0].autoActivate, false);
+  } finally { dom.window.close(); }
+});
+
 test("legacy configs leave reserve inputs blank and each account saves independent thresholds", async () => {
   const { dom, saves, input, set } = await setup();
   try {
