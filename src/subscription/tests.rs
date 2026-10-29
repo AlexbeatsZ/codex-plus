@@ -36,6 +36,7 @@ async fn fixture() -> Fixture {
         .to_vec();
     let config = SubscriptionConfig {
         enabled: true,
+        auto_activate: false,
         account_order: ids.clone(),
         models: vec![crate::providers::SaveModel {
             model_id: "gpt-test".into(),

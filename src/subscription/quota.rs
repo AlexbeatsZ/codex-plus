@@ -46,7 +46,7 @@ fn remaining(window: &UsageWindow) -> Option<f64> {
     (used.is_finite() && (0.0..=100.0).contains(&used)).then_some(100.0 - used)
 }
 
-fn evaluate(usage: &Usage, reserve: &AccountReserve) -> ReserveStatus {
+pub(super) fn evaluate(usage: &Usage, reserve: &AccountReserve) -> ReserveStatus {
     let mut present = false;
     let mut unknown = false;
     for window in windows(usage) {

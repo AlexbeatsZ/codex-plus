@@ -6,6 +6,8 @@ pub struct SubscriptionConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
+    pub auto_activate: bool,
+    #[serde(default)]
     pub account_order: Vec<String>,
     #[serde(default)]
     pub models: Vec<crate::providers::SaveModel>,
