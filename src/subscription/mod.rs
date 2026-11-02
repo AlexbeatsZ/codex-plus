@@ -99,6 +99,22 @@ impl SubscriptionApi {
     }
 
     pub fn save(&self, config: SubscriptionConfig) -> anyhow::Result<Value> {
+        if config.enabled {
+            let templates = crate::native_gateway::known_templates(&self.paths);
+            let unknown: Vec<&str> = config
+                .models
+                .iter()
+                .filter(|m| m.visible)
+                .filter(|m| crate::native_gateway::find_template(&templates, &m.model_id).is_none())
+                .map(|m| m.model_id.as_str())
+                .collect();
+            if !unknown.is_empty() {
+                bail!(
+                    "以下订阅模型缺少官方能力信息：{}。请先点击“读取模型”，codex-plus 不会替它们假设上下文窗口或工具策略。",
+                    unknown.join("、")
+                );
+            }
+        }
         config.save(&self.paths)?;
         self.foreground.notify_waiters();
         self.quota.clear();
@@ -267,6 +283,7 @@ impl SubscriptionApi {
                 .await
                 .context("订阅 API 模型目录读取超时")?
                 .context("订阅 API 模型目录无效")?;
+            crate::native_gateway::archive_official(&self.paths, &value)?;
             let models: Vec<String> = value["models"]
                 .as_array()
                 .into_iter()

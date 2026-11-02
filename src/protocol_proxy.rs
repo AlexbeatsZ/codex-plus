@@ -3753,6 +3753,7 @@ mod integration_tests {
                 display_name: name.to_string(),
                 visible: true,
                 context_window: None,
+                tool_mode: None,
             }],
         }
     }

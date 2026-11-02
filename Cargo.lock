@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus"
-version = "0.3.10-rog"
+version = "0.3.11-rog"
 dependencies = [
  "anyhow",
  "async-stream",

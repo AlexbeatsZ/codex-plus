@@ -41,11 +41,16 @@ impl ApiIntegrations {
         let mut entries = vec![
             json!({"id":SUBSCRIPTION_ID,"name":"ChatGPT 订阅","kind":"subscription","fixed":true,"enabled":config.enabled,"models":models,"baseUrl":"","protocol":"responses","hasApiKey":false}),
         ];
+        let templates = crate::native_gateway::known_templates(&self.paths);
         entries.extend(
             ProviderStore::load(&self.paths)?
                 .summaries()
                 .into_iter()
-                .map(|p| serde_json::to_value(p).unwrap()),
+                .map(|p| {
+                    let mut value = serde_json::to_value(p).unwrap();
+                    mark_matched(&templates, &mut value["models"]);
+                    value
+                }),
         );
         Ok(entries)
     }
@@ -72,6 +77,32 @@ impl ApiIntegrations {
         if request.id.as_deref() == Some(SUBSCRIPTION_ID) {
             bail!("固定订阅 API 不接受外部 URL 或 Key");
         }
+        if request.enabled {
+            let templates = crate::native_gateway::known_templates(&self.paths);
+            let pending: Vec<String> = request
+                .models
+                .iter()
+                .filter(|m| m.visible)
+                .filter_map(|m| {
+                    let missing = crate::native_gateway::missing_configuration(
+                        &templates,
+                        false,
+                        &m.model_id,
+                        Some(request.protocol),
+                        m.context_window,
+                        m.tool_mode,
+                    );
+                    (!missing.is_empty())
+                        .then(|| format!("{}（{}）", m.model_id, missing.join("、")))
+                })
+                .collect();
+            if !pending.is_empty() {
+                bail!(
+                    "以下模型需要先填写才能使用：{}。codex-plus 不会替未确定的模型假设窗口或工具策略；也可以取消勾选这些模型。",
+                    pending.join("；")
+                );
+            }
+        }
         let mut store = ProviderStore::load(&self.paths)?;
         store.upsert(request)?;
         store.save(&self.paths)?;
@@ -85,6 +116,10 @@ impl ApiIntegrations {
             .and_then(|id| store.providers.iter().find(|provider| provider.id == id));
         let models = discover_models(&self.paths, request).await?;
         let mut view = discover_view(existing, models);
+        mark_matched(
+            &crate::native_gateway::known_templates(&self.paths),
+            &mut view["models"],
+        );
         view["status"] = json!("ok");
         Ok(view)
     }
@@ -100,6 +135,15 @@ impl ApiIntegrations {
         }
         store.save(&self.paths)?;
         self.list()
+    }
+}
+
+// Lets the editor show which windows come from an official model and which
+// the user must supply.
+fn mark_matched(templates: &[Value], models: &mut Value) {
+    for model in models.as_array_mut().into_iter().flatten() {
+        let id = model["modelId"].as_str().unwrap_or_default().to_string();
+        model["matched"] = json!(crate::native_gateway::find_template(templates, &id).is_some());
     }
 }
 
@@ -138,5 +182,40 @@ mod tests {
             ModelRoute::Subscription
         ));
         assert!(apis.resolve("cp-regular").is_err());
+    }
+    #[test]
+    fn saving_requires_declarations_instead_of_guessing() {
+        let (_temp, apis) = fixture();
+        std::fs::create_dir_all(&apis.paths.codex_home).unwrap();
+        std::fs::write(
+            apis.paths.codex_home.join("models_cache.json"),
+            json!({"models":[{"slug":"known","context_window":500000}]}).to_string(),
+        )
+        .unwrap();
+        let save = |protocol: &str, models: Value| {
+            apis.save_external(serde_json::from_value(json!({"name":"relay","baseUrl":"https://example.test/v1","apiKey":"fake","protocol":protocol,"models":models})).unwrap())
+        };
+        // A matched name fixes the window, not whether the relay supports deferred tools.
+        let error = save("responses", json!([{"modelId":"known","visible":true}])).unwrap_err();
+        assert!(error.to_string().contains("known（工具策略）"));
+        let error = save(
+            "responses",
+            json!([{"modelId":"odd","visible":true,"toolMode":"direct"}]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("odd（上下文窗口）"));
+        // Chat conversion can only inline tools, so only the unknown window is asked.
+        let error = save("chatCompletions", json!([{"modelId":"odd","visible":true}])).unwrap_err();
+        assert!(error.to_string().contains("odd（上下文窗口）"));
+        assert!(!apis.paths.providers_path().exists());
+        // Hidden models need nothing; declared ones are accepted and marked for the editor.
+        let listed = save(
+            "responses",
+            json!([{"modelId":"known","visible":true,"toolMode":"deferred"},{"modelId":"odd","visible":false}]),
+        )
+        .unwrap();
+        assert_eq!(listed[1]["models"][0]["matched"], true);
+        assert_eq!(listed[1]["models"][1]["matched"], false);
+        assert_eq!(listed[1]["models"][0]["toolMode"], "deferred");
     }
 }

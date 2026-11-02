@@ -16,6 +16,15 @@ pub enum ProviderProtocol {
     ChatCompletions,
 }
 
+// How the native client sends tools: `Deferred` is code mode plus tool search,
+// `Direct` inlines every tool definition into each request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolMode {
+    Direct,
+    Deferred,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModel {
@@ -25,6 +34,8 @@ pub struct ProviderModel {
     pub visible: bool,
     #[serde(default)]
     pub context_window: Option<u64>,
+    #[serde(default)]
+    pub tool_mode: Option<ToolMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +111,8 @@ pub struct SaveModel {
     pub visible: bool,
     #[serde(default)]
     pub context_window: Option<u64>,
+    #[serde(default)]
+    pub tool_mode: Option<ToolMode>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +137,7 @@ pub struct CatalogModel {
     pub provider_name: String,
     pub native_provider_id: String,
     pub context_window: Option<u64>,
+    pub tool_mode: Option<ToolMode>,
     pub protocol: Option<ProviderProtocol>,
 }
 
@@ -172,6 +186,7 @@ impl ProviderStore {
                     provider_name: p.name.clone(),
                     native_provider_id: crate::config::BROKER_PROVIDER_ID.into(),
                     context_window: m.context_window,
+                    tool_mode: m.tool_mode,
                     protocol: Some(p.protocol),
                 })
             })
@@ -248,6 +263,7 @@ impl ProviderStore {
                 display_name,
                 visible: model.visible,
                 context_window: model.context_window,
+                tool_mode: model.tool_mode,
             });
         }
         if request.enabled && !models.iter().any(|model| model.visible) {
@@ -370,6 +386,7 @@ pub fn discover_view(
                 display_name: m.display_name.clone(),
                 visible: m.visible,
                 context_window: m.context_window,
+                tool_mode: m.tool_mode,
             })
             .collect::<Vec<_>>()
     });
@@ -417,6 +434,7 @@ pub fn rediscover_settings(
                     .unwrap_or_else(|| model_id.clone()),
                 visible: previous.map(|m| m.visible).unwrap_or(first),
                 context_window: previous.and_then(|m| m.context_window),
+                tool_mode: previous.and_then(|m| m.tool_mode),
                 model_id,
             }
         })
@@ -577,6 +595,7 @@ mod tests {
                     display_name: "Alias".into(),
                     visible: true,
                     context_window: None,
+                    tool_mode: None,
                 },
                 ProviderModel {
                     route_id: "raw-route".into(),
@@ -584,6 +603,7 @@ mod tests {
                     display_name: "raw".into(),
                     visible: false,
                     context_window: None,
+                    tool_mode: None,
                 },
                 ProviderModel {
                     route_id: "blank-route".into(),
@@ -591,6 +611,7 @@ mod tests {
                     display_name: " ".into(),
                     visible: true,
                     context_window: None,
+                    tool_mode: None,
                 },
             ],
         };

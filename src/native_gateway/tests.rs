@@ -40,8 +40,9 @@ async fn oversized_tools_never_reach_any_upstream_including_compaction_and_legac
     let paths = paths(&temp);
     let upstream = MockServer::start().await;
     let mut store = ProviderStore::default();
-    store.upsert(serde_json::from_value(json!({"name":"test","baseUrl":upstream.uri(),"apiKey":"fake","protocol":"responses","models":[{"modelId":"unknown","visible":true,"contextWindow":32768}]})).unwrap()).unwrap();
+    store.upsert(serde_json::from_value(json!({"name":"test","baseUrl":upstream.uri(),"apiKey":"fake","protocol":"responses","models":[{"modelId":"unknown","visible":true,"contextWindow":32768,"toolMode":"direct"},{"modelId":"unset","visible":true}]})).unwrap()).unwrap();
     let route = store.catalog()[0].route_id.clone();
+    let unset = store.catalog()[1].route_id.clone();
     store.save(&paths).unwrap();
     let mut broker = crate::broker::start_on_port(paths.clone(), 0)
         .await
@@ -75,6 +76,19 @@ async fn oversized_tools_never_reach_any_upstream_including_compaction_and_legac
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{endpoint}");
             assert!(response.text().await.unwrap().contains("请求未发送"));
         }
+    }
+    // Even a tiny request is refused for an unconfigured route: sending it
+    // would mean guessing the window and the relay's tool support.
+    for endpoint in [format!("{native}/responses"), "/v1/responses".to_string()] {
+        let response = client
+            .post(format!("http://127.0.0.1:{}{endpoint}", broker.port()))
+            .bearer_auth("codex-plus-loopback")
+            .json(&json!({"model":unset,"input":[]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{endpoint}");
+        assert!(response.text().await.unwrap().contains("尚未配置"));
     }
     assert!(upstream.received_requests().await.unwrap().is_empty());
     broker.shutdown().await;
@@ -175,8 +189,15 @@ fn catalog_uses_real_capabilities_and_keeps_same_name_channels_distinct() {
     let mut config = DocumentMut::new();
     Settings::reconcile(&paths, &mut config, 1).unwrap();
     let mut store = ProviderStore::default();
-    for name in ["one", "two"] {
-        let request: SaveRequest = serde_json::from_value(json!({"name":name,"baseUrl":"https://example.test/v1","apiKey":"PRIVATE","protocol":"responses","enabled":true,"models":[{"modelId":"known","displayName":"alias","visible":true},{"modelId":"unknown","visible":true}]})).unwrap();
+    // "two" leaves its unmatched model unconfigured, so nothing is guessed for it.
+    for (name, unknown) in [
+        (
+            "one",
+            json!({"modelId":"unknown","visible":true,"contextWindow":32768,"toolMode":"direct"}),
+        ),
+        ("two", json!({"modelId":"unknown","visible":true})),
+    ] {
+        let request: SaveRequest = serde_json::from_value(json!({"name":name,"baseUrl":"https://example.test/v1","apiKey":"PRIVATE","protocol":"responses","enabled":true,"models":[{"modelId":"known","displayName":"alias","visible":true,"toolMode":"direct"},unknown]})).unwrap();
         store.upsert(request).unwrap();
     }
     store.save(&paths).unwrap();
@@ -184,7 +205,7 @@ fn catalog_uses_real_capabilities_and_keeps_same_name_channels_distinct() {
     let settings = Settings::load(&paths).unwrap().unwrap();
     let result = catalog(&paths, &apis, &settings).unwrap();
     let models = result["models"].as_array().unwrap();
-    assert_eq!(models.len(), 5);
+    assert_eq!(models.len(), 4);
     assert!(!result.to_string().contains("PRIVATE"));
     assert!(models.iter().all(|m| m["slug"] != "cp-stale"));
     assert_eq!(
@@ -199,7 +220,7 @@ fn catalog_uses_real_capabilities_and_keeps_same_name_channels_distinct() {
             .iter()
             .filter(|m| m["context_window"] == 32768)
             .count(),
-        2
+        1
     );
     assert!(models[1..].iter().all(|m| m["use_responses_lite"] == false));
     assert!(
@@ -230,7 +251,7 @@ fn subscription_keeps_deferred_tools_and_routes_never_shrink_to_fallback() {
     )
     .unwrap();
     let mut store = ProviderStore::default();
-    store.upsert(serde_json::from_value(json!({"name":"relay","baseUrl":"https://example.test/v1","apiKey":"PRIVATE","protocol":"responses","enabled":true,"models":[{"modelId":"vendor/big","visible":true}]})).unwrap()).unwrap();
+    store.upsert(serde_json::from_value(json!({"name":"relay","baseUrl":"https://example.test/v1","apiKey":"PRIVATE","protocol":"responses","enabled":true,"models":[{"modelId":"vendor/big","visible":true,"toolMode":"deferred"},{"modelId":"vendor/small","visible":true}]})).unwrap()).unwrap();
     store.save(&paths).unwrap();
     let apis = ApiIntegrations::new(paths.clone());
     let find = |result: &Value, slug: &str| {
@@ -257,15 +278,17 @@ fn subscription_keeps_deferred_tools_and_routes_never_shrink_to_fallback() {
         json!(["clock"])
     );
     assert_eq!(subscription["use_responses_lite"], false);
-    // An unknown subscription model is still a native model, not a 32K relay.
-    let future = find(&result, &crate::subscription::route_id("future"));
-    assert_eq!(future["context_window"], 272000);
-    assert_eq!(future["tool_mode"], "code_mode_only");
-    // Native Responses relays preserve matched deferred tool capabilities.
+    // Neither an unknown subscription model nor a relay whose tool support was
+    // never declared is offered with borrowed capabilities.
+    let slugs = result.to_string();
+    assert!(!slugs.contains(&crate::subscription::route_id("future")));
+    assert!(!slugs.contains(&store.catalog()[1].route_id));
+    // A matched window is a model fact; deferred tools are the user's declaration.
     let external = find(&result, &relay);
     assert_eq!(external["context_window"], 500000);
     assert_eq!(external["tool_mode"], "code_mode_only");
     assert_eq!(external["supports_search_tool"], true);
+    assert_eq!(external["experimental_supported_tools"], json!([]));
     assert!(!result.to_string().contains("PRIVATE"));
 }
 
@@ -341,7 +364,7 @@ async fn native_gateway_auth_routing_and_official_credentials_are_separate() {
     )
     .unwrap();
     let mut store = ProviderStore::default();
-    store.upsert(serde_json::from_value(json!({"name":"external","baseUrl":external.uri(),"apiKey":"external-secret","protocol":"responses","enabled":true,"models":[{"modelId":"same","visible":true}]})).unwrap()).unwrap();
+    store.upsert(serde_json::from_value(json!({"name":"external","baseUrl":external.uri(),"apiKey":"external-secret","protocol":"responses","enabled":true,"models":[{"modelId":"same","visible":true,"toolMode":"direct"}]})).unwrap()).unwrap();
     let route = store.catalog()[0].route_id.clone();
     store.save(&paths).unwrap();
     let mut broker = crate::broker::start_on_port(paths.clone(), 0)

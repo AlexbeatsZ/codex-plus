@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 13;
+  const VERSION = 14;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
@@ -67,7 +67,7 @@
       .cp-api-select { color-scheme:dark; }
       .cp-api-select option { color:var(--cp-text); background:var(--cp-bg); }
       .cp-api-models { max-height:310px; overflow:auto; border:1px solid var(--cp-border); border-radius:10px; background:var(--cp-surface); }
-      .cp-api-model { display:grid; grid-template-columns:auto minmax(120px,1fr) minmax(120px,1fr) minmax(110px,.7fr); align-items:center; gap:8px; border:0; border-bottom:1px solid var(--cp-divider); padding:8px 10px; }
+      .cp-api-model { display:grid; grid-template-columns:auto minmax(110px,1fr) minmax(110px,1fr) minmax(100px,.7fr) minmax(120px,.8fr); align-items:center; gap:8px; border:0; border-bottom:1px solid var(--cp-divider); padding:8px 10px; }
       .cp-api-model:last-child { border-bottom:0; }
       .cp-api-model-id { overflow:hidden; text-overflow:ellipsis; color:var(--cp-muted); font:11px ui-monospace,monospace; }
       .cp-api-status { margin-bottom:10px; border:1px solid rgba(51,156,255,.36); border-radius:8px; padding:8px 10px; color:#8cc9ff; background:var(--cp-surface); font-size:12px; }
@@ -165,7 +165,7 @@
     state.models = (provider?.models || []).map((m) => ({ ...m })); state.message = ""; renderForm();
   }
 
-  function modelEditor(showWindow = false) { return `<div class="cp-api-models">${state.models.map((m, i) => `<div class="cp-api-model"><input type="checkbox" data-model-visible="${i}" ${m.visible ? "checked" : ""}><span class="cp-api-model-id" title="${esc(m.modelId)}">${esc(m.modelId)}</span><input class="cp-api-input" data-model-name="${i}" value="${esc(m.displayName || m.modelId)}" aria-label="模型显示名称">${!showWindow ? "" : `<input class="cp-api-input" type="number" min="1024" max="10000000" step="1" data-model-window="${i}" value="${m.contextWindow ?? ""}" placeholder="窗口 token / 自动" aria-label="上下文窗口 token" title="填写上游实际支持的上下文 token 数；留空匹配官方模板，未知模型使用 32768。不要虚增窗口。">`}</div>`).join("")}</div>`; }
+  function modelEditor(external = false) { return `<div class="cp-api-models">${state.models.map((m, i) => `<div class="cp-api-model"><input type="checkbox" data-model-visible="${i}" ${m.visible ? "checked" : ""}><span class="cp-api-model-id" title="${esc(m.modelId)}">${esc(m.modelId)}</span><input class="cp-api-input" data-model-name="${i}" value="${esc(m.displayName || m.modelId)}" aria-label="模型显示名称">${!external ? "" : `<input class="cp-api-input" type="number" min="1024" max="10000000" step="1" data-model-window="${i}" value="${m.contextWindow ?? ""}" placeholder="${m.matched ? "自动（官方模型）" : "必填：窗口 token"}" aria-label="上下文窗口 token" title="填写上游实际支持的上下文 token 数，不要虚增。只有匹配官方模型时才可留空。"><select class="cp-api-select" data-model-tool="${i}" aria-label="工具策略" title="上游是否支持延迟工具加载由你声明，codex-plus 不会假设。"><option value="" ${m.toolMode ? "" : "selected"}>工具策略（必选）</option><option value="deferred" ${m.toolMode === "deferred" ? "selected" : ""}>延迟加载</option><option value="direct" ${m.toolMode === "direct" ? "selected" : ""}>全部内联</option></select>`}</div>`).join("")}</div>${!external ? "" : '<p class="cp-sub-note">codex-plus 不替未确定的模型做假设：无法匹配官方模型时必须填写上游实际窗口；Responses 需选择工具策略——“延迟加载”要求上游支持代码模式与工具搜索，“全部内联”会把所有工具定义（可达十几万 token）放进每次请求。Chat Completions 固定全部内联，可不选。未配置完整的模型不会出现在模型列表。</p>'}`; }
 
   function renderForm(draft = null) {
     const root = body(), saved = state.editing; if (!root || !saved) return;
@@ -272,9 +272,9 @@
     finally { state.subscriptionBusy = false; renderSubscription(); }
   }
 
-  function syncModels(root) { state.models.forEach((model, i) => { model.visible = !!root.querySelector(`[data-model-visible="${i}"]`)?.checked; const windowInput = root.querySelector(`[data-model-window="${i}"]`); if (windowInput) model.contextWindow = windowInput.value ? Number(windowInput.value) : null; model.displayName = root.querySelector(`[data-model-name="${i}"]`)?.value || model.modelId; }); }
+  function syncModels(root) { state.models.forEach((model, i) => { model.visible = !!root.querySelector(`[data-model-visible="${i}"]`)?.checked; const windowInput = root.querySelector(`[data-model-window="${i}"]`); if (windowInput) model.contextWindow = windowInput.value ? Number(windowInput.value) : null; const toolInput = root.querySelector(`[data-model-tool="${i}"]`); if (toolInput) model.toolMode = toolInput.value || null; model.displayName = root.querySelector(`[data-model-name="${i}"]`)?.value || model.modelId; }); }
   function values(form) { const data = new FormData(form); return { id: state.editing?.id, name: String(data.get("name") || ""), baseUrl: String(data.get("baseUrl") || ""), apiKey: String(data.get("apiKey") || ""), protocol: String(data.get("protocol") || "chatCompletions"), enabled: data.get("enabled") === "on" }; }
-  async function discover(form) { syncModels(form); const draft = values(form); const windows = new Map(state.models.map(m => [m.modelId, m.contextWindow])); try { const result = await invoke("/api-providers/discover", { providerId: draft.id, baseUrl: draft.baseUrl, apiKey: draft.apiKey }); state.models = (result.models || []).map(m => windows.has(m.modelId) ? { ...m, contextWindow: windows.get(m.modelId) } : m); state.message = `读取到 ${state.models.length} 个模型。`; state.error = false; } catch (e) { state.message = e.message; state.error = true; } renderForm(draft); }
+  async function discover(form) { syncModels(form); const draft = values(form); const prior = new Map(state.models.map(m => [m.modelId, m])); try { const result = await invoke("/api-providers/discover", { providerId: draft.id, baseUrl: draft.baseUrl, apiKey: draft.apiKey }); state.models = (result.models || []).map(m => { const p = prior.get(m.modelId); return p ? { ...m, contextWindow: p.contextWindow ?? m.contextWindow, toolMode: p.toolMode ?? m.toolMode } : m; }); state.message = `读取到 ${state.models.length} 个模型。`; state.error = false; } catch (e) { state.message = e.message; state.error = true; } renderForm(draft); }
   async function save(form) { syncModels(form); const draft = values(form); try { const result = await invoke("/api-providers/save", { ...draft, models: state.models }); state.providers = result.providers || []; state.editing = null; state.message = "API 配置已保存。"; state.error = false; await window.__codexPlusModelRouting?.loadCatalog?.(true); renderList(); } catch (e) { state.message = e.message; state.error = true; renderForm(draft); } }
   async function removeProvider(id) { if (!confirm("删除这个 API 配置？")) return; try { const result = await invoke("/api-providers/delete", { providerId: id }); state.providers = result.providers || []; state.message = "API 配置已删除。"; state.error = false; window.__codexPlusModelRouting?.loadCatalog?.(true); } catch (e) { state.message = e.message; state.error = true; } renderList(); }
   async function load() { state.loading = true; renderList(); try { const result = await invoke("/api-providers/list", {}); state.providers = result.providers || []; } catch (e) { state.message = e.message; state.error = true; } state.loading = false; renderList(); }
