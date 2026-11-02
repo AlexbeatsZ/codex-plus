@@ -3,12 +3,135 @@ use crate::providers::{ProviderStore, SaveRequest};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[test]
+fn fixed_prompt_guard_does_not_confuse_history_or_images_with_fixed_tools() {
+    let huge = "fixed tool description ".repeat(12000);
+    assert!(
+        check_fixed_prompt(
+            &json!({"tools":[{"type":"function","description":huge}]}),
+            32768
+        )
+        .is_err()
+    );
+    assert!(check_fixed_prompt(&json!({"instructions":huge}), 32768).is_err());
+    assert!(
+        check_fixed_prompt(
+            &json!({"input":[{"role":"developer","content":huge}]}),
+            32768
+        )
+        .is_err()
+    );
+    // Large history remains the native client's compaction responsibility.
+    assert!(check_fixed_prompt(&json!({"input":[{"role":"user","content":huge}]}), 32768).is_ok());
+    assert!(
+        check_fixed_prompt(
+            &json!({"input":[{"type":"input_image","image_url":huge}]}),
+            32768
+        )
+        .is_ok()
+    );
+    assert!(check_fixed_prompt(&json!({"instructions":huge}), 128000).is_ok());
+    assert!(check_fixed_prompt_at_limit(&json!({"instructions":huge}), 128000, 20000).is_err());
+}
+
+#[tokio::test]
+async fn oversized_tools_never_reach_any_upstream_including_compaction_and_legacy_routes() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    let upstream = MockServer::start().await;
+    let mut store = ProviderStore::default();
+    store.upsert(serde_json::from_value(json!({"name":"test","baseUrl":upstream.uri(),"apiKey":"fake","protocol":"responses","models":[{"modelId":"unknown","visible":true,"contextWindow":32768}]})).unwrap()).unwrap();
+    let route = store.catalog()[0].route_id.clone();
+    store.save(&paths).unwrap();
+    let mut broker = crate::broker::start_on_port(paths.clone(), 0)
+        .await
+        .unwrap();
+    let mut config = DocumentMut::new();
+    Settings::reconcile(&paths, &mut config, broker.port()).unwrap();
+    let settings = Settings::load(&paths).unwrap().unwrap();
+    // The guard budgets against the catalog entry the client received.
+    fs::create_dir_all(&paths.codex_home).unwrap();
+    fs::write(
+        paths.codex_home.join("models_cache.json"),
+        json!({"models":[{"slug":"unknown","context_window":32768}]}).to_string(),
+    )
+    .unwrap();
+    fs::write(paths.state_dir.join("subscription.json"), json!({"enabled":true,"accountOrder":["fake"],"models":[{"modelId":"unknown","visible":true}]}).to_string()).unwrap();
+    let pool = crate::subscription::route_id("unknown");
+    let native = format!("/native/{}/backend-api/codex", settings.capability);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for (endpoint, model) in [
+        (format!("{native}/responses"), route.clone()),
+        (format!("{native}/responses/compact"), route.clone()),
+        ("/v1/responses".into(), route),
+        ("/subscription/v1/responses".into(), "unknown".into()),
+        (format!("{native}/responses"), pool),
+    ] {
+        for _ in 0..2 {
+            let response = client.post(format!("http://127.0.0.1:{}{endpoint}", broker.port()))
+                .bearer_auth("codex-plus-loopback")
+                .json(&json!({"model":model,"input":[],"tools":[{"type":"function","description":"fixed tool description ".repeat(12000)}]}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{endpoint}");
+            assert!(response.text().await.unwrap().contains("请求未发送"));
+        }
+    }
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+    broker.shutdown().await;
+}
+
+#[test]
+fn explicit_window_and_chat_protocol_preserve_consistent_capabilities() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    let mut store = ProviderStore::default();
+    store.upsert(serde_json::from_value(json!({"name":"chat","baseUrl":"https://example.test","apiKey":"fake","protocol":"chatCompletions","models":[{"modelId":"known","visible":true,"contextWindow":64000}]})).unwrap()).unwrap();
+    store.save(&paths).unwrap();
+    let settings = Settings {
+        capability: "test".into(),
+        original_base: None,
+        original_catalog: None,
+    };
+    let result = catalog_with(&paths,&ApiIntegrations::new(paths.clone()),&settings,vec![json!({"slug":"known","context_window":500000,"max_context_window":900000,"auto_compact_token_limit":450000,"tool_mode":"code_mode_only","supports_search_tool":true})]).unwrap();
+    let model = &result["models"][1];
+    assert_eq!(model["context_window"], 64000);
+    assert_eq!(model["max_context_window"], 64000);
+    assert_eq!(model["auto_compact_token_limit"], 57600);
+    assert_eq!(model["tool_mode"], "direct");
+    assert_eq!(model["supports_search_tool"], false);
+}
+
 fn paths(temp: &tempfile::TempDir) -> AccountPaths {
     AccountPaths {
         codex_home: temp.path().join("home"),
         state_dir: temp.path().join("state"),
         usage_endpoint: String::new(),
     }
+}
+
+#[test]
+fn simultaneous_catalog_versions_cannot_lose_archived_models() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    std::thread::scope(|scope| {
+        for index in 0..8 {
+            let paths = &paths;
+            let barrier = barrier.clone();
+            scope.spawn(move || {
+                barrier.wait();
+                archive_templates(
+                    paths,
+                    &[json!({"slug":format!("model-{index}"),"context_window":500000})],
+                )
+                .unwrap();
+            });
+        }
+    });
+    assert_eq!(
+        read_entries(&paths.state_dir.join(TEMPLATE_ARCHIVE)).len(),
+        8
+    );
 }
 
 #[test]
@@ -138,11 +261,11 @@ fn subscription_keeps_deferred_tools_and_routes_never_shrink_to_fallback() {
     let future = find(&result, &crate::subscription::route_id("future"));
     assert_eq!(future["context_window"], 272000);
     assert_eq!(future["tool_mode"], "code_mode_only");
-    // External relays keep direct tools but match a namespaced native model.
+    // Native Responses relays preserve matched deferred tool capabilities.
     let external = find(&result, &relay);
     assert_eq!(external["context_window"], 500000);
-    assert_eq!(external["tool_mode"], "direct");
-    assert_eq!(external["supports_search_tool"], false);
+    assert_eq!(external["tool_mode"], "code_mode_only");
+    assert_eq!(external["supports_search_tool"], true);
     assert!(!result.to_string().contains("PRIVATE"));
 }
 

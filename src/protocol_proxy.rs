@@ -3752,6 +3752,7 @@ mod integration_tests {
                 model_id: format!("model-{name}"),
                 display_name: name.to_string(),
                 visible: true,
+                context_window: None,
             }],
         }
     }

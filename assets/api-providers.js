@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 12;
+  const VERSION = 13;
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
@@ -67,7 +67,7 @@
       .cp-api-select { color-scheme:dark; }
       .cp-api-select option { color:var(--cp-text); background:var(--cp-bg); }
       .cp-api-models { max-height:310px; overflow:auto; border:1px solid var(--cp-border); border-radius:10px; background:var(--cp-surface); }
-      .cp-api-model { display:grid; grid-template-columns:auto minmax(120px,1fr) minmax(160px,1fr); align-items:center; gap:8px; border:0; border-bottom:1px solid var(--cp-divider); padding:8px 10px; }
+      .cp-api-model { display:grid; grid-template-columns:auto minmax(120px,1fr) minmax(120px,1fr) minmax(110px,.7fr); align-items:center; gap:8px; border:0; border-bottom:1px solid var(--cp-divider); padding:8px 10px; }
       .cp-api-model:last-child { border-bottom:0; }
       .cp-api-model-id { overflow:hidden; text-overflow:ellipsis; color:var(--cp-muted); font:11px ui-monospace,monospace; }
       .cp-api-status { margin-bottom:10px; border:1px solid rgba(51,156,255,.36); border-radius:8px; padding:8px 10px; color:#8cc9ff; background:var(--cp-surface); font-size:12px; }
@@ -165,12 +165,12 @@
     state.models = (provider?.models || []).map((m) => ({ ...m })); state.message = ""; renderForm();
   }
 
-  function modelEditor() { return `<div class="cp-api-models">${state.models.map((m, i) => `<div class="cp-api-model"><input type="checkbox" data-model-visible="${i}" ${m.visible ? "checked" : ""}><span class="cp-api-model-id" title="${esc(m.modelId)}">${esc(m.modelId)}</span><input class="cp-api-input" data-model-name="${i}" value="${esc(m.displayName || m.modelId)}" aria-label="模型显示名称"></div>`).join("")}</div>`; }
+  function modelEditor(showWindow = false) { return `<div class="cp-api-models">${state.models.map((m, i) => `<div class="cp-api-model"><input type="checkbox" data-model-visible="${i}" ${m.visible ? "checked" : ""}><span class="cp-api-model-id" title="${esc(m.modelId)}">${esc(m.modelId)}</span><input class="cp-api-input" data-model-name="${i}" value="${esc(m.displayName || m.modelId)}" aria-label="模型显示名称">${!showWindow ? "" : `<input class="cp-api-input" type="number" min="1024" max="10000000" step="1" data-model-window="${i}" value="${m.contextWindow ?? ""}" placeholder="窗口 token / 自动" aria-label="上下文窗口 token" title="填写上游实际支持的上下文 token 数；留空匹配官方模板，未知模型使用 32768。不要虚增窗口。">`}</div>`).join("")}</div>`; }
 
   function renderForm(draft = null) {
     const root = body(), saved = state.editing; if (!root || !saved) return;
     const p = draft ? { ...saved, ...draft } : saved;
-    root.innerHTML = `${status()}<form class="cp-api-form" data-api-form><div class="cp-api-grid"><label class="cp-api-field">名称<input class="cp-api-input" name="name" value="${esc(p.name)}" required></label><label class="cp-api-field">协议<select class="cp-api-select" name="protocol"><option value="responses" ${p.protocol === "responses" ? "selected" : ""}>Responses</option><option value="chatCompletions" ${p.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option></select></label></div><label class="cp-api-field">API URL<input class="cp-api-input" name="baseUrl" value="${esc(p.baseUrl)}" placeholder="https://example.com/v1" required></label><label class="cp-api-field">API Key<input class="cp-api-input" name="apiKey" type="password" autocomplete="off" value="${esc(draft?.apiKey || "")}" placeholder="${p.hasApiKey ? "已保存；留空则保持不变" : "sk-…"}"></label><label class="cp-api-field"><span><input name="enabled" type="checkbox" ${p.enabled ? "checked" : ""}> 启用此 API</span></label><div class="cp-api-actions"><button type="button" class="cp-api-button" data-api-back>返回</button><button type="button" class="cp-api-button" data-api-discover>读取模型</button></div>${modelEditor()}<div class="cp-api-actions"><span></span><button class="cp-api-button" data-primary="true" type="submit">保存</button></div></form>`;
+    root.innerHTML = `${status()}<form class="cp-api-form" data-api-form><div class="cp-api-grid"><label class="cp-api-field">名称<input class="cp-api-input" name="name" value="${esc(p.name)}" required></label><label class="cp-api-field">协议<select class="cp-api-select" name="protocol"><option value="responses" ${p.protocol === "responses" ? "selected" : ""}>Responses</option><option value="chatCompletions" ${p.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option></select></label></div><label class="cp-api-field">API URL<input class="cp-api-input" name="baseUrl" value="${esc(p.baseUrl)}" placeholder="https://example.com/v1" required></label><label class="cp-api-field">API Key<input class="cp-api-input" name="apiKey" type="password" autocomplete="off" value="${esc(draft?.apiKey || "")}" placeholder="${p.hasApiKey ? "已保存；留空则保持不变" : "sk-…"}"></label><label class="cp-api-field"><span><input name="enabled" type="checkbox" ${p.enabled ? "checked" : ""}> 启用此 API</span></label><div class="cp-api-actions"><button type="button" class="cp-api-button" data-api-back>返回</button><button type="button" class="cp-api-button" data-api-discover>读取模型</button></div>${modelEditor(true)}<div class="cp-api-actions"><span></span><button class="cp-api-button" data-primary="true" type="submit">保存</button></div></form>`;
     const form = root.querySelector("[data-api-form]");
     root.querySelector("[data-api-back]").addEventListener("click", () => { state.editing = null; state.message = ""; renderList(); });
     root.querySelector("[data-api-discover]").addEventListener("click", () => void discover(form));
@@ -272,9 +272,9 @@
     finally { state.subscriptionBusy = false; renderSubscription(); }
   }
 
-  function syncModels(root) { state.models.forEach((model, i) => { model.visible = !!root.querySelector(`[data-model-visible="${i}"]`)?.checked; model.displayName = root.querySelector(`[data-model-name="${i}"]`)?.value || model.modelId; }); }
+  function syncModels(root) { state.models.forEach((model, i) => { model.visible = !!root.querySelector(`[data-model-visible="${i}"]`)?.checked; const windowInput = root.querySelector(`[data-model-window="${i}"]`); if (windowInput) model.contextWindow = windowInput.value ? Number(windowInput.value) : null; model.displayName = root.querySelector(`[data-model-name="${i}"]`)?.value || model.modelId; }); }
   function values(form) { const data = new FormData(form); return { id: state.editing?.id, name: String(data.get("name") || ""), baseUrl: String(data.get("baseUrl") || ""), apiKey: String(data.get("apiKey") || ""), protocol: String(data.get("protocol") || "chatCompletions"), enabled: data.get("enabled") === "on" }; }
-  async function discover(form) { syncModels(form); const draft = values(form); try { const result = await invoke("/api-providers/discover", { providerId: draft.id, baseUrl: draft.baseUrl, apiKey: draft.apiKey }); state.models = result.models || []; state.message = `读取到 ${state.models.length} 个模型。`; state.error = false; } catch (e) { state.message = e.message; state.error = true; } renderForm(draft); }
+  async function discover(form) { syncModels(form); const draft = values(form); const windows = new Map(state.models.map(m => [m.modelId, m.contextWindow])); try { const result = await invoke("/api-providers/discover", { providerId: draft.id, baseUrl: draft.baseUrl, apiKey: draft.apiKey }); state.models = (result.models || []).map(m => windows.has(m.modelId) ? { ...m, contextWindow: windows.get(m.modelId) } : m); state.message = `读取到 ${state.models.length} 个模型。`; state.error = false; } catch (e) { state.message = e.message; state.error = true; } renderForm(draft); }
   async function save(form) { syncModels(form); const draft = values(form); try { const result = await invoke("/api-providers/save", { ...draft, models: state.models }); state.providers = result.providers || []; state.editing = null; state.message = "API 配置已保存。"; state.error = false; await window.__codexPlusModelRouting?.loadCatalog?.(true); renderList(); } catch (e) { state.message = e.message; state.error = true; renderForm(draft); } }
   async function removeProvider(id) { if (!confirm("删除这个 API 配置？")) return; try { const result = await invoke("/api-providers/delete", { providerId: id }); state.providers = result.providers || []; state.message = "API 配置已删除。"; state.error = false; window.__codexPlusModelRouting?.loadCatalog?.(true); } catch (e) { state.message = e.message; state.error = true; } renderList(); }
   async function load() { state.loading = true; renderList(); try { const result = await invoke("/api-providers/list", {}); state.providers = result.providers || []; } catch (e) { state.message = e.message; state.error = true; } state.loading = false; renderList(); }
