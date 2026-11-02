@@ -43,6 +43,7 @@ async fn fixture() -> Fixture {
             display_name: String::new(),
             visible: true,
             context_window: None,
+            tool_mode: None,
         }],
         proxy_url: String::new(),
         account_reserves: HashMap::new(),
@@ -91,7 +92,7 @@ async fn native_mobile_gateway_uses_three_channels_and_preserves_fork_history() 
         )
     }).mount(&f.server).await;
     let mut store = crate::providers::ProviderStore::default();
-    store.upsert(serde_json::from_value(json!({"name":"External fixture","baseUrl":f.server.uri(),"apiKey":"external-only","protocol":"responses","enabled":true,"models":[{"modelId":"gpt-test","visible":true}]})).unwrap()).unwrap();
+    store.upsert(serde_json::from_value(json!({"name":"External fixture","baseUrl":f.server.uri(),"apiKey":"external-only","protocol":"responses","enabled":true,"models":[{"modelId":"gpt-test","visible":true,"toolMode":"deferred"}]})).unwrap()).unwrap();
     let external = store.catalog()[0].route_id.clone();
     store.save(&f.router.paths).unwrap();
     let apis = crate::integrations::ApiIntegrations::with_subscription(
@@ -812,6 +813,12 @@ async fn second_401_skips_account_and_persists_rejection_across_models_and_confi
     }))).expect(1).mount(&f.server).await;
     assert_eq!(send(&f).await.0, StatusCode::OK);
     assert!(f.router.is_rejected_current(&f.ids[0]));
+    // "读取模型" archives the account catalog; saving relies on that entry.
+    crate::native_gateway::archive_official(
+        &f.router.paths,
+        &json!({"models":[{"slug":"gpt-test","context_window":272000}]}),
+    )
+    .unwrap();
     f.router.save(f.config.clone()).unwrap();
     assert_eq!(send(&f).await.0, StatusCode::OK);
     let new_router = SubscriptionApi::new(f.router.paths.clone());

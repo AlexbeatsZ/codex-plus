@@ -230,12 +230,19 @@ test("discovers models, edits aliases, and saves without receiving a key", async
   const alias = dom.window.document.querySelector("[data-model-name]");
   assert.equal(alias.value, "same-model");
   alias.value = "我的模型";
-  dom.window.document.querySelector("[data-model-window]").value = "128000";
+  const windowInput = dom.window.document.querySelector("[data-model-window]");
+  // Unmatched models must not suggest an automatic window.
+  assert.match(windowInput.placeholder, /必填/);
+  windowInput.value = "128000";
+  const tool = dom.window.document.querySelector("[data-model-tool]");
+  assert.equal(tool.value, "");
+  tool.value = "direct";
   dom.window.document.querySelector("[data-api-form]").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
   await flush();
   const save = calls.find((call) => call.path === "/api-providers/save");
   assert.equal(save.payload.models[0].displayName, "我的模型");
   assert.equal(save.payload.models[0].contextWindow, 128000);
+  assert.equal(save.payload.models[0].toolMode, "direct");
   assert.equal(save.payload.models[0].visible, true);
   const lists = calls.filter((call) => call.path === "/api-providers/list");
   assert.ok(lists.every((call) => !("apiKey" in call.payload)));

@@ -12,6 +12,7 @@ use toml_edit::{DocumentMut, value};
 
 use crate::accounts::{AccountPaths, AccountVault, atomic_write};
 use crate::integrations::ApiIntegrations;
+use crate::providers::{ProviderProtocol, ToolMode};
 
 const SETTINGS: &str = "native-gateway.json";
 const LIMIT: usize = 32 * 1024 * 1024;
@@ -192,7 +193,7 @@ fn archive_templates(paths: &AccountPaths, fresh: &[Value]) -> anyhow::Result<()
     Ok(())
 }
 
-fn find_template<'a>(templates: &'a [Value], model_id: &str) -> Option<&'a Value> {
+pub fn find_template<'a>(templates: &'a [Value], model_id: &str) -> Option<&'a Value> {
     // A relay may namespace a native model ("vendor/gpt-x"); the last segment
     // names the model whose real capabilities apply.
     let bare = model_id.rsplit('/').next().unwrap_or(model_id);
@@ -200,6 +201,59 @@ fn find_template<'a>(templates: &'a [Value], model_id: &str) -> Option<&'a Value
         .iter()
         .find(|m| m["slug"] == model_id)
         .or_else(|| templates.iter().find(|m| m["slug"] == bare))
+}
+
+/// What the user must still declare before a route can be offered. Nothing is
+/// guessed: a matched official template supplies a model's window, the
+/// subscription backend is the official one, and Chat conversion can only
+/// inline tools. A relay's tool support is unknowable from its model name.
+pub fn missing_configuration(
+    templates: &[Value],
+    subscription: bool,
+    model_id: &str,
+    protocol: Option<ProviderProtocol>,
+    window: Option<u64>,
+    tool_mode: Option<ToolMode>,
+) -> Vec<&'static str> {
+    let known = find_template(templates, model_id).is_some();
+    if subscription {
+        return if known {
+            Vec::new()
+        } else {
+            vec!["官方能力信息"]
+        };
+    }
+    let mut missing = Vec::new();
+    if window.is_none() && !known {
+        missing.push("上下文窗口");
+    }
+    if tool_mode.is_none() && protocol != Some(ProviderProtocol::ChatCompletions) {
+        missing.push("工具策略");
+    }
+    missing
+}
+
+/// Every official template this host has seen, for checks outside a catalog build.
+pub fn known_templates(paths: &AccountPaths) -> Vec<Value> {
+    let settings = Settings::load(paths).ok().flatten().unwrap_or(Settings {
+        capability: String::new(),
+        original_base: None,
+        original_catalog: None,
+    });
+    let mut templates: Vec<Value> = Vec::new();
+    for path in template_sources(paths, &settings).into_iter().flatten() {
+        for model in read_entries(&path) {
+            if !templates.iter().any(|m| m["slug"] == model["slug"]) {
+                templates.push(model);
+            }
+        }
+    }
+    templates
+}
+
+/// A subscription account's own `/models` reply is authoritative for its models.
+pub fn archive_official(paths: &AccountPaths, doc: &Value) -> anyhow::Result<()> {
+    archive_templates(paths, &official_entries(doc))
 }
 
 pub fn catalog(
@@ -228,7 +282,21 @@ fn catalog_with(
     let mut models = official;
     for route in apis.catalog()? {
         let subscription = route.provider_id == crate::integrations::SUBSCRIPTION_ID;
+        if !missing_configuration(
+            &templates,
+            subscription,
+            &route.model_id,
+            route.protocol,
+            route.context_window,
+            route.tool_mode,
+        )
+        .is_empty()
+        {
+            continue;
+        }
         let exact = find_template(&templates, &route.model_id);
+        // An unmatched route only borrows the template's field layout; every
+        // capability below comes from the user or is switched off.
         let mut model = exact.unwrap_or(&templates[0]).clone();
         model["slug"] = json!(route.route_id);
         model["display_name"] = if subscription {
@@ -243,34 +311,34 @@ fn catalog_with(
         model["availability_nux"] = Value::Null;
         // Lite adds web.run, whose alpha/search endpoint belongs to the official account.
         model["use_responses_lite"] = json!(false);
-        // Subscription routes reach the same native backend, so they keep
-        // deferred tool loading; inlining every tool multiplies each request.
-        if !subscription
-            && (exact.is_none()
-                || route.protocol != Some(crate::providers::ProviderProtocol::Responses))
-        {
-            model["tool_mode"] = json!("direct");
-            model["supports_search_tool"] = json!(false);
-            model["experimental_supported_tools"] = json!([]);
-        }
-        // An unknown subscription model is still served by the native backend;
-        // a 32K guess recreates the compaction loop fixed in 0.3.9.
-        if exact.is_none() && !subscription {
-            model["context_window"] = json!(32768);
-            model["max_context_window"] = json!(32768);
+        if exact.is_none() {
             model["input_modalities"] = json!(["text"]);
             model["supported_reasoning_levels"] = json!([]);
             model["supports_reasoning_effort_updates"] = json!(false);
         }
-        if !subscription {
-            if let Some(window) = route.context_window {
-                model["context_window"] = json!(window);
-                model["max_context_window"] = json!(window);
+        // Subscription routes (None) reach the official backend and keep its
+        // deferred loading. A relay's tool support is the user's declaration.
+        let tool_mode = if route.protocol == Some(ProviderProtocol::ChatCompletions) {
+            Some(ToolMode::Direct)
+        } else {
+            route.tool_mode
+        };
+        match tool_mode {
+            Some(ToolMode::Direct) => {
+                model["tool_mode"] = json!("direct");
+                model["supports_search_tool"] = json!(false);
+                model["experimental_supported_tools"] = json!([]);
             }
+            Some(ToolMode::Deferred) => {
+                model["tool_mode"] = json!("code_mode_only");
+                model["supports_search_tool"] = json!(true);
+                model["experimental_supported_tools"] = json!([]);
+            }
+            None => {}
         }
-        if (exact.is_none() || route.context_window.is_some())
-            && let Some(window) = model["context_window"].as_u64()
-        {
+        if let Some(window) = route.context_window {
+            model["context_window"] = json!(window);
+            model["max_context_window"] = json!(window);
             model["auto_compact_token_limit"] = json!(window * 9 / 10);
         }
         models.push(model);
@@ -341,9 +409,22 @@ pub fn request_preflight(apis: &ApiIntegrations, route: &str, body: &Value) -> a
         .as_array()
         .and_then(|models| models.iter().find(|m| m["slug"] == entry.route_id.as_str()))
     else {
-        return Ok(());
+        // Withheld from the catalog for missing configuration; an old task may
+        // still name it, and sending would mean guessing its window or tools.
+        if entry.provider_id == crate::integrations::SUBSCRIPTION_ID {
+            bail!(
+                "订阅模型 {} 缺少官方能力信息，请求未发送。请在“API 接入 → ChatGPT 订阅”中重新读取模型后保存。",
+                entry.model_id
+            );
+        }
+        bail!(
+            "模型 {} 尚未配置上下文窗口或工具策略，codex-plus 不会替它假设，请求未发送。请在“API 接入”中填写后保存，并重新选择模型。",
+            entry.model_id
+        );
     };
-    let window = model["context_window"].as_u64().unwrap_or(32768);
+    let Some(window) = model["context_window"].as_u64() else {
+        return Ok(()); // the official template leaves sizing to the native client
+    };
     let default_limit = window.saturating_mul(9) / 10;
     let limit = model["auto_compact_token_limit"]
         .as_u64()

@@ -25,6 +25,12 @@ async fn fixture() -> Fixture {
         state_dir: temp.path().join("state"),
         usage_endpoint: format!("{}/usage", server.uri()),
     };
+    // "读取模型" archives the account catalog; saving relies on that entry.
+    crate::native_gateway::archive_official(
+        &paths,
+        &json!({"models":[{"slug":"gpt-test","context_window":272000}]}),
+    )
+    .unwrap();
     let vault = AccountVault::new(paths.clone());
     let ids = ["a", "b", "c"]
         .map(|id| {
@@ -57,6 +63,7 @@ async fn fixture() -> Fixture {
             display_name: String::new(),
             visible: true,
             context_window: None,
+            tool_mode: None,
         }],
         ..SubscriptionConfig::default()
     };

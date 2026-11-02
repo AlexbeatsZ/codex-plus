@@ -5,7 +5,7 @@ check that merely skips registration does not satisfy the OMEN component boundar
 
 | Branch | Release | Contents | Deployment |
 | --- | --- | --- | --- |
-| `main` | `0.3.10` | Shared launcher and ordinary local-tools; no AI Decision/Todoist adapter | Common development and macOS base release |
+| `main` | `0.3.11` | Shared launcher and ordinary local-tools; no AI Decision/Todoist adapter | Common development and macOS base release |
 | `codex/omen` | `0.3.10-omen` | Shared functionality; adapter source, imports, tests and compiled modules are absent | OMEN |
 | `codex/rog` | `0.3.10-rog` | Shared launcher and 41 generic development tools; business connector is independently deployed | ROG |
 

@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-11-02：0.3.11（main，未部署）不再替未确定的模型假设：未匹配官方模板的窗口、外接 Responses 的工具策略必须用户填写，未配置完整的 route 不进目录且本机拒绝；订阅只认官方模板，读取模型时归档。判定集中在 native_gateway::missing_configuration。设计见 docs/design/mobile-remote-providers.md 的 0.3.11 节。
+
 - 2026-11-02：0.3.10 已三端部署（OMEN 0.3.10-omen 18e3884、ROG 0.3.10-rog b6249cd、Mac 0.3.10 9c8f401，Release 均已上传）：固定提示词预算保护（本地 o200k 估算，达到目录条目压缩点前拒绝发送）、外接窗口编辑/发现、归档并发锁。Windows 两渠道在 ROG 同绝对路径构建，未触碰 OMEN 并行改动。需各机显式启动新版生效。设计见 docs/design/mobile-remote-providers.md。
 
 - 2026-11-02：0.3.9 修复 0.3.8 原生网关的模型能力合成：订阅 route 保留官方延迟工具加载（code mode / 工具搜索），不再把全部工具内联导致新任务首请求约 17 万 token 并频繁压缩；官方模板按 slug 归档，单次官方目录缺少模型时 cp-pool 不再退回 32K（实测 31129 窗口导致每次工具调用后压缩循环）；外接 `vendor/model` 按末段匹配；`alpha/search` 等其余原生端点转发官方，修复官方模型 web.run 404。Windows 官方 app-server 原生 fixture 与 Rust 135 项通过。已按 31129 创建的旧任务需新开或分支。设计见 `docs/design/mobile-remote-providers.md`。
