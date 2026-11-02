@@ -23,6 +23,8 @@ pub struct ProviderModel {
     pub model_id: String,
     pub display_name: String,
     pub visible: bool,
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +67,7 @@ pub struct DiscoverRequest {
 pub struct DiscoveredModel {
     pub model_id: String,
     pub display_name: String,
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,6 +98,8 @@ pub struct SaveModel {
     pub display_name: String,
     #[serde(default)]
     pub visible: bool,
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -118,6 +123,8 @@ pub struct CatalogModel {
     pub provider_id: String,
     pub provider_name: String,
     pub native_provider_id: String,
+    pub context_window: Option<u64>,
+    pub protocol: Option<ProviderProtocol>,
 }
 
 impl ProviderStore {
@@ -164,6 +171,8 @@ impl ProviderStore {
                     provider_id: p.id.clone(),
                     provider_name: p.name.clone(),
                     native_provider_id: crate::config::BROKER_PROVIDER_ID.into(),
+                    context_window: m.context_window,
+                    protocol: Some(p.protocol),
                 })
             })
             .collect()
@@ -227,11 +236,18 @@ impl ProviderStore {
                 .get(&model_id)
                 .cloned()
                 .unwrap_or_else(|| stable_route_id(&id, &model_id));
+            if model
+                .context_window
+                .is_some_and(|window| !(1024..=10_000_000).contains(&window))
+            {
+                bail!("上下文窗口必须是 1024 到 10000000 之间的 token 数");
+            }
             models.push(ProviderModel {
                 route_id,
                 model_id,
                 display_name,
                 visible: model.visible,
+                context_window: model.context_window,
             });
         }
         if request.enabled && !models.iter().any(|model| model.visible) {
@@ -317,6 +333,10 @@ pub async fn discover_models(
             .or_insert_with(|| DiscoveredModel {
                 model_id: model_id.to_string(),
                 display_name: model_id.to_string(),
+                context_window: ["context_window", "context_length", "contextWindow"]
+                    .iter()
+                    .find_map(|key| item.get(key).and_then(Value::as_u64))
+                    .filter(|window| (1024..=10_000_000).contains(window)),
             });
         if model.display_name == model_id {
             model.display_name = display_name.to_string();
@@ -349,12 +369,19 @@ pub fn discover_view(
                 model_id: m.model_id.clone(),
                 display_name: m.display_name.clone(),
                 visible: m.visible,
+                context_window: m.context_window,
             })
             .collect::<Vec<_>>()
     });
     let models: Vec<_> = rediscover_settings(drafts.as_deref(), model_ids)
         .into_iter()
         .map(|mut model| {
+            if model.context_window.is_none() {
+                model.context_window = discovered
+                    .iter()
+                    .find(|m| m.model_id == model.model_id)
+                    .and_then(|m| m.context_window);
+            }
             if model.display_name.trim().is_empty() || model.display_name == model.model_id {
                 if let Some(display_name) = names.get(model.model_id.as_str()) {
                     model.display_name = (*display_name).to_string();
@@ -389,6 +416,7 @@ pub fn rediscover_settings(
                     .map(|m| m.display_name.clone())
                     .unwrap_or_else(|| model_id.clone()),
                 visible: previous.map(|m| m.visible).unwrap_or(first),
+                context_window: previous.and_then(|m| m.context_window),
                 model_id,
             }
         })
@@ -450,6 +478,39 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn context_window_survives_discovery_save_and_can_be_cleared() {
+        let mut store = ProviderStore::default();
+        let make = |window| {
+            serde_json::from_value::<SaveRequest>(json!({"id":"api-test","name":"test","baseUrl":"https://example.test","apiKey":"fake","protocol":"responses","models":[{"modelId":"unknown","visible":true,"contextWindow":window}]})).unwrap()
+        };
+        store.upsert(make(Some(64000))).unwrap();
+        let route = store.catalog()[0].route_id.clone();
+        let view = discover_view(
+            Some(&store.providers[0]),
+            vec![DiscoveredModel {
+                model_id: "unknown".into(),
+                display_name: "Unknown".into(),
+                context_window: Some(128000),
+            }],
+        );
+        assert_eq!(view["models"][0]["contextWindow"], 64000);
+        assert_eq!(view["models"][0]["routeId"], route);
+        assert!(store.upsert(make(Some(0))).is_err());
+        assert_eq!(store.catalog()[0].context_window, Some(64000));
+        store.upsert(make(None)).unwrap();
+        assert_eq!(store.catalog()[0].context_window, None);
+        assert_eq!(store.catalog()[0].route_id, route);
+        let view = discover_view(
+            None,
+            vec![DiscoveredModel {
+                model_id: "unknown".into(),
+                display_name: "Unknown".into(),
+                context_window: Some(128000),
+            }],
+        );
+        assert_eq!(view["models"][0]["contextWindow"], 128000);
+    }
     use super::*;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -515,18 +576,21 @@ mod tests {
                     model_id: "old".into(),
                     display_name: "Alias".into(),
                     visible: true,
+                    context_window: None,
                 },
                 ProviderModel {
                     route_id: "raw-route".into(),
                     model_id: "raw".into(),
                     display_name: "raw".into(),
                     visible: false,
+                    context_window: None,
                 },
                 ProviderModel {
                     route_id: "blank-route".into(),
                     model_id: "blank".into(),
                     display_name: " ".into(),
                     visible: true,
+                    context_window: None,
                 },
             ],
         };
@@ -540,6 +604,7 @@ mod tests {
         .map(|(model_id, display_name)| DiscoveredModel {
             model_id: model_id.into(),
             display_name: display_name.into(),
+            context_window: None,
         })
         .collect();
         let view = discover_view(Some(&profile), discovered);
@@ -708,11 +773,13 @@ mod tests {
             vec![
                 DiscoveredModel {
                     model_id: "model-a".into(),
-                    display_name: "model-a".into()
+                    display_name: "model-a".into(),
+                    context_window: None,
                 },
                 DiscoveredModel {
                     model_id: "model-b".into(),
-                    display_name: "model-b".into()
+                    display_name: "model-b".into(),
+                    context_window: None,
                 },
             ]
         );

@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-11-02：0.3.10 候选补充固定提示词预算保护（本地 o200k 估算，超窗前拒绝发送）、外接窗口编辑/发现、已知 Responses 延迟工具和归档并发锁。变更来自 codex/quota-safety；发布与运行状态分别以各机 release.json/进程为准，不自动重启或迁移旧会话。设计见 docs/design/mobile-remote-providers.md。
+
 - 2026-11-02：0.3.9 修复 0.3.8 原生网关的模型能力合成：订阅 route 保留官方延迟工具加载（code mode / 工具搜索），不再把全部工具内联导致新任务首请求约 17 万 token 并频繁压缩；官方模板按 slug 归档，单次官方目录缺少模型时 cp-pool 不再退回 32K（实测 31129 窗口导致每次工具调用后压缩循环）；外接 `vendor/model` 按末段匹配；`alpha/search` 等其余原生端点转发官方，修复官方模型 web.run 404。Windows 官方 app-server 原生 fixture 与 Rust 135 项通过。已按 31129 创建的旧任务需新开或分支。设计见 `docs/design/mobile-remote-providers.md`。
 
 - 2026-10-29：0.3.8 已实现手机 Remote 的原生目录与统一 openai 网关：新 API/订阅任务保持 openai 身份，由现有 broker 内部分流；旧 provider 表保留，API 面板可显式为旧任务创建完整历史分支。已文件部署并上传 Release：Mac 0.3.8 / ROG 0.3.8-rog / OMEN 0.3.8-omen，源码分别 08efc78 / ddc1b15 / 9a04fdb。Mac Rust 138、JS 71、MCP 13+1 skip、签名回归通过；两条 Windows 渠道在 ROG 同路径构建，各 Rust 134、JS 71、MCP 14 通过，含 CLI 0.163 原生验证。原根进程/launcher/Tunnel 保持 PID 与启动时间，未发送真实验证请求；须显式启动新版生效。OMEN 13 个既有未提交文件逐字保留，仅部署二进制；源码尚在旧 HEAD，后续同步须先处理这些改动。设计：docs/design/mobile-remote-providers.md。

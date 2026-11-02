@@ -42,6 +42,7 @@ async fn fixture() -> Fixture {
             model_id: "gpt-test".into(),
             display_name: String::new(),
             visible: true,
+            context_window: None,
         }],
         proxy_url: String::new(),
         account_reserves: HashMap::new(),
@@ -121,7 +122,7 @@ async fn native_mobile_gateway_uses_three_channels_and_preserves_fork_history() 
     print!("{}", String::from_utf8_lossy(&output.stdout));
     let requests = f.server.received_requests().await.unwrap();
     let posts: Vec<_> = requests.iter().filter(|r| r.method == "POST").collect();
-    // Pool turns keep the native code-mode tool surface; relays stay direct.
+    // Pool and matching native Responses relays both keep deferred tools.
     let code_mode = |r: &&wiremock::Request| {
         let body = crate::native_gateway::decode(&r.headers, &Bytes::copy_from_slice(&r.body))
             .unwrap_or(Value::Null);
@@ -142,7 +143,7 @@ async fn native_mobile_gateway_uses_three_channels_and_preserves_fork_history() 
                 .headers
                 .get("authorization")
                 .is_some_and(|h| h == "Bearer external-only"))
-            .all(|r| !code_mode(r))
+            .all(code_mode)
     );
     assert!(posts.iter().any(|r| {
         r.headers

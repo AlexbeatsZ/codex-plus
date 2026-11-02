@@ -56,6 +56,7 @@ async fn fixture() -> Fixture {
             model_id: "gpt-test".into(),
             display_name: String::new(),
             visible: true,
+            context_window: None,
         }],
         ..SubscriptionConfig::default()
     };

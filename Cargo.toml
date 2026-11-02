@@ -1,6 +1,6 @@
 [package]
 name = "codex-plus"
-version = "0.3.9-rog"
+version = "0.3.10-rog"
 edition = "2024"
 license = "MIT"
 description = "A Windows launcher for OpenAI Codex with account, provider, and local MCP tools"
@@ -23,6 +23,7 @@ serde_json = "1"
 sha2 = "0.10"
 sysinfo = "0.33"
 thiserror = "2"
+tiktoken-rs = "0.12.1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = "0.26"
 toml = "0.8"
