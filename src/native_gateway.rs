@@ -173,6 +173,14 @@ pub fn native_models(paths: &AccountPaths, settings: &Settings) -> anyhow::Resul
 // The official list can differ between refreshes. Route capabilities must not
 // shrink because one refresh omitted a model, so every seen entry is archived.
 fn archive_templates(paths: &AccountPaths, fresh: &[Value]) -> anyhow::Result<()> {
+    fs::create_dir_all(&paths.state_dir)?;
+    let guard = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(paths.state_dir.join(".native-templates.lock"))?;
+    fs2::FileExt::lock_exclusive(&guard)?;
     let path = paths.state_dir.join(TEMPLATE_ARCHIVE);
     let mut archived = read_entries(&path);
     for model in fresh {
@@ -237,11 +245,16 @@ fn catalog_with(
         model["use_responses_lite"] = json!(false);
         // Subscription routes reach the same native backend, so they keep
         // deferred tool loading; inlining every tool multiplies each request.
-        if !subscription {
+        if !subscription
+            && (exact.is_none()
+                || route.protocol != Some(crate::providers::ProviderProtocol::Responses))
+        {
             model["tool_mode"] = json!("direct");
             model["supports_search_tool"] = json!(false);
             model["experimental_supported_tools"] = json!([]);
         }
+        // An unknown subscription model is still served by the native backend;
+        // a 32K guess recreates the compaction loop fixed in 0.3.9.
         if exact.is_none() && !subscription {
             model["context_window"] = json!(32768);
             model["max_context_window"] = json!(32768);
@@ -249,9 +262,95 @@ fn catalog_with(
             model["supported_reasoning_levels"] = json!([]);
             model["supports_reasoning_effort_updates"] = json!(false);
         }
+        if !subscription {
+            if let Some(window) = route.context_window {
+                model["context_window"] = json!(window);
+                model["max_context_window"] = json!(window);
+            }
+        }
+        if (exact.is_none() || route.context_window.is_some())
+            && let Some(window) = model["context_window"].as_u64()
+        {
+            model["auto_compact_token_limit"] = json!(window * 9 / 10);
+        }
         models.push(model);
     }
     Ok(json!({"models": models}))
+}
+
+// Only the fixed prompt is checked: conversation history can be compacted,
+// tools and instructions cannot. o200k is a local estimate, not quota billing
+// and not a promise about a third-party tokenizer. Never truncate user data.
+#[cfg(test)]
+fn check_fixed_prompt(body: &Value, window: u64) -> anyhow::Result<()> {
+    check_fixed_prompt_at_limit(body, window, window.saturating_mul(9) / 10)
+}
+
+fn check_fixed_prompt_at_limit(body: &Value, window: u64, limit: u64) -> anyhow::Result<()> {
+    let mut fixed = String::new();
+    if let Some(instructions) = body["instructions"].as_str() {
+        fixed.push_str(instructions);
+    }
+    if let Some(tools) = body["tools"].as_array() {
+        for tool in tools {
+            fixed.push_str(&serde_json::to_string(tool)?);
+        }
+    }
+    if let Some(input) = body["input"].as_array() {
+        for item in input {
+            if matches!(item["role"].as_str(), Some("system" | "developer")) {
+                fixed.push_str(&serde_json::to_string(item)?);
+            }
+        }
+    }
+    // UTF-8 byte count is an upper bound for this BPE. Ordinary small prompts
+    // avoid tokenizer initialization and work altogether.
+    if fixed.len() as u64 >= limit {
+        let tokens = tiktoken_rs::o200k_base_singleton()
+            .encode_ordinary(&fixed)
+            .len() as u64;
+        anyhow::ensure!(
+            tokens < limit,
+            "固定指令和工具定义约 {tokens} token，已达到模型 {window} token 窗口的压缩阈值。请求未发送；压缩历史不能解决此问题。请减少启用的工具，或在 API 接入中填写上游实际支持的上下文窗口；旧任务请重新选择模型或新建任务。"
+        );
+    }
+    Ok(())
+}
+
+pub fn request_preflight(apis: &ApiIntegrations, route: &str, body: &Value) -> anyhow::Result<()> {
+    let paths = apis.paths();
+    let settings = Settings::load(paths)?.unwrap_or(Settings {
+        capability: String::new(),
+        original_base: None,
+        original_catalog: None,
+    });
+    let entries = apis.catalog()?;
+    let entry = entries.iter().find(|m| {
+        m.route_id == route
+            || (m.provider_id == crate::integrations::SUBSCRIPTION_ID && m.model_id == route)
+    });
+    let Some(entry) = entry else {
+        return Ok(());
+    }; // routing owns unknown/disabled errors
+    // Budget against the exact entry the client was given, so the guard can
+    // never disagree with the window and compaction point it is enforcing.
+    let Ok(catalog) = catalog(paths, apis, &settings) else {
+        return Ok(());
+    };
+    let Some(model) = catalog["models"]
+        .as_array()
+        .and_then(|models| models.iter().find(|m| m["slug"] == entry.route_id.as_str()))
+    else {
+        return Ok(());
+    };
+    let window = model["context_window"].as_u64().unwrap_or(32768);
+    let default_limit = window.saturating_mul(9) / 10;
+    let limit = model["auto_compact_token_limit"]
+        .as_u64()
+        .filter(|limit| *limit > 0)
+        .unwrap_or(default_limit)
+        .min(default_limit);
+    check_fixed_prompt_at_limit(body, window, limit)
 }
 
 pub async fn models(

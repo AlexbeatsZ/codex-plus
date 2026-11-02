@@ -102,7 +102,7 @@ Windows 显式传入其官方内嵌 `codex.exe` 与本机目录模板路径；�
 
 - **订阅 route 保留官方模板的延迟工具加载**（`tool_mode`、`supports_search_tool`、
   `experimental_supported_tools`）。订阅与官方是同一原生后端；强制 `direct` 会把全部 MCP/插件工具
-  内联进每次请求，额度消耗约 5 倍并很快触发压缩，而压缩无法缩小工具定义。外接 route 仍为 `direct`，
+  内联进每次请求，首请求输入量约 5 倍（不能直接换算订阅额度扣减）并很快触发压缩，而压缩无法缩小工具定义。外接 route 仍为 `direct`，
   不支持代码模式和工具搜索的第三方上游不能接收这些工具形态。订阅模型找不到同名模板时
   仍按原生模型处理，沿用首个官方模板，不使用 32K 外接回退。
 - **模板不随单次官方刷新收缩**。实测官方 `/models` 在两份列表间切换（一份缺少 gpt-6.x），
@@ -158,3 +158,20 @@ zstd 请求有解压上限，官方响应及凭据错误原样转发；cp-* 则�
 脚本 `scripts/verify-native-mobile-gateway.mjs` 由 Rust `native_mobile_gateway_uses_three_channels_and_preserves_fork_history` fixture 调用。
 探针的原生客户端使用无已选工作区的假 ChatGPT 身份，绕开独立的实时 HTTPS 工作区发现；broker 保留单独的假实时账户。
 不代表真实配对或手机 UI 验收，未使用真实模型请求。
+
+## 0.3.10 请求预算保护与社区实现复核
+
+参考 CC Switch aa379e091b597dbcf19ba6834e417155638f05ef 的 codex_config.rs：匹配官方模型的原生 Responses 路径保留工具能力，转换型 Chat Completions 路径仍采用 direct。窗口显式覆盖必须同时更新 context_window、max_context_window 与 auto_compact_token_limit。这里复用现有 ProviderModel/SaveModel 与模型编辑器，不引入第二套目录配置。
+
+- 外接模型支持 contextWindow；发现读取 context_window/context_length/contextWindow，重新发现保留已存窗口，界面允许填写真实 token 上限或清空。外接无匹配模板时保守使用 32768，不借用不相关旗舰的窗口。未知订阅模型仍沿用首个官方模板：它走同一原生后端，32K 猜测会让 code mode 首请求（实测 3～4 万）立即进入 0.3.9 修复过的压缩循环，并被下方预算保护整体拒绝；Codex 中途曾改为 32K，审查时撤回。修改窗口后的旧任务需重新选择模型或新建/分支，不能宣称旧任务自动恢复。
+- 已知订阅与已匹配的 Responses 转发保留延迟工具能力；未知外接及 Chat 转换仍 direct，不能把不支持的协议能力强加给转换器。
+- 单 broker 发送前使用 tiktoken-rs 0.12.1 的 o200k 本地估计固定 instructions、tools、system/developer 输入。预算直接取本次目录中该 route 条目的 context_window 与 auto_compact_token_limit（取其与 90% 的较小者），不另算一套窗口；目录不可用时不拦截，交由路由报错。达到阈值时返回本机 400，禁止此次上游发送，包括压缩和旧 provider 入口；重复请求仍本机拒绝。只检查无法靠压缩消除的固定部分，不裁剪用户历史、工具、图片或附件。不记录提示词/凭据，不发送额度探针。
+- o200k 对第三方 tokenizer 仅是估计，不是精确计费或总请求预算；图片和可压缩历史不在此检查范围。正常任务仍由官方客户端负责历史压缩。本机保护不能知道旧会话锁定的小窗口，也不能保证阻止所有类型的消耗。
+- 模板归档的读取-合并-写入加文件锁，防止两个客户端版本并发刷新丢掉彼此的条目。已知模板的原生压缩点保持原值；仅窗口变化/未知回退时重算 90%。
+
+对照来源：
+- https://github.com/farion1231/cc-switch/blob/aa379e091b597dbcf19ba6834e417155638f05ef/src-tauri/src/codex_config.rs （官方能力镜像、协议分类、窗口与压缩阈值同步）
+- https://github.com/cluic/codex-remote-proxy/tree/c5110ccc29b440d11ce3936a74f5d7f775892e71 （保留登录身份的本机路由、目录转发、交付不确定时不重放；不是手机界面验收证据）
+- https://docs.rs/tiktoken-rs/0.12.1/tiktoken_rs/fn.o200k_base_singleton.html （复用成熟 tokenizer，进程内单例）
+
+验收必须包含：巨型固定工具请求上游计数为零；已知 Responses 的原生 exec 工具、Chat direct；窗口发现/编辑/保存/清空；三渠道同任务、默认列表可见、历史 fork、订阅压缩续接和审批批准/拒绝。手机界面仍需真实设备验收。

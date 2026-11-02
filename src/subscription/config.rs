@@ -135,6 +135,8 @@ impl SubscriptionConfig {
                 provider_id: "chatgpt-subscription".into(),
                 provider_name: "ChatGPT 订阅".into(),
                 native_provider_id: crate::config::POOL_PROVIDER_ID.into(),
+                context_window: None,
+                protocol: Some(crate::providers::ProviderProtocol::Responses),
             })
             .collect()
     }

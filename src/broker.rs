@@ -312,7 +312,7 @@ async fn handle_responses(
             );
         }
     };
-    let mut value: Value = match serde_json::from_slice(&body) {
+    let value: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(_) => return error_response(StatusCode::BAD_REQUEST, "request is not valid JSON"),
     };
@@ -323,6 +323,18 @@ async fn handle_responses(
     {
         Some(value) => value,
         None => return error_response(StatusCode::BAD_REQUEST, "missing route model"),
+    };
+    let apis = state.apis.clone();
+    let check_route = route_id.clone();
+    let preflight = tokio::task::spawn_blocking(move || {
+        crate::native_gateway::request_preflight(&apis, &check_route, &value)?;
+        Ok::<_, anyhow::Error>(value)
+    })
+    .await;
+    let mut value = match preflight {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => return error_response(StatusCode::BAD_REQUEST, &error.to_string()),
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "请求大小检查失败"),
     };
     if subscription_endpoint || route_id == crate::subscription::AUTO_REVIEW_MODEL {
         // Native pre-turn compaction may use the previous turn's real model ID.

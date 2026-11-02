@@ -13,7 +13,7 @@ API 接入与账户管理共用同一套 Codex 原生化视觉约束：16×16px 
 仓库根 `.codex-plus/providers.json` 是版本化数据文件，结构为 provider 列表：
 
 - provider：`id/name/baseUrl/apiKey/protocol/enabled/models`；
-- model：`routeId/modelId/displayName/visible`；
+- model：`routeId/modelId/displayName/visible/contextWindow?`；
 - `routeId` 由 provider ID 与真实 model ID 的 SHA-256 摘要生成，在编辑和重新发现后保持稳定；不同 API 的相同 model ID 得到不同 routeId；
 - API Key 按用户选择明文保存，写入使用同目录临时文件、flush 和原子替换。
 
@@ -90,3 +90,5 @@ v21 将跨 provider 迁移提升到原生 manager 的 `executeTurnStart` 事务�
 - Codex 重建 target 后三类注入脚本可重复安装且不产生重复菜单项。
 
 手机原生目录、官方凭据补充边界、HTTP/SSE 回退与旧任务显式迁入入口见 [mobile-remote-providers.md](mobile-remote-providers.md)。
+
+0.3.10：外接模型可配置真实上下文窗口并从上游目录读取；保存校验 1024～10000000，清空恢复自动匹配。请求固定部分预算保护与协议能力分工见 mobile-remote-providers.md 的 0.3.10 节。
