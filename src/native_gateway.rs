@@ -15,6 +15,7 @@ use crate::integrations::ApiIntegrations;
 
 const SETTINGS: &str = "native-gateway.json";
 const LIMIT: usize = 32 * 1024 * 1024;
+const TEMPLATE_ARCHIVE: &str = "native-model-templates.json";
 
 #[cfg(test)]
 mod tests;
@@ -132,28 +133,65 @@ impl Settings {
     }
 }
 
-pub fn native_models(paths: &AccountPaths, settings: &Settings) -> anyhow::Result<Vec<Value>> {
-    let sources = [
+fn official_entries(doc: &Value) -> Vec<Value> {
+    doc["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["slug"].as_str().is_some_and(|id| !id.starts_with("cp-")))
+        .cloned()
+        .collect()
+}
+
+fn read_entries(path: &std::path::Path) -> Vec<Value> {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .map(|doc| official_entries(&doc))
+        .unwrap_or_default()
+}
+
+fn template_sources(paths: &AccountPaths, settings: &Settings) -> [Option<PathBuf>; 4] {
+    [
         settings.original_catalog.clone(),
         Some(paths.state_dir.join("official-models.json")),
+        Some(paths.state_dir.join(TEMPLATE_ARCHIVE)),
         Some(paths.codex_home.join("models_cache.json")),
-    ];
-    for path in sources.into_iter().flatten() {
-        if let Ok(bytes) = fs::read(path)
-            && let Ok(doc) = serde_json::from_slice::<Value>(&bytes)
-            && let Some(models) = doc["models"].as_array()
-        {
-            let models: Vec<_> = models
-                .iter()
-                .filter(|m| m["slug"].as_str().is_some_and(|id| !id.starts_with("cp-")))
-                .cloned()
-                .collect();
-            if !models.is_empty() {
-                return Ok(models);
-            }
+    ]
+}
+
+pub fn native_models(paths: &AccountPaths, settings: &Settings) -> anyhow::Result<Vec<Value>> {
+    for path in template_sources(paths, settings).into_iter().flatten() {
+        let models = read_entries(&path);
+        if !models.is_empty() {
+            return Ok(models);
         }
     }
     bail!("原生模型模板尚未就绪，请先让官方客户端完成一次模型目录读取")
+}
+
+// The official list can differ between refreshes. Route capabilities must not
+// shrink because one refresh omitted a model, so every seen entry is archived.
+fn archive_templates(paths: &AccountPaths, fresh: &[Value]) -> anyhow::Result<()> {
+    let path = paths.state_dir.join(TEMPLATE_ARCHIVE);
+    let mut archived = read_entries(&path);
+    for model in fresh {
+        archived.retain(|old| old["slug"] != model["slug"]);
+        archived.insert(0, model.clone());
+    }
+    archived.truncate(200);
+    atomic_write(&path, &serde_json::to_vec(&json!({"models": archived}))?)?;
+    Ok(())
+}
+
+fn find_template<'a>(templates: &'a [Value], model_id: &str) -> Option<&'a Value> {
+    // A relay may namespace a native model ("vendor/gpt-x"); the last segment
+    // names the model whose real capabilities apply.
+    let bare = model_id.rsplit('/').next().unwrap_or(model_id);
+    templates
+        .iter()
+        .find(|m| m["slug"] == model_id)
+        .or_else(|| templates.iter().find(|m| m["slug"] == bare))
 }
 
 pub fn catalog(
@@ -161,13 +199,31 @@ pub fn catalog(
     apis: &ApiIntegrations,
     settings: &Settings,
 ) -> anyhow::Result<Value> {
-    let mut models = native_models(paths, settings)?;
-    let templates = models.clone();
+    catalog_with(paths, apis, settings, native_models(paths, settings)?)
+}
+
+fn catalog_with(
+    paths: &AccountPaths,
+    apis: &ApiIntegrations,
+    settings: &Settings,
+    official: Vec<Value>,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(!official.is_empty(), "原生模型模板尚未就绪");
+    let mut templates = official.clone();
+    for path in template_sources(paths, settings).into_iter().flatten() {
+        for model in read_entries(&path) {
+            if !templates.iter().any(|m| m["slug"] == model["slug"]) {
+                templates.push(model);
+            }
+        }
+    }
+    let mut models = official;
     for route in apis.catalog()? {
-        let exact = templates.iter().find(|m| m["slug"] == route.model_id);
+        let subscription = route.provider_id == crate::integrations::SUBSCRIPTION_ID;
+        let exact = find_template(&templates, &route.model_id);
         let mut model = exact.unwrap_or(&templates[0]).clone();
         model["slug"] = json!(route.route_id);
-        model["display_name"] = if route.provider_id == crate::integrations::SUBSCRIPTION_ID {
+        model["display_name"] = if subscription {
             json!(route.display_name)
         } else {
             json!(format!("{} · {}", route.provider_name, route.display_name))
@@ -177,11 +233,16 @@ pub fn catalog(
         model["supported_in_api"] = json!(true);
         model["upgrade"] = Value::Null;
         model["availability_nux"] = Value::Null;
+        // Lite adds web.run, whose alpha/search endpoint belongs to the official account.
         model["use_responses_lite"] = json!(false);
-        model["tool_mode"] = json!("direct");
-        model["supports_search_tool"] = json!(false);
-        model["experimental_supported_tools"] = json!([]);
-        if exact.is_none() {
+        // Subscription routes reach the same native backend, so they keep
+        // deferred tool loading; inlining every tool multiplies each request.
+        if !subscription {
+            model["tool_mode"] = json!("direct");
+            model["supports_search_tool"] = json!(false);
+            model["experimental_supported_tools"] = json!([]);
+        }
+        if exact.is_none() && !subscription {
             model["context_window"] = json!(32768);
             model["max_context_window"] = json!(32768);
             model["input_modalities"] = json!(["text"]);
@@ -202,6 +263,7 @@ pub async fn models(
     query: Option<&str>,
 ) -> anyhow::Result<Response<Body>> {
     // Native refresh is bounded; a network failure keeps the last official template.
+    let mut fresh = None;
     if settings.original_catalog.is_none() {
         let upstream_headers =
             official_headers(paths, settings, headers).unwrap_or_else(|_| forward_headers(headers));
@@ -225,10 +287,23 @@ pub async fn models(
             && let Ok(doc) = serde_json::from_slice::<Value>(&bytes)
             && doc["models"].as_array().is_some_and(|m| !m.is_empty())
         {
+            let models = official_entries(&doc);
+            crate::runtime::append_log(
+                paths,
+                "native.models.refreshed",
+                json!({"query": query.unwrap_or(""), "count": models.len(),
+                    "slugs": models.iter().filter_map(|m| m["slug"].as_str()).collect::<Vec<_>>()}),
+            );
+            archive_templates(paths, &models)?;
             atomic_write(&paths.state_dir.join("official-models.json"), &bytes)?;
+            fresh = Some(models).filter(|m| !m.is_empty());
         }
     }
-    let body = serde_json::to_vec(&catalog(paths, apis, settings)?)?;
+    let official = match fresh {
+        Some(models) => models,
+        None => native_models(paths, settings)?,
+    };
+    let body = serde_json::to_vec(&catalog_with(paths, apis, settings, official)?)?;
     let etag = format!("\"{:x}\"", Sha256::digest(&body));
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/json")

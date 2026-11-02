@@ -143,6 +143,10 @@ async fn native_request(
     };
     let method = request.method().clone();
     let headers = request.headers().clone();
+    let upstream_tail = match request.uri().query() {
+        Some(query) => format!("{tail}?{query}"),
+        None => tail.clone(),
+    };
     // The capability also protects the non-secret model catalog. Native Codex
     // can refresh it before attaching an inference authorization header.
     if method == axum::http::Method::GET && tail == "models" {
@@ -167,15 +171,37 @@ async fn native_request(
         // continuations crossing independent API/subscription backends.
         return failure(StatusCode::UPGRADE_REQUIRED, "本机模型路由使用 HTTP/SSE");
     }
-    if method != axum::http::Method::POST
-        || !["responses", "responses/compact"].contains(&tail.as_str())
-    {
-        return failure(StatusCode::NOT_FOUND, "原生模型端点不受支持");
-    }
     let body = match axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024).await {
         Ok(body) => body,
         Err(_) => return failure(StatusCode::PAYLOAD_TOO_LARGE, "原生模型请求过大"),
     };
+    if method != axum::http::Method::POST
+        || !["responses", "responses/compact"].contains(&tail.as_str())
+    {
+        // Other native endpoints, such as web.run's alpha/search, stay with the
+        // official account exactly as before the gateway existed. Local routes
+        // never borrow that account for them.
+        if !body.is_empty()
+            && gateway::decode(&headers, &body).is_ok_and(|value| {
+                value["model"]
+                    .as_str()
+                    .is_some_and(|model| model.starts_with("cp-"))
+            })
+        {
+            return failure(StatusCode::BAD_REQUEST, "本机 API/订阅模型不支持该原生端点");
+        }
+        return gateway::official(
+            &state.native_client,
+            &paths,
+            &settings,
+            headers,
+            method,
+            &upstream_tail,
+            body,
+        )
+        .await
+        .unwrap_or_else(|_| failure(StatusCode::BAD_GATEWAY, "官方模型上游连接失败"));
+    }
     let mut value = match gateway::decode(&headers, &body) {
         Ok(value) => value,
         Err(_) => return failure(StatusCode::BAD_REQUEST, "原生模型请求格式无效"),
@@ -227,7 +253,7 @@ async fn native_request(
         &settings,
         headers,
         method,
-        &tail,
+        &upstream_tail,
         body,
     )
     .await

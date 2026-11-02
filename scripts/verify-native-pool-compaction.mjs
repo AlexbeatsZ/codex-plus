@@ -7,6 +7,18 @@ import path from "node:path";
 import http from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
+// Native rmSync does not retry Windows EPERM while sqlite/sandbox handles close.
+async function removeFixture(dir) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); return; }
+    catch (error) {
+      if (!["EPERM", "EBUSY", "ENOTEMPTY"].includes(error.code)) throw error;
+      // The verdict is already decided; report a slow-release leftover instead of masking it.
+      if (attempt >= 50) { console.error(`Fixture cleanup left ${dir}: ${error.code}`); return; }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+}
 
 const [binary, poolBase] = process.argv.slice(2);
 assert.ok(binary && poolBase, "Pass native app-server binary and isolated subscription endpoint");
@@ -97,5 +109,5 @@ try {
   server.closeAllConnections(); server.close();
   // Wait for native process handles before removing the Windows fixture.
   if (app.exitCode === null) await new Promise(resolve => app.once("exit", resolve));
-  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  await removeFixture(root);
 }

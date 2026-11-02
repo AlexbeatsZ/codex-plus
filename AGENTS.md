@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-11-02：0.3.9 修复 0.3.8 原生网关的模型能力合成：订阅 route 保留官方延迟工具加载（code mode / 工具搜索），不再把全部工具内联导致新任务首请求约 17 万 token 并频繁压缩；官方模板按 slug 归档，单次官方目录缺少模型时 cp-pool 不再退回 32K（实测 31129 窗口导致每次工具调用后压缩循环）；外接 `vendor/model` 按末段匹配；`alpha/search` 等其余原生端点转发官方，修复官方模型 web.run 404。Windows 官方 app-server 原生 fixture 与 Rust 135 项通过。已按 31129 创建的旧任务需新开或分支。设计见 `docs/design/mobile-remote-providers.md`。
+
 - 2026-10-29：0.3.8 已实现手机 Remote 的原生目录与统一 openai 网关：新 API/订阅任务保持 openai 身份，由现有 broker 内部分流；旧 provider 表保留，API 面板可显式为旧任务创建完整历史分支。已文件部署并上传 Release：Mac 0.3.8 / ROG 0.3.8-rog / OMEN 0.3.8-omen，源码分别 08efc78 / ddc1b15 / 9a04fdb。Mac Rust 138、JS 71、MCP 13+1 skip、签名回归通过；两条 Windows 渠道在 ROG 同路径构建，各 Rust 134、JS 71、MCP 14 通过，含 CLI 0.163 原生验证。原根进程/launcher/Tunnel 保持 PID 与启动时间，未发送真实验证请求；须显式启动新版生效。OMEN 13 个既有未提交文件逐字保留，仅部署二进制；源码尚在旧 HEAD，后续同步须先处理这些改动。设计：docs/design/mobile-remote-providers.md。
 
 - 2026-10-29：完成手机 Codex 外接 API/聚合订阅任务消失与模型不可选的研究，未改生产行为。当前内嵌 CLI 0.165.0-alpha.1.2 原生 mock 确认 thread/list 的 null/省略只返回默认 provider、[] 才全量，原 renderer 强制 null 的旧假设失效；后续 0.3.8 已实现，手机实机仍待验证。入口：docs/design/mobile-remote-providers.md、scripts/verify-native-mobile-providers.mjs。
@@ -164,6 +166,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 
 # Durable Lessons
 
+- 原生目录给 cp-* 合成的模型条目决定官方客户端如何组装请求：`tool_mode=direct` / `supports_search_tool=false` 会把全部 MCP/插件工具内联进每次请求（本机约 14 万 token），窗口小于该基线时压缩永远无效、每次工具调用都压缩。排查“新任务也压缩”先看 rollout 的 `token_count.model_context_window` 与首个请求 `input_tokens`，再对照 `~/.codex/models_cache.json` 中该 slug 的条目，不要先怀疑会话串话。官方 `/models` 会在不同列表间切换，能力模板不能只依赖最后一次刷新。
 - Windows 发布构建必须在固定项目源码根目录执行，可另设 Cargo target-dir；不要把临时 worktree 构建的二进制部署后再删除 worktree。`desktop_codex_task` 等运行路径仍使用编译期 `CARGO_MANIFEST_DIR`，仅账户状态发现能从正式 target 路径反推仓库根；它不能保证所有模块都不依赖编译目录。
 - macOS 不能直接在登录任务的固定入口上编译后再补签：这会给登录/手动启动留下 adhoc 身份窗口，签名失败时还会丢失旧入口。先在隔离 target 构建，再签名并同文件系统原子替换；Cargo 的实际 artifact 路径必须作为签名输入，避免 `--target` 构建后误签旧产物。详见 `docs/design/macos-release.md`。
 - CDP 心跳必须要求回包：macOS 睡眠唤醒后旧 WebSocket 可以长期保持 `ESTABLISHED` 却不再处理消息（发送队列与对端接收队列持续增长）。单向写入式 `Runtime.evaluate` 心跳永远拿不到失效信号，watchdog 也就永不重连，UI 会永久卡在加载态。心跳要记录命令 id 并等待同 id 回包，超时即丢弃连接重新发现 target；socket 写入同样要有上限，否则对端停止读取写满缓冲后连失活检测都运行不到。页面侧请求还需要自己的兜底超时，并在脚本重新注入时让上一轮挂起的请求立即失败。

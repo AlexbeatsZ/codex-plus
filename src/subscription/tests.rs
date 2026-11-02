@@ -121,6 +121,29 @@ async fn native_mobile_gateway_uses_three_channels_and_preserves_fork_history() 
     print!("{}", String::from_utf8_lossy(&output.stdout));
     let requests = f.server.received_requests().await.unwrap();
     let posts: Vec<_> = requests.iter().filter(|r| r.method == "POST").collect();
+    // Pool turns keep the native code-mode tool surface; relays stay direct.
+    let code_mode = |r: &&wiremock::Request| {
+        let body = crate::native_gateway::decode(&r.headers, &Bytes::copy_from_slice(&r.body))
+            .unwrap_or(Value::Null);
+        body["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|t| t["name"] == "exec" && t["type"] == "custom")
+        })
+    };
+    let account = |r: &&wiremock::Request, id: &str| {
+        r.headers.get("chatgpt-account-id").is_some_and(|h| h == id)
+    };
+    assert!(posts.iter().filter(|r| account(r, "a")).all(code_mode));
+    assert!(
+        posts
+            .iter()
+            .filter(|r| r
+                .headers
+                .get("authorization")
+                .is_some_and(|h| h == "Bearer external-only"))
+            .all(|r| !code_mode(r))
+    );
     assert!(posts.iter().any(|r| {
         r.headers
             .get("authorization")

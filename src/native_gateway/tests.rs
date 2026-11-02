@@ -88,6 +88,65 @@ fn catalog_uses_real_capabilities_and_keeps_same_name_channels_distinct() {
 }
 
 #[test]
+fn subscription_keeps_deferred_tools_and_routes_never_shrink_to_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    fs::create_dir_all(&paths.codex_home).unwrap();
+    let native = |slug: &str, window: u64| json!({"slug":slug,"context_window":window,"max_context_window":window,"input_modalities":["text","image"],"use_responses_lite":true,"tool_mode":"code_mode_only","supports_search_tool":true,"experimental_supported_tools":["clock"]});
+    fs::write(
+        paths.codex_home.join("models_cache.json"),
+        json!({"models":[native("small", 272000), native("big", 500000)]}).to_string(),
+    )
+    .unwrap();
+    let mut config = DocumentMut::new();
+    Settings::reconcile(&paths, &mut config, 1).unwrap();
+    let settings = Settings::load(&paths).unwrap().unwrap();
+    fs::write(
+        paths.state_dir.join("subscription.json"),
+        json!({"enabled":true,"accountOrder":["seat"],"models":[{"modelId":"big","visible":true},{"modelId":"future","visible":true}]}).to_string(),
+    )
+    .unwrap();
+    let mut store = ProviderStore::default();
+    store.upsert(serde_json::from_value(json!({"name":"relay","baseUrl":"https://example.test/v1","apiKey":"PRIVATE","protocol":"responses","enabled":true,"models":[{"modelId":"vendor/big","visible":true}]})).unwrap()).unwrap();
+    store.save(&paths).unwrap();
+    let apis = ApiIntegrations::new(paths.clone());
+    let find = |result: &Value, slug: &str| {
+        result["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["slug"] == slug)
+            .cloned()
+            .unwrap()
+    };
+    let relay = store.catalog()[0].route_id.clone();
+    let pool = crate::subscription::route_id("big");
+    // A later official refresh omits "big"; archived capabilities still apply.
+    archive_templates(&paths, &[native("small", 272000), native("big", 500000)]).unwrap();
+    fs::remove_file(paths.codex_home.join("models_cache.json")).unwrap();
+    let result = catalog_with(&paths, &apis, &settings, vec![native("small", 272000)]).unwrap();
+    let subscription = find(&result, &pool);
+    assert_eq!(subscription["context_window"], 500000);
+    assert_eq!(subscription["tool_mode"], "code_mode_only");
+    assert_eq!(subscription["supports_search_tool"], true);
+    assert_eq!(
+        subscription["experimental_supported_tools"],
+        json!(["clock"])
+    );
+    assert_eq!(subscription["use_responses_lite"], false);
+    // An unknown subscription model is still a native model, not a 32K relay.
+    let future = find(&result, &crate::subscription::route_id("future"));
+    assert_eq!(future["context_window"], 272000);
+    assert_eq!(future["tool_mode"], "code_mode_only");
+    // External relays keep direct tools but match a namespaced native model.
+    let external = find(&result, &relay);
+    assert_eq!(external["context_window"], 500000);
+    assert_eq!(external["tool_mode"], "direct");
+    assert_eq!(external["supports_search_tool"], false);
+    assert!(!result.to_string().contains("PRIVATE"));
+}
+
+#[test]
 fn zstd_decodes_before_routing_and_original_body_stays_opaque() {
     let raw = br#"{"model":"cp-test","input":[]}"#;
     let bytes = Bytes::from(zstd::stream::encode_all(raw.as_slice(), 1).unwrap());
@@ -219,6 +278,33 @@ async fn native_gateway_auth_routing_and_official_credentials_are_separate() {
         serde_json::from_slice::<Value>(&external_requests[0].body).unwrap()["model"],
         "same"
     );
+    // web.run's search endpoint keeps official ownership; local routes cannot borrow it.
+    let search = |model: &str| {
+        client
+            .post(format!("{base}/alpha/search?probe=1"))
+            .bearer_auth("official-secret")
+            .json(&json!({"model":model,"commands":{"search_query":[{"q":"fixture"}]}}))
+            .send()
+    };
+    assert_eq!(search("same").await.unwrap().status(), StatusCode::OK);
+    assert_eq!(
+        search(&route).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+    let searches: Vec<_> = official
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/alpha/search")
+        .collect();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].url.query(), Some("probe=1"));
+    assert_eq!(
+        searches[0].headers["authorization"],
+        "Bearer official-secret"
+    );
+    assert_eq!(external.received_requests().await.unwrap().len(), 1);
     assert_eq!(
         client
             .get(format!("{base}/responses"))
