@@ -18,7 +18,7 @@ const clientHome = path.join(home, "isolated-client");
 fs.mkdirSync(clientHome);
 fs.copyFileSync(path.join(home, "config.toml"), path.join(clientHome, "config.toml"));
 fs.writeFileSync(path.join(clientHome, "auth.json"), JSON.stringify(auth));
-fs.writeFileSync(path.join(home, "models_cache.json"), JSON.stringify({ models: [{ ...template, slug: "gpt-test", display_name: "Official fixture", use_responses_lite: false, tool_mode: "direct" }] }));
+fs.writeFileSync(path.join(home, "models_cache.json"), JSON.stringify({ models: [{ ...template, slug: "gpt-test", display_name: "Official fixture", use_responses_lite: false }] }));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/TOKEN|KEY|AUTH|PROXY|CODEX|OPENAI/.test(key)));
 env.CODEX_HOME = clientHome;
 const app = spawn(binary, ["app-server", "--listen", "stdio://", "-c", "analytics.enabled=false"], { cwd: home, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
