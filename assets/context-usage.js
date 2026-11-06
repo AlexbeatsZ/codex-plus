@@ -5,21 +5,53 @@
   const ATTR = "data-codex-plus-context-usage";
   const LABEL = /^(?:Context window|背景信息窗口|上下文窗口|上下文視窗|背景資訊視窗)\s*[:：]?$/i;
   const panels = new Set();
+  let destroyed = false;
   let queued = false;
   let timer = null;
 
-  function identity(element) {
+  function isTokenUsage(value) {
+    return value && typeof value === "object" && value.total && value.last
+      && typeof value.total === "object" && typeof value.last === "object"
+      && ("inputTokens" in value.total || "outputTokens" in value.total);
+  }
+
+  function nativeUsage(fiber) {
+    const seen = new Set();
+    for (let hook = fiber.memoizedState; hook && !seen.has(hook) && seen.size < 80; hook = hook.next) {
+      seen.add(hook);
+      if (!isTokenUsage(hook.memoizedState) && !isTokenUsage(hook.queue?.value)) continue;
+      // useSyncExternalStore's shared queue reads the current subscription even
+      // when the DOM's fiber pointer refers to the previous React alternate.
+      try {
+        const value = typeof hook.queue?.getSnapshot === "function"
+          ? hook.queue.getSnapshot() : hook.memoizedState;
+        return { found: true, info: isTokenUsage(value) ? value : null };
+      } catch { return { found: true, info: null }; }
+    }
+    return { found: false, info: null };
+  }
+
+  function context(element) {
     const key = Object.getOwnPropertyNames(element).find((name) => name.startsWith("__reactFiber$"));
-    let hostId = "local";
+    let hostId = null;
+    let threadId = null;
+    let native = { found: false, info: null };
     for (let fiber = element[key], depth = 0; fiber && depth < 100; fiber = fiber.return, depth++) {
       const props = fiber.memoizedProps;
+      if (!native.found) native = nativeUsage(fiber);
       if (!props || typeof props !== "object") continue;
-      hostId = props.hostId || props.permissionsHostId || hostId;
-      const threadId = props.conversationId || props.threadId;
-      if (typeof threadId === "string" && threadId) return { threadId, hostId };
+      const host = props.hostId || props.permissionsHostId;
+      if (!hostId && typeof host === "string" && host) hostId = host;
+      const id = props.conversationId || props.threadId;
+      if (typeof id === "string" && id) { threadId = id; break; }
     }
-    const match = location.pathname.match(/\/threads?\/([a-f0-9-]{36})(?:\/|$)/i);
-    return match ? { threadId: match[1], hostId } : null;
+    threadId ||= location.pathname.match(/\/threads?\/([a-f0-9-]{36})(?:\/|$)/i)?.[1];
+    const ref = threadId ? { threadId, hostId: hostId || "local" } : null;
+    return {
+      ref,
+      info: ref ? (native.found ? native.info
+        : window.__codexPlusModelRouting?.tokenUsage?.(ref.threadId, ref.hostId)) : null,
+    };
   }
 
   function count(value) {
@@ -28,8 +60,7 @@
 
   function render(panel) {
     if (!panel.isConnected) { panels.delete(panel); return; }
-    const ref = identity(panel);
-    const info = ref && window.__codexPlusModelRouting?.tokenUsage?.(ref.threadId, ref.hostId);
+    const { ref, info } = context(panel);
     let block = panel.querySelector(`[${ATTR}]`);
     if (!block) {
       block = document.createElement("div");
@@ -63,6 +94,7 @@
   }
 
   function scan() {
+    if (destroyed) return;
     queued = false;
     for (const tooltip of document.querySelectorAll('[role="tooltip"], [data-radix-popper-content-wrapper]')) {
       for (const label of tooltip.querySelectorAll("span")) {
@@ -86,6 +118,7 @@
   observer.observe(document.body, { childList: true, subtree: true });
   window.__codexPlusContextUsage = {
     destroy() {
+      destroyed = true;
       observer.disconnect();
       if (timer) clearInterval(timer);
       for (const block of document.querySelectorAll(`[${ATTR}]`)) block.remove();
