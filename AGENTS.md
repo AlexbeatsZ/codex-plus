@@ -6,7 +6,7 @@
 
 # Current State
 
-- 2026-11-05：0.3.12 修复官方 Codex 26.1029.61003 中累计统计全部为 `—`：旧路由未发现 manager，但原生 tooltip 祖先的 TokenUsageInfo 订阅仍正常。现在直接按所属会话读取当前原生订阅，旧版保留 host/thread manager fallback；不改变路由或发送。Mac Rust 145、renderer 82（新增 11）、MCP 13+1 skip、签名回归通过；真实应用只读核对累计数据通过，浮窗目视验收与新版加载待完成。见 docs/design/context-usage.md。
+- 2026-11-05：0.3.12 已在 Mac 签名文件部署并上传 Release（源码 19b7384），修复官方 Codex 26.1029.61003 中累计统计全部为 `—`：旧路由未发现 manager，但原生 tooltip 祖先的 TokenUsageInfo 订阅仍正常。现在直接按所属会话读取当前原生订阅，旧版保留 host/thread manager fallback；不改变路由或发送。Mac Rust 145、renderer 82（新增 11）、MCP 13+1 skip、签名回归通过；真实应用只读核对累计数据通过。当前 launcher 683 / Codex 1274 / Tunnel 776 及启动时间保留，需显式启动新版生效，浮窗目视验收待完成；Windows 本次未同步。见 docs/design/context-usage.md。
 
 - 2026-11-02：0.3.11 已三端部署（OMEN 0.3.11-omen fbde506、ROG 0.3.11-rog 27b0952、Mac 0.3.11 4e41401，Release 已上传，需各机显式启动生效）。不再替未确定的模型假设：未匹配官方模板的窗口、外接 Responses 的工具策略必须用户填写，未配置完整的 route 不进目录且本机拒绝；订阅只认官方模板，读取模型时归档。判定集中在 native_gateway::missing_configuration。设计见 docs/design/mobile-remote-providers.md 的 0.3.11 节。
 
