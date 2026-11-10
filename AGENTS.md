@@ -6,7 +6,7 @@
 
 # Current State
 
-- 2026-11-10：0.3.13 修复登录额度耗尽后 API/订阅池也被禁用发送。新增按原生 ComposerScope、真实会话/草稿模型投影额度与 Reserve 状态，官方模型和用量显示保持原生；已知 managed 父任务的 reviewer 复用已启用订阅池，保留审批策略。Mac Rust 146、JS 93、MCP 13+1 skip、签名回归与原生状态模块隔离验证通过；三端正式文件部署及 Windows 原生验证进行中。设计见 docs/design/quota-routing.md。
+- 2026-11-10：0.3.13 已三端文件部署并上传 Release（Mac e2a2709 / ROG a34ffd3 / OMEN ce3d4f6）。登录额度耗尽时，外接 API/订阅池按当前原生会话或草稿的渠道处理发送，官方模型仍使用官方额度。原生 reviewer 通过明确 guardian 父任务关联复用已启用的订阅池。三台官方安装包均通过 21 项原生状态隔离验证，Mac/Windows 正式进程保持，OMEN 13 个未提交文件保留。须各机显式启动新版 Codex Plus 后生效。见 docs/design/quota-routing.md。
 
 - 2026-11-05：0.3.12 已在 Mac 签名文件部署并上传 Release（源码 19b7384），修复官方 Codex 26.1029.61003 中累计统计全部为 `—`：旧路由未发现 manager，但原生 tooltip 祖先的 TokenUsageInfo 订阅仍正常。现在直接按所属会话读取当前原生订阅，旧版保留 host/thread manager fallback；不改变路由或发送。Mac Rust 145、renderer 82（新增 11）、MCP 13+1 skip、签名回归通过；真实应用只读核对累计数据通过。当前 launcher 683 / Codex 1274 / Tunnel 776 及启动时间保留，需显式启动新版生效，浮窗目视验收待完成；Windows 本次未同步。见 docs/design/context-usage.md。
 
@@ -87,7 +87,7 @@
 
 # Active Work
 
-- 2026-11-10：完成 0.3.13 三端签名/渠道构建、Release 上传和固定入口文件部署，保留 OMEN 既有 13 个未提交文件及各端当前进程。真实界面发送待加载新版后验收。
+- 0.3.13 实机验收待用户显式启动新版：登录额度耗尽时选择有额度的外接 API 或订阅池模型，发送一条真实消息，切回官方模型确认限制恢复。
 
 - 订阅 API 与未登录入口修复已在 `codex/account-pool` 完成，正式文件已在 2026-10-23 用户授权后部署；用户已运行订阅版本并反馈勾选框不可见，显示修复已发布；修复后的生产 UI 目视验收等待下次启动新版 launcher。本轮不重启、不热附加当前 Codex/launcher/Tunnel。
 
