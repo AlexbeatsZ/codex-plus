@@ -597,20 +597,26 @@ pub async fn official(
     Ok(result)
 }
 
-// Only compact requests may resolve a historical real model through this map.
-// Ordinary bare model requests always retain official-account ownership.
+// Compaction and the exact internal reviewer may recover a managed parent route.
+// The reviewer keeps its own model; ordinary bare models stay official.
 pub fn remember_route(
     paths: &AccountPaths,
     headers: &HeaderMap,
     model: &str,
     compact: bool,
 ) -> anyhow::Result<String> {
-    let Some(thread) = ["thread-id", "session-id"].into_iter().find_map(|key| {
+    let identity = |key| {
         headers
             .get(key)
             .and_then(|v| v.to_str().ok())
             .filter(|v| !v.is_empty() && v.len() <= 256)
-    }) else {
+    };
+    let keys: &[&str] = if model == crate::subscription::AUTO_REVIEW_MODEL {
+        &["x-codex-parent-thread-id", "thread-id", "session-id"]
+    } else {
+        &["thread-id", "session-id"]
+    };
+    let Some(thread) = keys.iter().copied().find_map(|key| identity(key)) else {
         return Ok(model.into());
     };
     let guard_path = paths.state_dir.join(".native-routes.lock");
@@ -628,6 +634,29 @@ pub fn remember_route(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
         Err(e) => return Err(e.into()),
     };
+    if model == crate::subscription::AUTO_REVIEW_MODEL {
+        // Native guardian review has its own thread-id. Its explicit parent
+        // header (observed with CLI 0.167) is authoritative; only older requests
+        // without it may recover a known thread/session association.
+        let candidates: Vec<_> = if headers.contains_key("x-codex-parent-thread-id") {
+            identity("x-codex-parent-thread-id").into_iter().collect()
+        } else {
+            [identity("thread-id"), identity("session-id")]
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        for parent in candidates {
+            if let Some(route) = routes.get(parent) {
+                return Ok(if route.starts_with("cp-") {
+                    route.clone()
+                } else {
+                    model.into()
+                });
+            }
+        }
+        return Ok(model.into());
+    }
     if compact && !model.starts_with("cp-") {
         if let Some(route) = routes.get(thread).filter(|route| route.starts_with("cp-")) {
             return Ok(route.clone());

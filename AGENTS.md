@@ -6,7 +6,11 @@
 
 # Current State
 
-- 2026-11-02：0.3.11（main，未部署）不再替未确定的模型假设：未匹配官方模板的窗口、外接 Responses 的工具策略必须用户填写，未配置完整的 route 不进目录且本机拒绝；订阅只认官方模板，读取模型时归档。判定集中在 native_gateway::missing_configuration。设计见 docs/design/mobile-remote-providers.md 的 0.3.11 节。
+- 2026-11-10：0.3.13 修复登录额度耗尽后 API/订阅池也被禁用发送。新增按原生 ComposerScope、真实会话/草稿模型投影额度与 Reserve 状态，官方模型和用量显示保持原生；已知 managed 父任务的 reviewer 复用已启用订阅池，保留审批策略。Mac Rust 146、JS 93、MCP 13+1 skip、签名回归与原生状态模块隔离验证通过；三端正式文件部署及 Windows 原生验证进行中。设计见 docs/design/quota-routing.md。
+
+- 2026-11-05：0.3.12 已在 Mac 签名文件部署并上传 Release（源码 19b7384），修复官方 Codex 26.1029.61003 中累计统计全部为 `—`：旧路由未发现 manager，但原生 tooltip 祖先的 TokenUsageInfo 订阅仍正常。现在直接按所属会话读取当前原生订阅，旧版保留 host/thread manager fallback；不改变路由或发送。Mac Rust 145、renderer 82（新增 11）、MCP 13+1 skip、签名回归通过；真实应用只读核对累计数据通过。当前 launcher 683 / Codex 1274 / Tunnel 776 及启动时间保留，需显式启动新版生效，浮窗目视验收待完成；Windows 本次未同步。见 docs/design/context-usage.md。
+
+- 2026-11-02：0.3.11 已三端部署（OMEN 0.3.11-omen fbde506、ROG 0.3.11-rog 27b0952、Mac 0.3.11 4e41401，Release 已上传，需各机显式启动生效）。不再替未确定的模型假设：未匹配官方模板的窗口、外接 Responses 的工具策略必须用户填写，未配置完整的 route 不进目录且本机拒绝；订阅只认官方模板，读取模型时归档。判定集中在 native_gateway::missing_configuration。设计见 docs/design/mobile-remote-providers.md 的 0.3.11 节。
 
 - 2026-11-02：0.3.10 已三端部署（OMEN 0.3.10-omen 18e3884、ROG 0.3.10-rog b6249cd、Mac 0.3.10 9c8f401，Release 均已上传）：固定提示词预算保护（本地 o200k 估算，达到目录条目压缩点前拒绝发送）、外接窗口编辑/发现、归档并发锁。Windows 两渠道在 ROG 同绝对路径构建，未触碰 OMEN 并行改动。需各机显式启动新版生效。设计见 docs/design/mobile-remote-providers.md。
 
@@ -82,6 +86,8 @@
 - 2026-09-04 22:16 已定位并部署首次重试仍返回 502 的修复：Tunnel 的共享 stdio MCP 通道会串行处理响应，而 `run_command` 原默认 90 秒、最大 300 秒，能超过托管请求约 83 秒的截止时间；原请求超时后，立即重试仍排在未结束命令之后。同步前台命令现限制为默认 30 秒、最大 45 秒；隔离 Tunnel 代理验证了命令超时后下一次 MCP 请求可立即恢复。实际 managed runtime 已重载为 PID 10040、MCP Node PID 25856，来自当前 `local-tools/dist/cli.js`；health/ready 200、远端 metadata 复查成功，重载后的运行日志无 WARN/ERROR。
 
 # Active Work
+
+- 2026-11-10：完成 0.3.13 三端签名/渠道构建、Release 上传和固定入口文件部署，保留 OMEN 既有 13 个未提交文件及各端当前进程。真实界面发送待加载新版后验收。
 
 - 订阅 API 与未登录入口修复已在 `codex/account-pool` 完成，正式文件已在 2026-10-23 用户授权后部署；用户已运行订阅版本并反馈勾选框不可见，显示修复已发布；修复后的生产 UI 目视验收等待下次启动新版 launcher。本轮不重启、不热附加当前 Codex/launcher/Tunnel。
 
@@ -216,6 +222,8 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - Windows Microsoft Store (MSIX / AppX) 安装的桌面应用在 `C:\Program Files\WindowsApps\` 下具有 NTFS 条件访问控制列表（Conditional ACE：`WIN://SYSAPPID Contains "<PackageFamilyName>"`）。普通非打包 Win32 进程直接调用 `CreateProcessW` / `Command::spawn()` 会因调用令牌缺少该包 Claim 而被操作系统内核安全模型直接拦截，返回 `拒绝访问。(os error 5)`（`0x80070005`）。必须通过 Windows Shell COM 接口 `IApplicationActivationManager::ActivateApplication` 传入 Application User Model ID (`AUMID: <PackageFamilyName>!App`) 和启动参数（如 `--remote-debugging-port`）由 DCOM 系统服务代理创建具备合法包身份的进程；再通过返回的 PID 用 `OpenProcess` 获取句柄后下调为 `BELOW_NORMAL_PRIORITY_CLASS` 并监听退出。
 
 # Docs Index
+
+- `docs/design/quota-routing.md`：登录额度/Reserve 与 API 发送隔离、原生模块验收及 reviewer 父渠道边界。
 
 - `docs/design/mobile-remote-providers.md`：手机 Remote 的原生模型目录、统一 provider 网关、旧任务迁入与验收。
 

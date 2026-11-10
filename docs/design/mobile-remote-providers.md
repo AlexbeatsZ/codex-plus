@@ -122,7 +122,7 @@ Windows 显式传入其官方内嵌 `codex.exe` 与本机目录模板路径；�
 WebSocket 握手返回官方支持的 426，让同一原生会话切换为 HTTP/SSE，避免跨上游复用有状态连接。
 zstd 请求有解压上限，官方响应及凭据错误原样转发；cp-* 则使用原有精确 API/订阅路由，失效不回退。
 
-普通裸模型和原生 reviewer 归当前官方账户，旧 provider 的 reviewer 路由保持既有订阅池规则。
+普通裸模型归当前官方账户。0.3.13 起，原生 reviewer 仅在同一 thread/session 可确认有效 managed 父渠道时复用已启用订阅池；其他 reviewer 保留当前官方账户。旧 provider 的 reviewer 路由保持既有订阅池规则。
 原生 v2 compaction_trigger 和 /responses/compact 通过按 thread-id/session-id 持久化的最后渠道保持归属；
 无法核对历史真实模型与渠道时明确失败，不能误用官方账户。
 
