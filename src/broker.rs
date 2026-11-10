@@ -215,6 +215,7 @@ async fn native_request(
                 .iter()
                 .any(|item| item["type"] == "compaction_trigger")
         });
+    let reviewer = model == crate::subscription::AUTO_REVIEW_MODEL;
     let route = match gateway::remember_route(&paths, &headers, &model, compact) {
         Ok(route) => route,
         Err(_) => return failure(StatusCode::INTERNAL_SERVER_ERROR, "无法保存原生会话路由"),
@@ -224,15 +225,20 @@ async fn native_request(
             && !state.apis.catalog().ok().is_some_and(|catalog| {
                 catalog
                     .iter()
-                    .any(|entry| entry.route_id == route && entry.model_id == model)
+                    .any(|entry| entry.route_id == route && (reviewer || entry.model_id == model))
             })
         {
             return failure(
                 StatusCode::CONFLICT,
-                "无法确认压缩模型所属渠道，请重新选择模型",
+                "无法确认原生辅助请求所属渠道，请重新选择模型",
             );
         }
-        value["model"] = json!(route);
+        // Managed-parent reviews use the already enabled native subscription
+        // pool, exactly like legacy API reviews. Never send review instructions
+        // to an external generation API or replace the reviewer model/policy.
+        if !reviewer {
+            value["model"] = json!(route);
+        }
         let mut integration_headers = headers;
         integration_headers.remove(header::CONTENT_ENCODING);
         integration_headers.insert(
@@ -245,8 +251,8 @@ async fn native_request(
             .unwrap();
         return handle_responses(state, integration_headers, request, false).await;
     }
-    // Bare official models and the native auto-reviewer use this request's
-    // official credentials; they never borrow a selected pool account.
+    // Bare official models, and reviewers without a verified managed parent,
+    // keep this request's official-account ownership.
     gateway::official(
         &state.native_client,
         &paths,

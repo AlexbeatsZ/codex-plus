@@ -198,3 +198,5 @@ release.json 记录源 commit `323b56a`、分支 `codex/account-pool`，base 版
 账户出现优先序号后才启用读取模型。用户自行选择参与账户，助手不代为勾选或启用额度。
 
 0.3.8 的原生网关裸 reviewer 请求使用当前官方账户；上述两个旧 provider 入口仍使用已启用订阅池的 reviewer。手机兼容及原生模型目录见 [mobile-remote-providers.md](mobile-remote-providers.md)。
+
+0.3.13：登录账户额度/Reserve 只按当前 composer 的实际模型隔离；原生 managed 父任务 reviewer 复用已启用订阅池，详见 [quota-routing.md](quota-routing.md)。

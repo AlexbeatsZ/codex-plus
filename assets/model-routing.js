@@ -3,7 +3,7 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 23;
+  const VERSION = 24;
   const PROVIDER = "codex-plus-api";
   const POOL_PROVIDER = "codex-plus-account-pool";
   const SELECTED_KEY = "codex-plus:selected-model";
@@ -89,6 +89,7 @@
     state.catalog = Array.isArray(result?.models) ? result.models : [];
     state.byRoute = new Map(state.catalog.map((model) => [String(model.routeId || ""), model]));
     state.loaded = true;
+    window.__codexPlusQuotaRouting?.refreshCatalog?.();
     diagnostic("catalog-loaded", { count: state.catalog.length });
     refreshNativeModelQueries();
     return state.catalog;
