@@ -17,6 +17,7 @@ const BRIDGE_SCRIPT: &str = include_str!("../assets/bridge.js");
 const RENDERER_SCRIPT: &str = include_str!("../assets/renderer.js");
 const API_PROVIDERS_SCRIPT: &str = include_str!("../assets/api-providers.js");
 const MODEL_ROUTING_SCRIPT: &str = include_str!("../assets/model-routing.js");
+const QUOTA_ROUTING_SCRIPT: &str = include_str!("../assets/quota-routing.js");
 const CONTEXT_USAGE_SCRIPT: &str = include_str!("../assets/context-usage.js");
 
 /// 心跳保持 15 秒一次：健康检查只做一次极轻量 evaluate，不应变成固定频率的 DOM 扫描。
@@ -297,6 +298,7 @@ async fn run_target_session_with_tuning(
         RENDERER_SCRIPT,
         API_PROVIDERS_SCRIPT,
         MODEL_ROUTING_SCRIPT,
+        QUOTA_ROUTING_SCRIPT,
         CONTEXT_USAGE_SCRIPT,
     ] {
         command(
@@ -342,6 +344,7 @@ async fn run_target_session_with_tuning(
     // Model installation starts bridge requests. Receive those in the session loop,
     // rather than discarding bindingCalled events while waiting for setup replies.
     send_evaluate_async(&mut socket, &mut next_id, MODEL_ROUTING_SCRIPT).await?;
+    send_evaluate_async(&mut socket, &mut next_id, QUOTA_ROUTING_SCRIPT).await?;
 
     let (responses_tx, mut responses_rx) = mpsc::unbounded_channel::<(String, Value)>();
     let mut heartbeat = tokio::time::interval(tuning.heartbeat);

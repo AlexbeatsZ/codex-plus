@@ -60,10 +60,9 @@ async function verify() {
   assert.ok(reviewer, "Native catalog must contain its original approval reviewer");
   const catalogFile = path.join(home, "models.json");
   fs.writeFileSync(catalogFile, JSON.stringify({ models: [{ ...sourceModels[0], slug: model, tool_mode: "direct", use_responses_lite: false }, reviewer] }));
-  fs.writeFileSync(path.join(home, "config.toml"), `web_search="disabled"
-approvals_reviewer="auto_review"
-chatgpt_base_url=${JSON.stringify(`${baseUrl}/fixture-services`)}
-[model_providers.${provider}]
+  const providerConfig = provider === "openai"
+    ? `openai_base_url=${JSON.stringify(baseUrl)}\n`
+    : `[model_providers.${provider}]
 name="isolated review fixture"
 base_url=${JSON.stringify(baseUrl)}
 wire_api="responses"
@@ -72,6 +71,21 @@ requires_openai_auth=false
 supports_websockets=false
 request_max_retries=0
 stream_max_retries=0
+`;
+  if (provider === "openai") {
+    const jwt = claims => `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+    // Synthetic ChatGPT login, with no selected workspace requiring live checks.
+    fs.writeFileSync(path.join(home, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: {
+      id_token: jwt({ sub: "native-fixture", email: "native@example.test", "https://api.openai.com/auth": { chatgpt_plan_type: "plus" } }),
+      access_token: jwt({ sub: "native-fixture", exp: Math.floor(Date.now() / 1000) + 3600 }),
+      refresh_token: "synthetic-native-fixture",
+    } }));
+  }
+  fs.writeFileSync(path.join(home, "config.toml"), `web_search="disabled"
+model_provider=${JSON.stringify(provider)}
+approvals_reviewer="auto_review"
+chatgpt_base_url=${JSON.stringify(`${baseUrl}/fixture-services`)}
+${providerConfig}
 [mcp_servers.fixture]
 command=${JSON.stringify(process.execPath)}
 args=${JSON.stringify([fileURLToPath(import.meta.url), "--fixture-mcp", executionFile])}

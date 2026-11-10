@@ -336,10 +336,42 @@ fn compaction_route_is_per_thread_persistent_and_reviewer_does_not_replace_it() 
         remember_route(&paths, &a, "cp-api", false).unwrap(),
         "cp-api"
     );
-    remember_route(&paths, &a, "codex-auto-review", false).unwrap();
+    assert_eq!(
+        remember_route(&paths, &a, "codex-auto-review", false).unwrap(),
+        "cp-api"
+    );
+    assert_eq!(
+        remember_route(&paths, &b, "codex-auto-review", false).unwrap(),
+        "codex-auto-review"
+    );
+    let mut guardian = HeaderMap::new();
+    guardian.insert("thread-id", "guardian-child".parse().unwrap());
+    guardian.insert("session-id", "a".parse().unwrap());
+    guardian.insert("x-codex-parent-thread-id", "a".parse().unwrap());
+    assert_eq!(
+        remember_route(&paths, &guardian, "codex-auto-review", false).unwrap(),
+        "cp-api"
+    );
+    guardian.insert(
+        "x-codex-parent-thread-id",
+        "unknown-parent".parse().unwrap(),
+    );
+    assert_eq!(
+        remember_route(&paths, &guardian, "codex-auto-review", false).unwrap(),
+        "codex-auto-review"
+    );
+    guardian.remove("x-codex-parent-thread-id");
+    assert_eq!(
+        remember_route(&paths, &guardian, "codex-auto-review", false).unwrap(),
+        "cp-api"
+    );
     assert_eq!(remember_route(&paths, &a, "real", true).unwrap(), "cp-api");
     assert_eq!(remember_route(&paths, &b, "real", true).unwrap(), "real");
     remember_route(&paths, &a, "official", false).unwrap();
+    assert_eq!(
+        remember_route(&paths, &a, "codex-auto-review", false).unwrap(),
+        "codex-auto-review"
+    );
     assert_eq!(remember_route(&paths, &a, "real", true).unwrap(), "real");
 }
 
@@ -387,10 +419,21 @@ async fn native_gateway_auth_routing_and_official_credentials_are_separate() {
             .send()
     };
     assert_eq!(send("same".into()).await.unwrap().status(), StatusCode::OK);
-    assert_eq!(send(route.clone()).await.unwrap().status(), StatusCode::OK);
     assert_eq!(
         send("codex-auto-review".into()).await.unwrap().status(),
         StatusCode::OK
+    );
+    assert_eq!(send(route.clone()).await.unwrap().status(), StatusCode::OK);
+    // This managed-parent reviewer must not silently consume the logged-in
+    // account, nor be sent to the external provider. The pool is disabled here.
+    let review = send("codex-auto-review".into()).await.unwrap();
+    assert_eq!(review.status(), StatusCode::NOT_FOUND);
+    assert!(
+        review
+            .text()
+            .await
+            .unwrap()
+            .contains("pool_review_unavailable")
     );
     assert_eq!(
         send("cp-deleted".into()).await.unwrap().status(),

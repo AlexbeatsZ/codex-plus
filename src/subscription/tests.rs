@@ -1,4 +1,5 @@
 use super::*;
+use std::fs;
 use tempfile::TempDir;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -194,6 +195,74 @@ async fn mount(f: &Fixture, id: &str, status: u16, body: String) {
         .await;
 }
 #[tokio::test]
+async fn native_managed_parent_review_uses_pool_without_changing_reviewer_policy() {
+    let f = fixture().await;
+    mount(&f, "a", 200, success()).await;
+    let mut broker = crate::broker::start(
+        0,
+        crate::integrations::ApiIntegrations::with_subscription(
+            f.router.paths.clone(),
+            f.router.clone(),
+        ),
+    )
+    .await
+    .unwrap();
+    let mut config = toml_edit::DocumentMut::new();
+    crate::native_gateway::Settings::reconcile(&f.router.paths, &mut config, broker.port())
+        .unwrap();
+    let settings = crate::native_gateway::Settings::load(&f.router.paths)
+        .unwrap()
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("thread-id", "managed-review-fixture".parse().unwrap());
+    crate::native_gateway::remember_route(&f.router.paths, &headers, &route_id("gpt-test"), false)
+        .unwrap();
+    let body = json!({
+        "model":AUTO_REVIEW_MODEL,"stream":true,
+        "instructions":"Preserve the original reviewer policy.",
+        "input":[{"role":"user","content":"Review the isolated fixture action."}],
+        "text":{"format":{"type":"json_schema","name":"review","schema":{"type":"object"}}}
+    });
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!(
+            "http://127.0.0.1:{}/native/{}/backend-api/codex/responses",
+            broker.port(),
+            settings.capability
+        ))
+        .bearer_auth("exhausted-login-must-not-be-used")
+        .header("thread-id", "guardian-child-fixture")
+        .header("x-codex-parent-thread-id", "managed-review-fixture")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .text()
+            .await
+            .unwrap()
+            .contains("response.completed")
+    );
+    broker.shutdown().await;
+    let requests = f.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let upstream: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(upstream["model"], AUTO_REVIEW_MODEL);
+    assert_eq!(upstream["instructions"], body["instructions"]);
+    assert_eq!(upstream["input"], body["input"]);
+    assert_eq!(upstream["text"], body["text"]);
+    assert_eq!(requests[0].headers["chatgpt-account-id"], "a");
+    assert_ne!(
+        requests[0].headers["authorization"],
+        "Bearer exhausted-login-must-not-be-used"
+    );
+}
+
+#[tokio::test]
 async fn auto_review_uses_the_enabled_pool_from_both_broker_endpoints() {
     let f = fixture().await;
     mount(&f, "a", 200, success()).await;
@@ -344,16 +413,31 @@ async fn native_mcp_auto_review_preserves_allow_and_deny_for_pool_and_external_a
     )
     .await
     .unwrap();
+    fs::create_dir_all(&f.router.paths.codex_home).unwrap();
+    fs::write(
+        f.router.paths.codex_config(),
+        format!("openai_base_url='{}'\n", f.server.uri()),
+    )
+    .unwrap();
+    crate::config::reconcile_codex_config(&f.router.paths, broker.port()).unwrap();
+    let native = crate::native_gateway::Settings::load(&f.router.paths)
+        .unwrap()
+        .unwrap();
     for (endpoint, route, provider) in [
         (
-            "/subscription/v1",
+            "/subscription/v1".to_string(),
             route_id("gpt-test"),
             crate::config::POOL_PROVIDER_ID,
         ),
         (
-            "/v1",
+            "/v1".to_string(),
             store.catalog()[0].route_id.clone(),
             crate::config::BROKER_PROVIDER_ID,
+        ),
+        (
+            format!("/native/{}/backend-api/codex", native.capability),
+            route_id("gpt-test"),
+            "openai",
         ),
     ] {
         let output = tokio::process::Command::new("node")
@@ -384,7 +468,7 @@ async fn native_mcp_auto_review_preserves_allow_and_deny_for_pool_and_external_a
             serde_json::from_slice::<Value>(&request.body).unwrap()["model"] == "codex-auto-review"
         })
         .collect::<Vec<_>>();
-    assert_eq!(reviews.len(), 4);
+    assert_eq!(reviews.len(), 6);
     for request in reviews {
         assert_eq!(request.headers.get("chatgpt-account-id").unwrap(), "a");
     }
