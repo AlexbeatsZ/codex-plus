@@ -123,7 +123,7 @@ WebSocket 握手返回官方支持的 426，让同一原生会话切换为 HTTP/
 zstd 请求有解压上限，官方响应及凭据错误原样转发；cp-* 则使用原有精确 API/订阅路由，失效不回退。
 
 普通裸模型归当前官方账户。0.3.13 起，原生 reviewer 仅在同一 thread/session 可确认有效 managed 父渠道时复用已启用订阅池；其他 reviewer 保留当前官方账户。旧 provider 的 reviewer 路由保持既有订阅池规则。
-原生 v2 compaction_trigger 和 /responses/compact 通过按 thread-id/session-id 持久化的最后渠道保持归属；
+原生 v2 compaction_trigger 和 /responses/compact 通过按 thread-id/session-id 持久化的最后渠道保持归属（`native-thread-routes.json`，0.3.14 起每项带时间戳，90 天未用或超过 5000 项时按最旧裁剪；渠道不变的轮次不重写文件；旧版纯字符串格式照常读取；文件损坏时移到 `.corrupt-<时间>.json` 并按无记录处理，不再让所有原生请求返回 500）。官方流量（`/models`、官方推理与其余原生端点）使用账户池面板配置的代理，与额度查询和订阅池一致；`/models` 刷新日志只在查询参数或 slug 集合变化时记录，订阅“读取模型”使用官方客户端最近一次实际发送的 `client_version`。
 无法核对历史真实模型与渠道时明确失败，不能误用官方账户。
 
 以下分工已落地：

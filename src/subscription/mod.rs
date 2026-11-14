@@ -17,7 +17,7 @@ use crate::accounts::{CredentialFailure, unix_now};
 use crate::providers::CatalogModel;
 
 const NATIVE_BASE: &str = "https://chatgpt.com/backend-api/codex";
-const REFRESH_URL: &str = "https://auth.openai.com/oauth/token";
+use crate::accounts::REFRESH_URL;
 const PRELUDE_LIMIT: usize = 1024 * 1024;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const ROUTE_PREFIX: &str = "cp-pool-";
@@ -27,6 +27,10 @@ mod config;
 pub use config::SubscriptionConfig;
 mod activation;
 mod quota;
+
+pub fn is_pool_route(route: &str) -> bool {
+    route.starts_with(ROUTE_PREFIX)
+}
 
 pub fn route_id(model: &str) -> String {
     format!(
@@ -47,12 +51,39 @@ pub struct SubscriptionApi {
     foreground: Arc<tokio::sync::Notify>,
 }
 
+/// Why an account is skipped for a while. Only `Quota` may be lifted early
+/// by a fresh usage read; the others are rate, model or credential limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoolReason {
+    Quota,
+    RateLimit,
+    ModelUnavailable,
+    Credential,
+}
+
+impl CoolReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Quota => "额度限制",
+            Self::RateLimit => "请求频率限制",
+            Self::ModelUnavailable => "该账户不可用此模型",
+            Self::Credential => "凭据暂时不可用",
+        }
+    }
+}
+
+impl Serialize for CoolReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.label())
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AccountState {
     record_id: String,
     model: String,
-    reason: String,
+    reason: CoolReason,
     retry_at: u64,
     #[serde(skip)]
     observed_at: std::time::Instant,
@@ -144,8 +175,8 @@ impl SubscriptionApi {
         }
     }
 
-    fn cool(&self, id: &str, model: &str, reason: &str, retry_at: u64) {
-        let retry_at = if reason == "额度限制" {
+    fn cool(&self, id: &str, model: &str, reason: CoolReason, retry_at: u64) {
+        let retry_at = if reason == CoolReason::Quota {
             retry_at.min(unix_now() + 60)
         } else {
             retry_at
@@ -160,7 +191,7 @@ impl SubscriptionApi {
             AccountState {
                 record_id: id.into(),
                 model: model.into(),
-                reason: reason.into(),
+                reason,
                 retry_at,
                 observed_at: std::time::Instant::now(),
             },
@@ -183,7 +214,7 @@ impl SubscriptionApi {
             // Record exactly the failed generation, even if an import just replaced it.
             self.reject(id, revision.clone());
         } else {
-            self.cool(id, "*", "凭据暂时不可用", unix_now() + 60);
+            self.cool(id, "*", CoolReason::Credential, unix_now() + 60);
         }
     }
 
@@ -268,7 +299,11 @@ impl SubscriptionApi {
                 .authenticated_request(
                     id,
                     &client,
-                    &format!("{}/models?client_version=0.163.0", self.native_base),
+                    &format!(
+                        "{}/models?client_version={}",
+                        self.native_base,
+                        crate::native_gateway::native_client_version()
+                    ),
                     None,
                     None,
                 )
@@ -531,7 +566,7 @@ impl SubscriptionApi {
                             yield Ok(Bytes::from("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"upstream_stream_error\",\"message\":\"账户池上游流中断；已输出内容不会自动重放\"}}}\n\n"));
                         }
                     };
-                    let mut response = response_body(
+                    let mut response = crate::http::response(
                         StatusCode::OK,
                         "text/event-stream",
                         Body::from_stream(stream),

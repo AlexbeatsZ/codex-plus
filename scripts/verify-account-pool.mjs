@@ -32,7 +32,7 @@ output=createInterface({input:child.stdout});
   const first=await Promise.race([once(output,'line').then(([l])=>JSON.parse(l)),once(child,'exit').then(()=>{throw Error('Isolated broker exited before readiness')}),new Promise((_,reject)=>{const t=setTimeout(()=>reject(Error('Broker readiness timeout')),15000);t.unref();})]);
   const base=`http://127.0.0.1:${first.brokerPort}/v1`;
   const route=`cp-pool-${Buffer.from(model).toString('base64url')}`;
-  const headers={Authorization:'Bearer codex-plus-loopback','Content-Type':'application/json'};
+  const headers={Authorization:`Bearer ${first.brokerToken}`,'Content-Type':'application/json'};
   async function call(body){
     const response=await fetch(`${base}/responses`,{method:'POST',headers,body:JSON.stringify({...body,model:route}),signal:AbortSignal.timeout(120000)});
     const text=await response.text();

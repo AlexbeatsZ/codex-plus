@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 
+const coreScript = await readFile(new URL("../assets/core.js", import.meta.url), "utf8");
 const script = await readFile(new URL("../assets/renderer.js", import.meta.url), "utf8");
 const account = { recordId: "a".repeat(64), name: "Test", active: true };
 const quota = (percent) => ({ rate_limit: { primary_window: { used_percent: percent, limit_window_seconds: 18000 } } });
@@ -11,6 +12,7 @@ function setup(usage) {
   const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", { runScripts: "dangerously", url: "app://-/index.html" });
   dom.window.codexPlusInvoke = async (path, payload) => path === "/accounts/list"
     ? { accounts: [account] } : usage(payload);
+  dom.window.eval(coreScript);
   dom.window.eval(script);
   return dom;
 }

@@ -248,7 +248,7 @@ impl SubscriptionApi {
                 });
         if available {
             self.state.lock().unwrap().retain(|(record_id, _), state| {
-                record_id != id || state.reason != "额度限制" || state.observed_at > started
+                record_id != id || state.reason != CoolReason::Quota || state.observed_at > started
             });
         }
         Ok(usage)

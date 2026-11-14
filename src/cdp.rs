@@ -14,6 +14,7 @@ use crate::service::BridgeService;
 const BINDING_NAME: &str = "codexPlusAccountsBridgeV1";
 const BINDING_PLACEHOLDER: &str = "\"__CODEX_PLUS_BINDING_NAME__\"";
 const BRIDGE_SCRIPT: &str = include_str!("../assets/bridge.js");
+const CORE_SCRIPT: &str = include_str!("../assets/core.js");
 const RENDERER_SCRIPT: &str = include_str!("../assets/renderer.js");
 const API_PROVIDERS_SCRIPT: &str = include_str!("../assets/api-providers.js");
 const MODEL_ROUTING_SCRIPT: &str = include_str!("../assets/model-routing.js");
@@ -63,9 +64,11 @@ pub async fn run_watchdog(port: u16, service: BridgeService) -> anyhow::Result<(
 }
 
 async fn run_accounts_watchdog(port: u16, service: BridgeService) -> anyhow::Result<()> {
+    let mut waiting = WaitLog::default();
     loop {
         match discover_main_target(port).await {
             Ok(target) => {
+                waiting.reset();
                 crate::runtime::append_log(
                     service.paths(),
                     "injection.target.found",
@@ -80,14 +83,49 @@ async fn run_accounts_watchdog(port: u16, service: BridgeService) -> anyhow::Res
                 }
             }
             Err(error) => {
-                crate::runtime::append_log(
-                    service.paths(),
-                    "injection.target.waiting",
-                    json!({"message": error.to_string()}),
-                );
+                if let Some(attempts) = waiting.record(&error.to_string()) {
+                    crate::runtime::append_log(
+                        service.paths(),
+                        "injection.target.waiting",
+                        json!({"message": error.to_string(), "attempts": attempts}),
+                    );
+                }
             }
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(waiting.delay()).await;
+    }
+}
+
+/// Discovery retries every second while Codex starts, then backs off. A message
+/// is logged when it changes and then about every ten minutes, not per retry.
+#[derive(Default)]
+struct WaitLog {
+    message: String,
+    attempts: u64,
+    logged_at: u64,
+}
+
+impl WaitLog {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record(&mut self, message: &str) -> Option<u64> {
+        self.attempts += 1;
+        if message != self.message || self.attempts - self.logged_at >= 120 {
+            self.message = message.to_string();
+            self.logged_at = self.attempts;
+            return Some(self.attempts);
+        }
+        None
+    }
+
+    fn delay(&self) -> Duration {
+        if self.attempts < 30 {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(5)
+        }
     }
 }
 
@@ -293,8 +331,10 @@ async fn run_target_session_with_tuning(
     .await?;
 
     let bridge_script = browser_bridge_script();
+    // Order matters: every page script reads window.__codexPlusCore at load.
     for script in [
         &bridge_script,
+        CORE_SCRIPT,
         RENDERER_SCRIPT,
         API_PROVIDERS_SCRIPT,
         MODEL_ROUTING_SCRIPT,
@@ -310,6 +350,7 @@ async fn run_target_session_with_tuning(
         .await?;
     }
     evaluate(&mut socket, &mut next_id, &bridge_script).await?;
+    evaluate(&mut socket, &mut next_id, CORE_SCRIPT).await?;
     evaluate(&mut socket, &mut next_id, RENDERER_SCRIPT).await?;
     evaluate(&mut socket, &mut next_id, API_PROVIDERS_SCRIPT).await?;
     evaluate(&mut socket, &mut next_id, CONTEXT_USAGE_SCRIPT).await?;
@@ -359,7 +400,9 @@ async fn run_target_session_with_tuning(
                 let message = next.context("读取 CDP 消息失败")?;
                 let Message::Text(text) = message else { continue };
                 let value: Value = serde_json::from_str(text.as_str()).context("CDP 消息不是 JSON")?;
-                if value.get("id").and_then(Value::as_u64) == pending_heartbeat {
+                // Events carry no id; without the is_some check every event would
+                // count as the heartbeat reply while none is in flight.
+                if pending_heartbeat.is_some() && value.get("id").and_then(Value::as_u64) == pending_heartbeat {
                     pending_heartbeat = None;
                     let models = value.pointer("/result/result/value/models");
                     let ready = models.and_then(|model| model.get("ready")).and_then(Value::as_bool) == Some(true);
@@ -537,6 +580,21 @@ fn local_client() -> anyhow::Result<reqwest::Client> {
 mod tests {
     use super::*;
     use crate::accounts::AccountPaths;
+
+    #[test]
+    fn waiting_log_reports_changes_and_backs_off() {
+        let mut log = WaitLog::default();
+        assert_eq!(log.record("CDP 尚未就绪"), Some(1));
+        assert_eq!(log.record("CDP 尚未就绪"), None);
+        assert_eq!(log.record("没有找到 Codex 主页面"), Some(3));
+        let logged = (0..300)
+            .filter(|_| log.record("没有找到 Codex 主页面").is_some())
+            .count();
+        assert_eq!(logged, 2);
+        assert_eq!(log.delay(), Duration::from_secs(5));
+        log.reset();
+        assert_eq!(log.delay(), Duration::from_secs(1));
+    }
 
     #[tokio::test]
     async fn endpoint_liveness_requires_a_real_codex_page() {
@@ -729,6 +787,67 @@ mod tests {
         assert!(log.contains("modelProbe"));
     }
 
+    /// CDP 事件没有 id。没有心跳在途时，事件不得被当成心跳回包，
+    /// 否则 models 为空会把已就绪状态误记为 pending（实机日志 614 次误翻转）。
+    #[tokio::test]
+    async fn events_between_heartbeats_do_not_flip_model_readiness() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut heartbeats = 0;
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(text.as_str()).unwrap();
+                let heartbeat = request
+                    .pointer("/params/expression")
+                    .and_then(Value::as_str)
+                    == Some(HEARTBEAT_SCRIPT);
+                let response = healthy_health_payload(request["id"].clone());
+                socket
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .unwrap();
+                if heartbeat {
+                    heartbeats += 1;
+                    for _ in 0..5 {
+                        let event = json!({"method":"Runtime.consoleAPICalled","params":{}});
+                        socket
+                            .send(Message::Text(event.to_string().into()))
+                            .await
+                            .unwrap();
+                    }
+                    if heartbeats == 3 {
+                        socket.close(None).await.unwrap();
+                        return;
+                    }
+                }
+            }
+        });
+        let state_dir = tempfile::tempdir().unwrap();
+        let mut injected_target = target("app://-/index.html", "page");
+        injected_target.web_socket_debugger_url =
+            Some(format!("ws://127.0.0.1:{port}/devtools/page/1"));
+        let tuning = SessionTuning {
+            heartbeat: Duration::from_millis(50),
+            heartbeat_timeout: Duration::from_secs(1),
+            liveness: Duration::from_millis(50),
+        };
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_target_session_with_tuning(
+                &injected_target,
+                test_service(state_dir.path()),
+                tuning,
+            ),
+        )
+        .await;
+        server.await.unwrap();
+        let log = std::fs::read_to_string(state_dir.path().join("codex-plus.log")).unwrap();
+        assert_eq!(log.matches("\"event\":\"injection.ready\"").count(), 1);
+        assert!(!log.contains("injection.models.pending"), "{log}");
+    }
+
     /// 模拟 macOS 睡眠唤醒后的真实故障：CDP socket 仍然 ESTABLISHED、握手命令也成功，
     /// 但渲染器不再处理消息（心跳没有回包）。会话必须在心跳超时后主动报错退出，
     /// 这样 watchdog 才能丢弃旧 socket 并重新注入。
@@ -750,8 +869,8 @@ mod tests {
                     value.get("method").and_then(Value::as_str) == Some("Runtime.evaluate");
                 if is_evaluate {
                     evaluates += 1;
-                    // 前 5 次 evaluate 是注入脚本与注入健康检查，之后模拟渲染器停止回包。
-                    if evaluates > 5 {
+                    // 前 6 次 evaluate 是注入脚本与注入健康检查，之后模拟渲染器停止回包。
+                    if evaluates > 6 {
                         continue;
                     }
                 }

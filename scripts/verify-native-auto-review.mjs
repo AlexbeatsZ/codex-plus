@@ -66,7 +66,7 @@ async function verify() {
 name="isolated review fixture"
 base_url=${JSON.stringify(baseUrl)}
 wire_api="responses"
-experimental_bearer_token="codex-plus-loopback"
+experimental_bearer_token=${JSON.stringify(brokerToken())}
 requires_openai_auth=false
 supports_websockets=false
 request_max_retries=0
@@ -156,4 +156,12 @@ apps=false
     }
     await removeFixture(root);
   }
+}
+
+// The broker's token is random per state directory; `--broker-only` prints it
+// and the isolated run passes it here.
+function brokerToken() {
+  const token = process.env.CODEX_PLUS_BROKER_TOKEN;
+  if (!token) throw new Error("Set CODEX_PLUS_BROKER_TOKEN to the token printed by codex-plus --broker-only");
+  return token;
 }

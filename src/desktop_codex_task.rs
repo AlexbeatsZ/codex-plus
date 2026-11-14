@@ -51,7 +51,7 @@ pub(super) fn start(request: &Value, state_dir: &Path) -> anyhow::Result<Value> 
         .arg("--ephemeral")
         .arg("--skip-git-repo-check")
         .arg(&delegated_prompt)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .current_dir(crate::layout::repository_root())
         .env("CODEX_HOME", home_dir()?.join(".codex"))
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file))

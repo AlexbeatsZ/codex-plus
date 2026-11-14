@@ -6,139 +6,39 @@
 
 # Current State
 
-- 2026-11-10：0.3.13 修复登录额度耗尽后 API/订阅池也被禁用发送。新增按原生 ComposerScope、真实会话/草稿模型投影额度与 Reserve 状态，官方模型和用量显示保持原生；已知 managed 父任务的 reviewer 复用已启用订阅池，保留审批策略。Mac Rust 146、JS 93、MCP 13+1 skip、签名回归与原生状态模块隔离验证通过；三端正式文件部署及 Windows 原生验证进行中。设计见 docs/design/quota-routing.md。
+## 版本与部署
 
-- 2026-11-05：0.3.12 已在 Mac 签名文件部署并上传 Release（源码 19b7384），修复官方 Codex 26.1029.61003 中累计统计全部为 `—`：旧路由未发现 manager，但原生 tooltip 祖先的 TokenUsageInfo 订阅仍正常。现在直接按所属会话读取当前原生订阅，旧版保留 host/thread manager fallback；不改变路由或发送。Mac Rust 145、renderer 82（新增 11）、MCP 13+1 skip、签名回归通过；真实应用只读核对累计数据通过。当前 launcher 683 / Codex 1274 / Tunnel 776 及启动时间保留，需显式启动新版生效，浮窗目视验收待完成；Windows 本次未同步。见 docs/design/context-usage.md。
+- 公共源码 `main` 为 0.3.14（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 0.3.14（2026-11-14）是架构整理与缺陷修复版：新增 `layout`（仓库路径与 `.env.local`）、`net`（代理策略与 client 缓存）、`store`（JSON 状态文件）、`http`（响应与回环 Host 校验）模块和 `assets/core.js`（页面脚本公共层，单一菜单 observer）。修复 CDP 心跳误判、CDP 失联不结束、桌面 helper 被误杀、流式请求吞掉上游错误、原生路由文件损坏导致全部 500、官方流量忽略账户池代理等。broker 与桌面 helper 改用随机令牌并校验 Host。详细见 `docs/log/2026-11.md`。
+- 0.3.13 及以前的逐版本历史见 `docs/log/`，以及 git 历史中 0.3.14 之前的 AGENTS.md。
 
-- 2026-11-02：0.3.11 已三端部署（OMEN 0.3.11-omen fbde506、ROG 0.3.11-rog 27b0952、Mac 0.3.11 4e41401，Release 已上传，需各机显式启动生效）。不再替未确定的模型假设：未匹配官方模板的窗口、外接 Responses 的工具策略必须用户填写，未配置完整的 route 不进目录且本机拒绝；订阅只认官方模板，读取模型时归档。判定集中在 native_gateway::missing_configuration。设计见 docs/design/mobile-remote-providers.md 的 0.3.11 节。
+## 环境
 
-- 2026-11-02：0.3.10 已三端部署（OMEN 0.3.10-omen 18e3884、ROG 0.3.10-rog b6249cd、Mac 0.3.10 9c8f401，Release 均已上传）：固定提示词预算保护（本地 o200k 估算，达到目录条目压缩点前拒绝发送）、外接窗口编辑/发现、归档并发锁。Windows 两渠道在 ROG 同绝对路径构建，未触碰 OMEN 并行改动。需各机显式启动新版生效。设计见 docs/design/mobile-remote-providers.md。
+- Windows 11 + Microsoft Store `OpenAI.Codex`（进程名 `ChatGPT.exe`，须经 `IApplicationActivationManager` 以 AUMID 激活）；macOS 26 Apple Silicon，官方应用 `/Applications/ChatGPT.app`。
+- 持久状态全部在仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`subscription.json`、`native-gateway.json`、`native-thread-routes.json`、`broker-token`、`desktop-endpoint.json`、`codex-plus.log`（8 MB 轮转到 `.log.1`）等。
+- Windows 自启：`HKCU\...\Run\CodexPlus` = `target\release\codex-plus.exe --login-startup`；macOS 自启：LaunchAgent `com.codex-plus.launcher`（`ProcessType=Interactive`、`AbandonProcessGroup=true`），二进制须用 `macos/sign.sh` 的稳定证书身份签名。
+- 双机独立 Tunnel：Windows alias `codex-chat-local-tools-win` / `tunnel_6a971ae4c9c0819192f1a813a4120a88`，macOS alias `codex-chat-local-tools-mac` / `tunnel_6a9e8895ebd48191bfdfcae0aed40153`，均关联默认工作区与 `Xia`；ID 以 Platform 页显示值为准。Tunnel key 与可选 `TUNNEL_HTTP_PROXY` 只在忽略的 `local-tools/.env.local`。
+- 原生网关已接管 `~/.codex/config.toml` 的 `openai_base_url`（指向本机 broker 的能力值 URL）；launcher 不在运行时，终端 CLI、IDE 扩展等读同一配置的官方客户端无法连接，恢复入口目前只有手动删除该行（见 Active Work）。
 
-- 2026-11-02：0.3.9 修复 0.3.8 原生网关的模型能力合成：订阅 route 保留官方延迟工具加载（code mode / 工具搜索），不再把全部工具内联导致新任务首请求约 17 万 token 并频繁压缩；官方模板按 slug 归档，单次官方目录缺少模型时 cp-pool 不再退回 32K（实测 31129 窗口导致每次工具调用后压缩循环）；外接 `vendor/model` 按末段匹配；`alpha/search` 等其余原生端点转发官方，修复官方模型 web.run 404。Windows 官方 app-server 原生 fixture 与 Rust 135 项通过。已按 31129 创建的旧任务需新开或分支。设计见 `docs/design/mobile-remote-providers.md`。
+## 已实现
 
-- 2026-10-29：0.3.8 已实现手机 Remote 的原生目录与统一 openai 网关：新 API/订阅任务保持 openai 身份，由现有 broker 内部分流；旧 provider 表保留，API 面板可显式为旧任务创建完整历史分支。已文件部署并上传 Release：Mac 0.3.8 / ROG 0.3.8-rog / OMEN 0.3.8-omen，源码分别 08efc78 / ddc1b15 / 9a04fdb。Mac Rust 138、JS 71、MCP 13+1 skip、签名回归通过；两条 Windows 渠道在 ROG 同路径构建，各 Rust 134、JS 71、MCP 14 通过，含 CLI 0.163 原生验证。原根进程/launcher/Tunnel 保持 PID 与启动时间，未发送真实验证请求；须显式启动新版生效。OMEN 13 个既有未提交文件逐字保留，仅部署二进制；源码尚在旧 HEAD，后续同步须先处理这些改动。设计：docs/design/mobile-remote-providers.md。
-
-- 2026-10-29：完成手机 Codex 外接 API/聚合订阅任务消失与模型不可选的研究，未改生产行为。当前内嵌 CLI 0.165.0-alpha.1.2 原生 mock 确认 thread/list 的 null/省略只返回默认 provider、[] 才全量，原 renderer 强制 null 的旧假设失效；后续 0.3.8 已实现，手机实机仍待验证。入口：docs/design/mobile-remote-providers.md、scripts/verify-native-mobile-providers.mjs。
-
-- 2026-10-29：空闲账户 5h 自动激活已同步并文件部署 ROG `0.3.7-rog` 与 Mac `0.3.7`，对应 GitHub Release 已上传；构建源码分别 `b7f2bbc` / `b1edff1`，Mac 保持原稳定证书签名。ROG Rust 127、Mac Rust 131 通过，两端 renderer 均 67/68（已有 routing v22/v21 断言失败）；MCP 与 Mac 原生签名发布回归通过。原 Codex/launcher/Tunnel PID 与启动时间不变，未启用开关、未发送真实模型请求；各端需显式启动新版 codex-plus 后在现有订阅设置开启，真实计时待自然观察。OMEN 固定入口仍为 0.3.6-omen，0.3.7-omen 候选及 Release 已存在；本次未变更 OMEN 运行/部署状态。各端实际来源见 `.codex-plus/release.json`。
-
-- 2026-10-29：公共版本 0.3.7 新增默认关闭的 `autoActivate`：在现有订阅面板显式启用后，每 5 分钟检查已选空闲账户，仅真实 5h 剩余 100%、周剩余 >0% 且高于保留阈值时发送独立 OK 请求。跳过当前登录、最近分配和在途账户，持久化至少 5h 防重复，前台优先。只做 mock 回归，不启用生产配置、不发送真实验证请求、不重启或热附加现有实例；真实计时待自然观察。设计见 `docs/design/account-pool.md`，各端文件发布以 `.codex-plus/release.json` 为准。
-
-- 2026-10-28：缓存请求头修复和原生上下文 Token 浮窗已文件部署三端（OMEN 0.3.6-omen / ROG 0.3.6-rog / Mac 0.3.6），对应 GitHub Release 已上传；Mac 稳定签名通过，ROG/Mac 原 launcher/Tunnel 保持运行。须显式启动新版 codex-plus 后生效，真实浮窗和长会话缓存待自然观察；隔离同会话后两次缓存均为 98.26%。
-
-- 2026-10-28：0.3.6 在原生上下文浮窗追加会话累计输入、缓存输入、命中率、输出及推理，复用原生用量状态、无额外推理请求；包含 0.3.5 缓存会话请求头修复。首发构建未测试，随后授权的隔离真实订阅三次请求中，后两次输入缓存均为 98.26%；长会话与浮窗仍待新版加载后观察。设计见 `docs/design/context-usage.md`。
-
-- 2026-10-28：0.3.5 修复订阅请求头拼写，原样转发官方 `session-id` / `thread-id` 恢复缓存亲和性，保留 `prompt_cache_key`；用户要求不测试，只构建发布，运行效果待加载新版后自然观察。
-
-- 2026-10-28：公共版本 0.3.4 修复订阅额度提前恢复后仍跳过账户：额度限制最多冷却 60 秒后重试；账户额度刷新同步池缓存，确认可用后解除旧额度冷却，但不清除频率/模型/凭据限制，不绕过保留阈值。未重启或热附加任何生产实例；运行生效及文件部署仍以各端 release.json 为准。设计见 docs/design/account-pool.md。
-
-- 2026-10-26：路由 v21 修复跨 provider 发送事务归属。分支及 provider 验证提前到原生 executeTurnStart，避免只改 RPC threadId 而让旧会话永久等待；跨 provider 模型设置按会话暂存并恢复源设置，取消/失败不创建 pending turn。已按干净提交文件部署 OMEN/ROG/Mac（0.3.3-omen / 0.3.3-rog / 0.3.3），Windows 109 项 Rust、Mac 113 项 Rust及两端各 66 项 JS 通过，Mac 保持稳定证书签名。当前 Codex/launcher/Tunnel 均未重启或热附加，须用户自行显式启动新版 codex-plus 后生效，生产双向切换待验收；各端来源见 .codex-plus/release.json，设计见 docs/design/api-provider-routing.md。
-
-- 2026-10-25：常驻重启接管修复已文件部署 OMEN/ROG/Mac（0.3.3-omen / 0.3.3-rog / 0.3.3）。所有入口在 Codex 关闭后保留 launcher 锁和原 broker，重开时读取实际 CDP 端口再注入，无 CDP 参数时仅受控重启官方应用。Windows 109 项 Rust、Mac 113 项 Rust、两端各 54 项 JS 及 Mac 稳定签名验证通过；未重启/热附加任何现有实例，须用户自行启动新版 codex-plus 后生效。设计见 `docs/design/account-switch-lifecycle.md`，各端实际产物来源见 `.codex-plus/release.json`。
-
-- 2026-10-25：外部 API 模型发现保留 `display_name` / `displayName` / `name` 友好名称；旧名称为空或等于 ID 时在重新读取后更新，自定义别名、可见性和路由不变。已文件部署 OMEN/ROG/Mac，分别为 `0.3.3-omen` / `0.3.3-rog` / `0.3.3`；Windows 103 项 Rust、Mac 107 项 Rust及两端 54 项 JS 回归通过，Mac 保持稳定证书签名。未重启或附加任何当前 Codex/launcher/Tunnel，运行实例仍是旧代码；用户下次显式启动新版 launcher 后需重新“读取模型”并保存。部署记录见各端 `.codex-plus/release.json`，设计见 `docs/design/api-provider-routing.md`。
-
-- 2026-10-25：订阅 API 新增每账户短期/长期剩余额度保留阈值（API renderer v10），达到后按原顺序换号，未知额度跳过；旧配置默认关闭，保存后即时重判。窗口按实际时长分类，15 秒缓存、近阈值 3 秒，响应头/事件更新，已输出请求不重放。源码与隔离编译已完成，102 项 Rust / 54 项 JS 回归通过；已随友好模型名称文件部署三端，尚未加载到当前实例。设计见 `docs/design/account-pool.md` 的“额度保留阈值”。
-
-- 2026-10-24：账户 renderer v14 将“API 剩余额度”修正为原生式菜单内折叠展开，替代 v13 的侧边浮层。匹配嵌套标题后在完整原生用量区块后插入，预先展开也可定位；沿用菜单字号、箭头和两列窗口布局，显示平均余量/已更新数，重置标记“最早”。收起或菜单卸载会丢弃旧响应并停止队列；“查看账户”复用原弹窗。当前实例与文件部署分开记录于 `.codex-plus/release.json`，设计见 `docs/design/account-switch-lifecycle.md`。
-
-- 2026-10-24：修复账户用量频繁网络失败/401。查询复用订阅 API 的显式/环境/系统代理，以及 vault 的实时凭据优先和串行续期；非当前账户最多续期一次，当前官方登录不续期、不改写。网络/408/5xx 最多重试一次、总限时 25 秒。账户 renderer v12 增加逐行刷新、保留标记更新时间的旧结果、限制三个并发和过期响应保护。部署状态以 `.codex-plus/release.json` 为准；当前界面验收需加载新版 launcher。设计见 `docs/design/account-switch-lifecycle.md` 的“UI 与额度”。
-
-- 2026-10-24：修复跨会话发送/新建任务在原生自动审批前返回本机 404。官方独立请求隐藏模型 `codex-auto-review`，不属于普通可见模型目录；broker 现将两个 API 入口的该精确内部模型交给已启用且由用户选择账户的订阅池，保留官方 reviewer、策略与拒绝结果，不替换目标对话模型。池停用时明确提示启用或人工审批，不自动启用或借用未勾选账户。原生隔离 MCP 已验证工具发现、批准后执行、拒绝不执行；正式运行验收待新版 launcher 启动。见 `docs/design/account-pool.md` 的“原生自动审批”。
-
-- 2026-10-23：修复订阅迁入已有长会话后的前置压缩 404。官方 `ModelDownshift` 用历史上一轮真实模型 ID 压缩，旧 broker 只认 routeId。订阅 provider 现使用单 broker 的 `/subscription/v1`，只允许已启用且可见的真实模型 ID/routeId；普通 API 仍为 `/v1`。Windows 原生 app-server + 假账户/mock 上游已覆盖“旧模型自动压缩 → 当前订阅 turn”；真实服务和用户界面仍待启动修复版后验收。源码/文件发布不等于运行实例更新，见各端 release.json。
-
-- 2026-10-23：路由脚本 v19 修复全局 API 选择污染已有会话：真实 `model/list` 回包直接记录官方 ID/显示名；`turn/start` 仅从原生 `collaborationMode.settings.model` 或顶层 `model` 判断目标，两者均空时原样继承会话设置。旧 localStorage 和其他会话点击不再触发分支；明确选择后的分支、取消及失败阻发仍受回归保护。当前运行实例的生效状态以部署记录为准。
-
-- 2026-10-23：macOS 的订阅账户池已合入公共主线并移植 Windows。固定“ChatGPT 订阅 API”默认停用，参与账户和顺序由用户选择；复用 vault/单 broker，支持有界续期、坏凭据版本阻断、额度冷却与 SSE 输出后禁止重放。API v8 修复复选框，账户 renderer v11 兼容新版登录页；路由 v20 同时保留 v19 的原生模型优先级和会话继承。Windows 无环境代理时只读采用当前用户静态系统代理。设计见 `docs/design/account-pool.md`；部署状态以各端 `.codex-plus/release.json` 为准。
-- 2026-10-21 三端公共发布更新到 `0.3.3`（Windows 分别为 `0.3.3-omen` / `0.3.3-rog`）：纳入已审查的未登录账户切换/导入入口、已有 PDF CMap 与 Mac 安全签名发布修复、Windows/Mac 官方图标。全部渠道仅含 generic local-tools；ROG 的 AI Decision 业务工具已在 10-17 迁到独立连接器，旧的“ROG 保留内嵌适配层”约束已失效。源码可先同步，实际部署记录以各端 `.codex-plus/release.json` 为准；本轮不重启当前 Codex/launcher/Tunnel。
-- 2026-10-15：新增未登录状态下的账户入口。原生登录页没有个人资料菜单，渲染器（账户脚本 VERSION 9）在原生 ChatGPT 登录按钮组末尾插入“切换账户 / 导入 auth.json”，打开同一账户弹窗（隐藏网页登录），可直接切换已保存账户或导入 `auth.json` 后切换。设计见 `docs/design/account-switch-lifecycle.md`。28 JS / 50 Rust（Linux）测试通过；登录页按钮文本按“ChatGPT + 登录动词”匹配，尚未在真实 Codex 登录页目视验收。
-- 2026-10-13：新增 PDF 预览 CMap 资源加载修复，目标为官方 `26.1007.30912`。在原生主窗口及独立窗口的 PDF.js worker 通道按需提供 168 份本地映射，覆盖普通 PDF 与 LaTeX 预览；不修改文档或官方签名包。设计及验收入口见 `docs/design/pdf-preview-cmaps.md`。57 Rust / 25 JS 测试通过，已签名发布并以 `--attach-existing` 更新运行实例，Codex PID 保持不变；主/独立窗口均 ready。部署后实际 PDF.js 读取六页中文成功，普通预览的最终目视验收待用户重开预览确认。
-- Rust 启动器与 Node.js `local-tools/` MCP 位于同一仓库，产品二进制和 Windows 自启动入口固定为 `codex-plus.exe`，公共源码版本 `0.3.3`（内嵌 local-tools 仍为 `0.3.0`）。OMEN/ROG 发布身份分别为 `0.3.3-omen` / `0.3.3-rog`；分支及组件边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。
-- 2026-09-08 持久状态已从平台用户数据目录迁入仓库根 `.codex-plus/`（Git 忽略）：`accounts/`、`providers.json`、`pending-action.json`、`launcher.lock` 与 `codex-plus.log` 均随项目目录移动，不再使用 Windows `%LOCALAPPDATA%\codex-plus`、macOS `~/Library/Application Support/codex-plus` 或 Linux `~/.local/state/codex-plus`。Windows 现有状态已完成原位迁移并以 `--attach-existing` 在 Session 1 验证账户状态、broker 与 CDP 注入继续正常。
-- 目标环境为 Windows 11 与 Microsoft Store `OpenAI.Codex`；2026-09-05 当前安装/进程识别验证版本为 `26.901.4073.0`，实际进程名为 `ChatGPT.exe`。
-- 2026-09-07 已验证 macOS 26.6.1 Apple Silicon：官方应用 `/Applications/ChatGPT.app` 版本 1.2026.238.5，可直接以 `Contents/MacOS/ChatGPT --remote-debugging-port=...` 启动并完成 CDP 注入；Mac release 位于 `/Users/meta/Project/Workspaces/codex-plus/target/release/codex-plus`，登录后台入口使用 LaunchAgent `com.codex-plus.launcher`，不会主动打开 ChatGPT 窗口。
-- 2026-09-07 已实现双机独立 Tunnel 架构：`src/local_tools.rs` 支持从 `.env.local` 动态加载 `TUNNEL_ID` 与 `TUNNEL_ALIAS`（Windows 默认 alias `codex-chat-local-tools-win` / Tunnel ID `tunnel_6a971ae4c9c0819192f1a813a4120a88`；macOS 默认 alias `codex-chat-local-tools-mac` / Tunnel ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`）。两端不再共享单一 Tunnel，彻底避免 OpenAI control plane 随机分流；同时保留免密 SSH 远程 `host-rpc` 双向通信作为后备。
-- Windows 桌面端启动闪退与 `无法停止旧 Codex/codex-plus 实例` 根因解决：此前通过 OpenSSH 后台启动的 `codex-plus` 与子进程 `ChatGPT.exe` 运行在 Windows Session 0（非交互会话），导致桌面交互会话（Session 1）用户启动时因权限不足（0x80070005 Access Denied）无法终止 Session 0 实例而报错退出。已使用提权 taskkill 清理全部 Session 0 孤儿进程，恢复在交互式 Session 1 中正常启动与附加（CDP 9229 / broker 43121 均正常）。
-- 2026-09-07 已在 Platform 复核 Windows 与 macOS 两个独立 Tunnel 都同时关联默认工作区与 `Xia`。macOS `.env.local` 已改用 Platform 显示的真实 ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`，managed runtime 重新连接后远端 metadata 与本地 health/ready 均成功，不再出现原错误 ID 导致的 `401 tunnel_use_forbidden`。
-- 设计入口：`docs/design/account-switch-lifecycle.md`、`docs/design/api-provider-routing.md`、`docs/design/local-tools-lifecycle.md`、`docs/design/macos-release.md`；MCP 的上下文同步设计见 `local-tools/docs/design/codex-context-sync.md`。
-- 2026-10-05 Mac 复核：Windows 的 v17/CDP 公共兼容修复已在 `main`，两条 Windows 分支没有额外待提升的公共修复。Mac 发布入口现先 clean-build MCP 并核对 base 边界，在 `target/macos-build` 构建，通过 Cargo artifact 定位产物，签名后原子替换固定入口并记录 `.codex-plus/release.json`；构建或签名失败保留旧入口。签名幂等核对 identifier、证书与签名有效性。原生隔离实例验证官方 `26.930.51102` 的账户桥返回、实际 `model/list` 回包、request client 与原生 fork helper 接入；不发送对话、不切换生产账户。已加载 LaunchAgent 为 Interactive 且 abandon process group；当前用户官方应用保持原 PID，正式 launcher 未启动，测试拉起的 sidecar 已恢复原先的停止状态。56 Rust、21 renderer、13 本机 MCP 测试（1 Windows-only skip）及 1 原生签名/失败恢复集成测试通过。完整生产账户/API 对话验收仍待下一次正式启动。
-- 已实现单启动器重启、CDP bridge、账户 vault、逐账户额度，以及多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换和原生模型 provider 路由；路由包装已下沉到 `enqueueRequest`，覆盖普通与预热建任务。
-- 2026-09-28 macOS Codex 界面卡顿排查发现 `--login-startup` 的旧 broker 任务跨 Codex 生命周期残留：09:49 首轮绑定 43121，10:36 再接管回退到 60263；`tokio::select!` 丢弃等待中的 `JoinHandle` 不会停止 Axum 服务。现每轮结束显式 abort/await broker，并避免同页面重注入时重复注册模型选择点击监听。2026-09-29 自启动与显式启动均使用含此修复的 release，仍报告自启动卡顿，说明 broker 残留不是充分解释。
-- 2026-09-29 macOS 自启动路径另发现 LaunchAgent `ProcessType=Background` 会把低调度优先级继承给它启动的 Codex：同机隔离 Agent 对照的子进程 `PRI` 为 Background 4、Standard 20、Interactive 31。已把仓库安装脚本及本机已安装 plist 改为 `Interactive`，但未重载 job 或重启当前 Codex；下次登录后的真实 Codex 界面流畅度仍待验收。设计约束见 `docs/design/account-switch-lifecycle.md`。
-- 当前自动化基线：macOS `cargo test` 56 项、DOM/路由测试 21 项通过；此前 Windows 两机 renderer 21/21、`local-tools` MCP 15/15 通过；分支拆分后 OMEN/基础版不包含适配层测试，ROG 保留该测试；新增 desktop helper 回归覆盖 loopback endpoint 与健康实例复用，Windows 回归同时核对后台 PowerShell 无控制台窗口、Codex 子进程实际继承 `BelowNormal` priority class，以及 MCP 子进程不继承 Tunnel key。2026-09-12 新增 `cdp::tests::session_fails_when_heartbeat_stops_being_answered`（假 CDP 服务停止回包时会话必须报错退出）与 3 项 `assets/bridge.js` DOM 测试。
-- 2026-09-25 修复 Windows Store / MSIX 官方应用 `ChatGPT.exe`（现场版本 `OpenAI.Codex_26.917.9434.0_x64__2p2nqsd0c76g0`）启动报 `拒绝访问。(os error 5)`：根因是 WindowsApps 目录下的可执行文件设置了 NTFS Conditional ACE（`WIN://SYSAPPID Contains "OpenAI.Codex_2p2nqsd0c76g0"`），未打包普通 Win32 进程直接调用 `CreateProcessW` 启动缺少包身份声明（Claim），内核直接返回 `0x80070005`。现已实现 `CodexAppTarget` 区分 AppX 与独立可执行文件；Store 包提取 `PackageFamilyName` 构造 AUMID（`OpenAI.Codex_2p2nqsd0c76g0!App`），调用 Shell COM `IApplicationActivationManager::ActivateApplication` 传递 CDP 调试端口参数激活，通过返回的 PID 用 `OpenProcess` 获取句柄后下调为 `BelowNormal` 优先级并统一生命周期监控。实测 9229 CDP、页面注入与 `BelowNormal` 调度优先级全部闭环恢复正常。
-- 2026-09-12 macOS 修复“账户弹窗永久停在正在读取本地账户…”：根因是睡眠唤醒后 launcher 保留的旧 CDP WebSocket 假存活（TCP 仍 `ESTABLISHED`、ChatGPT 接收队列堆积约 583 KB，新建连接却正常），而心跳原为单向 `Runtime.evaluate`，watchdog 永远不重连，页面侧 `codexPlusInvoke` 也没有超时。现心跳改为可确认命令（45 秒无回包判定假存活并重连重注入）、CDP 写入加 10 秒上限、页面桥 `assets/bridge.js` 增加 30 秒兜底超时并在重新注入时让上一轮挂起请求立即失败。已部署 release 并实机验收：`bridgeVersion=2`、`/accounts/list` 经页面桥返回 4 个账户、强制超时无挂起残留。
-- 2026-09-12 修复 macOS LaunchAgent plist 部署漂移：`macos/install.sh` 自 2026-09-09 起已写 `AbandonProcessGroup=true`，但本机已安装的 plist 早于该提交、缺该键。临时 job 对照实测确认缺省时 `launchctl bootout` 会连子进程一起杀掉，因此 launcher 由 LaunchAgent 管理时切换 helper 会在杀掉父 launcher 后被 launchd 连带清理，事务停在中间。已重新执行 `macos/install.sh` 部署修正后的 plist。
-- 2026-09-13 修复 macOS 反复索要屏幕录制权限：`target/release/codex-plus` 原为 linker-signed adhoc，designated requirement 退化成 `cdhash H"..."`，每次 `cargo build --release` 都换一个，tccd 遂视为另一个程序（实测 24 小时内 42 次 `Failed to match existing code requirement`，跨 3 个不同 cdhash），而系统设置里的开关虽然打开，管的也只是旧二进制，所以用户怎么点都没用。新增 `macos/sign.sh` 并接入 `macos/install.sh`，用本机中性机器级身份 `Local Development Code Signing` + identifier `com.codex-plus.launcher` 签名，requirement 变为与文件内容无关的 `identifier "com.codex-plus.launcher" and certificate leaf = H"6474f2..."`。二进制已重签，**需重启 launcher 后才生效，并需再授权一次**；该身份与 Sefirah 共用，重建步骤见 `~/.agents/knowledge/macos-tcc-permissions.md`。
-- 2026-09-13 让"签名丢失"不再静默：此前只有部署路径（`install.sh`）会签名，`cargo build --release` 之后直接跑二进制或点 `Codex Plus.app` 都会以 adhoc 身份启动，TCC 授权随即失效且症状延迟到下一次权限请求才暴露。现新增 `macos/release.sh`（`cargo build --release` + `sign.sh` 一步到位）作为 macOS 构建入口；`Codex Plus.app` 的启动脚本在拉起二进制前先调用一次 `sign.sh`（幂等，失败不拦启动）；并新增启动自检 `runtime::warn_if_code_signature_is_unstable`，当自身 requirement 不含 `certificate leaf` 时写一条 `launcher.signature.unstable` 日志并给出修复提示。测试 52 → 54（新增 requirement 解析与"解析不出来时不得误报"两项）。已实测：故意重链成 `cdhash H"35cf0c..."` 后该告警正确触发；经 `Codex Plus.app` 启动会自动补签成稳定身份且不误报。
-- 2026-09-13 行尾噪音治理：一次跨平台操作把 10 个已跟踪文件的工作区副本改成了 CRLF（仓库存 LF，`core.autocrlf` 未设置 → git 按字节比较），`git diff` 因此把 `src/main.rs` 的 282 行报成 565 行改动，而 `git diff --ignore-cr-at-eol` 证明零语义变化。已把工作区还原为 LF（其中 8 个纯噪音文件随即与 HEAD 一致、从 `git status` 消失），并在 `.gitattributes` 增加 `* text=auto`：仓库继续以 LF 存储、检出按平台原生行尾，工作区即使被改成 CRLF 也不再产生 diff。实测把 `src/main.rs` 转成 CRLF 后 `git diff --numstat` 为 0 行。
-- 2026-09-13 修复 CDP 调试端口静默回退：`stop_existing_runtime` 虽已等到旧进程退出，但内核释放监听套接字与进程退出之间仍有窗口期，原 `select_debug_port` 只做**一次** bind，撞上 `AddrInUse` 就回退到随机端口并只记 `preferred_bind_error`，于是开发期的 `--attach-existing`（固定 9229）静默失效（实测出现在 launcher 重启、旧 ChatGPT 仍占 9229 时，`preferredBindError=Address already in use (os error 48)`，回退到 62724）。现改为仅对 `AddrInUse` 在有界时间内重试（15 × 200ms ≈ 3 秒），其他错误立即回退；`DebugPortSelection` 增加 `preferred_bind_attempts` 并写入 `launcher.debug_port.selected` 日志 `preferredBindAttempts`，便于判断"是否真的等过"。测试从 51 增至 52 项，新增 `debug_port_selection_waits_for_preferred_port_to_be_released` 复现"端口延迟释放"的真实时序。
-- 当前 0.3.0 自启动产物为账户脚本 v8/API 脚本 v6/路由脚本 v16：`target\release\codex-plus.exe`，6,672,896 bytes。2026-09-05 已从 `main` 的 `d418af1` 正式构建，并用 `--attach-existing` 无重启部署到当前 Codex；账户 vault 使用工作区与席位共同派生的 `recordId`，允许同一 Business 工作区的不同席位并存，并会迁移旧工作区级快照。普通接管会以 `BelowNormal` 启动 Codex 根进程，登录自启先确保 local-tools runtime 可用，在一次受管 Codex 生命周期结束后重新待命，可重新接管官方更新/自重启产生的新根进程。
-- Windows 发布 EXE 通过 `build.rs` 嵌入 `assets/app-icon.ico`；2026-10-21 改为本机官方 Codex `26.1013.3656.0` 的 `IDR_MAINFRAME` 原始八尺寸图标，来源见 `assets/APP_ICON_NOTICE.md`。本次现有 release 仅替换 PE 图标资源，未编入工作区其他未提交改动，也未重启当前 Codex/launcher。
-- 当前 Windows 用户登录自启动项 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodexPlus` 为 `"C:\Users\Meta\Project\Workspaces\codex-plus\target\release\codex-plus.exe" --login-startup`；登录时立即确保 local-tools runtime 可用，再等待官方 Codex 被用户打开接管，不主动打开 Codex。旧 BigPizzaV3 `Codex++` 1.2.x 的程序、用户数据、启动项和卸载记录已于 2026-08-09 清理，官方 `OpenAI.Codex` Store 包保留。
-- `local-tools/` 已纳入仓库；正常、attach、网页登录和登录自启入口都会幂等确保本机 alias（Windows `codex-chat-local-tools-win`、macOS `codex-chat-local-tools-mac`）运行。登录自启会立即启动 MCP，但仍不会主动打开官方 Codex。Tunnel key 只从忽略的 `local-tools/.env.local` 传给 `tunnel-client`，MCP 子进程会清除相关环境变量。
-- 2026-09-08 桌面控制改为 `codex-plus` 自身的交互会话 loopback helper，不再依赖 Web 侧 `computer-use` Skill，也不增加 `desktop_*` MCP schema。launcher 在 `127.0.0.1:43122` 启动/复用 helper，endpoint 记录于 `.codex-plus/desktop-endpoint.json`；现有 `windows_run_command` / `mac_run_command` 通过 `local-tools/scripts/desktop-helper.mjs` 调用。Windows 已在正式 launcher 中闭环物理像素截图、鼠标、SendInput 键盘、窗口枚举和 UIA。macOS 的 Quartz/Accessibility primitive 已验证，但正式 LaunchAgent 当前 TCC preflight 为 `postEvents=false`、`screenCapture=false`，因此输入与截图在用户批准前不得宣称可用；`desktop-helper.mjs permissions` 可只读检查，`permissions request` 仅触发系统授权请求。Web Skill 桥继续排除依赖 Codex 专属运行时的 bundled Computer Use Skill，避免假能力。
-- 2026-09-03 已确认本机 Internet Settings 使用 `127.0.0.1:7897` 时，`tunnel-client` 不会自动继承该代理并会直连 OpenAI 超时；现支持从忽略的 `.env.local` 读取可选 `TUNNEL_HTTP_PROXY`，仅给 Tunnel runtime 注入 `HTTPS_PROXY`。2026-09-04 21:30 修复旧正式 EXE 重新拉起无代理 runtime 的部署漂移：保留当前 Codex 窗口，以最新正式 EXE 的 `--attach-existing` 重启 launcher 和 Tunnel；远端 metadata、完整长轮询周期无 WARN/ERROR、唯一进程及 health/ready 200 均已验证。
-- 2026-09-07 已部署 `local-tools` 0.3.0：本机全局和工作区根 `AGENTS` 指令直接进入 MCP `initialize` 响应，嵌套/变更后指令仍可按需刷新；`run_command` 超时会终止子进程树并强制关闭继承管道。managed runtime 已热重载为唯一 Tunnel/Node 实例，health/ready 为 200，完整轮询周期无 WARN/ERROR，原 Codex 窗口保持响应且未重启。按用户要求未在 Chat 模式主动发起工具调用。
-- 2026-09-09 `local-tools` 新增显式 `CODEX_PLUS_MCP_APPROVAL_MODE=unrestricted` 私有部署模式：默认 `standard` 仍发布真实风险提示；双端私有配置启用后，generic/Windows/macOS 的 apply-patch 与 run-command 工具均发布非只读但不触发 destructive/open-world 审批的 annotations，并在 initialize instructions 明示实际能力未受沙箱限制。单元测试、六工具 stdio metadata smoke 通过，Windows 与 macOS managed runtime 已热重载且 health/ready 为 200。
-- 2026-09-04 Tunnel 曾在保留原工作区 `a7ff583c-c893-4be2-98ab-7173e84a3f7c` 的同时关联 Business 工作区 `Xia (b9c51c7a-e7a7-40d7-9978-aa60f76fbec0)`；当时只读验收通过插件发现与 `workspace_info`。用户随后切换了 ChatGPT 小号，因此当前 Chat 侧插件连接可能断开；本轮按用户要求不在 Chat 模式测试，不能沿用旧连接结论。
-- 2026-09-04 22:16 已定位并部署首次重试仍返回 502 的修复：Tunnel 的共享 stdio MCP 通道会串行处理响应，而 `run_command` 原默认 90 秒、最大 300 秒，能超过托管请求约 83 秒的截止时间；原请求超时后，立即重试仍排在未结束命令之后。同步前台命令现限制为默认 30 秒、最大 45 秒；隔离 Tunnel 代理验证了命令超时后下一次 MCP 请求可立即恢复。实际 managed runtime 已重载为 PID 10040、MCP Node PID 25856，来自当前 `local-tools/dist/cli.js`；health/ready 200、远端 metadata 复查成功，重载后的运行日志无 WARN/ERROR。
+- 单启动器生命周期（stop → lock → broker → config → launch → inject，常驻重新接管）、CDP bridge 与注入、账户 vault（席位级 recordId）、逐账户额度、未登录入口、网页登录。
+- 多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换、原生 openai 网关与手机 Remote 兼容目录、订阅账户池（顺序、保留阈值、凭据续期、自动激活）、原生 reviewer 归属、登录额度与 API 发送隔离、上下文 Token 浮窗、PDF 预览 CMap、desktop helper 与 local-tools MCP。
 
 # Active Work
 
-- 2026-11-10：完成 0.3.13 三端签名/渠道构建、Release 上传和固定入口文件部署，保留 OMEN 既有 13 个未提交文件及各端当前进程。真实界面发送待加载新版后验收。
-
-- 订阅 API 与未登录入口修复已在 `codex/account-pool` 完成，正式文件已在 2026-10-23 用户授权后部署；用户已运行订阅版本并反馈勾选框不可见，显示修复已发布；修复后的生产 UI 目视验收等待下次启动新版 launcher。本轮不重启、不热附加当前 Codex/launcher/Tunnel。
-
-- [done] 2026-10-13：发布并附加 PDF CMap 修复到本机 codex-plus；部署后真实应用 PDF.js 读取未改动 PDF 已恢复六页中文，首页 435 字，资源计数 `loaded=1 / served=1`。内置 LaTeX 编译 success。
-- [pending] 当前普通 PDF/LaTeX 预览界面需关闭后重新打开，等待用户目视验收；界面控制工具禁止操作 Codex 自身窗口。
-- 2026-10-01 OMEN/ROG 独立分支与 `0.3.2-omen` / `0.3.2-rog` 文件部署、测试已完成；公共修复保留在无扩展的 `main`。`release-channel.json` 与 `npm run release:verify` 核对版本及源码/编译组件边界。部署保持两机 Codex、launcher、Tunnel 进程不变，正式运行验收等待用户自行启动。设计索引：`docs/design/host-releases.md`。
-
-- 2026-10-01 新版兼容修复已完成文件部署：Windows 两机官方包均为 `26.928.2636.0`。路由 v17 已移除旧 React 源码特征、固定 `Txt` dispatcher 和全局 `Response.json` 包装；改为能力发现 + 真实 `model/list` 往返 + 唯一原生 fork helper，更新/删除 API 同步清理 Query 缓存，失效 routeId 明确拒绝。CDP 初次模型脚本移入接收循环，避免首次 catalog binding 被 setup 等待丢弃；界面 ready 与模型 ready 分开记录。ROG 候选已验证 client/cache/model probe/fork helper 接入，自动化 56 Rust/21 renderer 通过。用户明确只配置升级，不启动/重启 Codex 或 launcher；两机标准 `target/release/codex-plus.exe` 均为 0.3.1、6,928,896 bytes（代码 commit `5a59435`）；部署前后 ROG launcher PID 22412、OMEN launcher PID 30916/Codex PID 3460 均保持不变。运行中的 launcher 仍是原映像，仅在用户自行启动新版 codex-plus 或下次登录时正式生效；不承诺只重开官方应用会更换常驻 launcher。用户随后明确要求按独立版本维护：公共主线与 OMEN 分支物理移除 AI Decision/Todoist 适配层的源码、导入、测试和编译输出，ROG 分支保留。原先仅做主机注册限制的方案已被替代。独立 AI Decision 核心和 Todoist 执行仍在 ROG 原项目，不在本次安装或启动。设计详见 `docs/design/api-provider-routing.md`、`docs/design/account-switch-lifecycle.md`。
-
-- 同次 ROG 启动验收还发现 `.codex/config.toml` 的 `[windows] sandbox="restricted-token"` 不被官方 `26.924.6891.0` 接受，app-server 明确报只接受 `elevated`、`unelevated`、`mxc`，页面停在“正在加载登录要求…”。已仅改为非提权 `unelevated`，原配置备份与旧 EXE 同目录；不要通过删除凭据或重装解决此解析错误。重新启动后 `config/read`、`account/read`、`getAuthStatus` 均正常回包，页面进入 “Continue signing in with your browser”，浏览器登录由用户完成。
-
-- 2026-10-01 ROG (`192.168.31.32`) 的 `26.924.6891.0` 官方包被 9 月 11 日旧 launcher 直接作为 EXE 启动，报进程没有程序包标识符。已部署 OMEN 上 `6055c3c` 对应的 9 月 25 日 Windows release；ROG 原 EXE 保存在 `.codex-plus/release-backups/20261001-package-identity/codex-plus.exe`。实测交互 Session 1 的根进程 `GetPackageFullName` 返回完整 `OpenAI.Codex_26.924.6891.0_x64__2p2nqsd0c76g0`，优先级 `BelowNormal`、主窗口 1280×820、CDP 主页面和 bridge 均可响应。本次 0.3.1 升级已通过 Git bundle 将 ROG/OMEN 源码同步至主线，保留 ROG 的独立提交和桌面 MCP 原文件（与主线内容相同），仅原 `ui-snapshot.png` 继续未跟踪。此前 SSH 下 GitHub wincredman 失败，现用 bundle 避免改动凭据设置。
-
-- 2026-09-12 mac 账户切换可靠性：已完成并部署 CDP 桥假存活修复（心跳需回包 + 写超时 + 页面桥兜底超时）与 LaunchAgent plist 漂移修复，设计见 `docs/design/account-switch-lifecycle.md`。第三项“切换后对话历史消失”经复核推翻早先结论：UI 历史来自 `$CODEX_HOME/thread_history_1.sqlite` 的物化投影，投影在 rollout 出现 `ordinal` 回退后永久停在断点，与账户切换的硬停止无因果关系（切换当秒 rollout 写入的是正常 `turn_aborted`；未结束的 turn 本身不会破坏投影）。官方无重建投影入口（`codex migrate-rollouts` 跳过已 paginated 的 thread），故未改代码，结论见 `docs/design/account-switch-lifecycle.md` 的“对话历史与投影”。任务日志：`~/.agents/macos--codex-plus-account-switch/AGENTS.md`。
-
-- 2026-09-25 Windows Store MSIX 启动拦截与 COM 激活修复：定位并彻底解决 Windows 11 下 Store 版 Codex/ChatGPT（`OpenAI.Codex_...`）更新后启动弹窗报 `无法启动 C:\Program Files\WindowsApps\...\app\ChatGPT.exe: 拒绝访问。(os error 5)` 的故障。根因为 WindowsApps 下二进制具有 NTFS Conditional ACE（`WIN://SYSAPPID Contains ...`），普通 Win32 进程没有 AppX 身份 Claim 导致内核拦截直接创建。已重构 `src/runtime.rs`：新增 `CodexAppTarget`（区分 `Appx` 与 `Executable`）和 `CodexProcess`（统一 `Child` 与 `Handle` 抽象），通过 PowerShell 查询 `PackageFamilyName` 构造 AUMID（`OpenAI.Codex_2p2nqsd0c76g0!App`），调用 Shell COM `IApplicationActivationManager::ActivateApplication` 传入 `--remote-debugging-port` 与 `--remote-allow-origins` 进行包激活，并利用 `OpenProcess` 对返回 PID 设置 `BelowNormal` 优先级并做生命周期监测。50 项 Rust 单元测试、18 项渲染器测试与 14 项 local-tools 测试全通，实机 release 启动成功注入 CDP 9229。
-
-- 2026-09-08 desktop helper: 新增 `src/desktop.rs`、`desktop/windows.ps1`、`desktop/macos.jxa` 与 `local-tools/scripts/desktop-helper.mjs`。Windows 使用 Per-Monitor-V2 统一截图/窗口/鼠标为物理像素坐标，并修正 x64 `SendInput.INPUT` union；macOS 状态/窗口使用 CoreGraphics、文字输入由 Rust `core-graphics` 直接发 Unicode CGEvent、Accessibility 查询仍经 System Events 并限制 UI 树遍历深度/访问量。helper 仅绑定 loopback，若已有健康 `codex-plus` 占用首选端口则复用，避免多 launcher 覆盖 endpoint；macOS 另提供 TCC preflight/request，当前正式 helper 的 PostEvent 与 Screen Capture 尚未获批。设计见 `docs/design/desktop-helper.md`。
-- 2026-09-14 为 Agy/Antigravity 新增独立标准 stdio MCP `local-tools/dist/desktop-mcp-cli.js`，直接复用 codex-plus loopback desktop helper，不再通过 Codex 私有 `cua_repl`/form elicitation 桥。MCP 暴露 observe/windows/permissions/click/move/scroll/type/key/Accessibility find/action；`computer_observe` 直接返回 MCP image content，坐标输入采用截图像素并自动转换 Retina backing pixels -> Quartz points。macOS 实机 MCP smoke 已验证 10 个工具、TCC `postEvents=true`/`screenCapture=true` 与真实 screenshot image 返回；Agy `~/.gemini/config/mcp_config.json` 的 `computer-use` 已切到该 server。
-- 2026-09-07 dual-tunnel architecture: 解耦 Windows 与 macOS 独立的 Secure MCP Tunnel 绑定。`src/local_tools.rs` 动态解析各端配置（Windows 默认 alias `codex-chat-local-tools-win` / ID `tunnel_6a971ae4c9c0819192f1a813a4120a88`；macOS 默认 alias `codex-chat-local-tools-mac` / ID `tunnel_6a9e8895ebd48191bfdfcae0aed40153`），单元测试 45 项全过。双端各自独立运行 Tunnel 守护进程与 MCP 实例，解决单 Tunnel 随机分流问题，使 ChatGPT Web / Desktop 端能够同时勾选并调用 Windows 与 Mac 工具。
-- 2026-09-07 ChatGPT 双连接器注册完成：现有 Windows 连接器已刷新并读取到 0.3.0 的上下文同步与双机工具元数据；`Xia Business` 已创建并连接 `Codex Local Tools - Mac`（应用 ID `asdk_app_6a9ed0ec880c819188b71e492ed3887f`），详情页确认包含 `machine_info`、完整 `windows_*` / `mac_*` 路由、Codex 上下文与 Skill 同步工具，`run_command` 超时上限为 45 秒。按用户要求未从 Chat 模式主动发起工具调用。
-- 2026-09-07 Windows Session 0 冲突定位与修复：排查解决 OpenSSH 后台遗留 Session 0 `codex-plus` 与 `ChatGPT.exe` 拦截桌面启动导致的 `无法停止旧 Codex/codex-plus 实例` 与闪退问题，清理孤儿进程后桌面端 ChatGPT 正常接管启动与 CDP 注入。
-- 2026-09-07 multi-machine routing: `machine_info` plus symmetric `windows_*` / `mac_*` tools keep the target host deterministic even when both runtimes share one Tunnel; remote calls use passwordless SSH + stdin JSON `host-rpc`. Windows->Mac and Mac->Windows real command smokes both passed.
-
-- 2026-09-05 已修复同一 ChatGPT Business 工作区的不同席位因共享 `tokens.account_id` 而互相覆盖：本地 CRUD、活动判断、额度和 pending switch 改用席位级散列 `recordId`，API 请求仍发送真实工作区 ID；同工作区双席位与旧 vault 自动迁移回归通过。正式 release 已无重启附加到当前 Codex；迁移时曾为回滚创建任务级 vault 副本，但误放在 `%LOCALAPPDATA%\codex-plus\backups\account-seat-migration-20260905-033703`，该副本现已清理。此类由助手为当前任务创建的备份、快照、原文件副本或回滚副本一律视为临时产物，Windows 必须放入 `%LOCALAPPDATA%\Temp\.agents\<任务名>\`，不得因用途是“备份”而写入程序、配置、项目目录或自建 `backups` 目录；只有用户明确要求长期保留或程序正式备份机制要求该位置时例外。随后导入桌面席位，运行中 `/accounts/list` 验证该 Business 工作区同时保留两个不同邮箱席位。
-
-- 0.3.0 已把 `codex-chat-local-tools` 合并为仓库内 `local-tools/` 组件，并在正常、attach、网页登录和登录自启入口幂等启动 managed runtime；旧 runtime 已热迁移到新目录，health/ready HTTP 200、doctor 通过、stdio MCP 报告 workspace `codex-plus`，当前 Codex 通过新 release 的 attach 模式保持注入，未为迁移重启用户窗口。最终验收在外部持有 launcher 锁时停止 runtime 并执行正式 release 的 `--login-startup`：日志记录 `alreadyRunning=false` 后 runtime 恢复为唯一 ready 进程，随后因锁安全退出，证明登录入口会实际拉起 MCP 且不会产生重复实例。
-- `local-tools` 0.3.0 已把本机 Codex 可见的全局与已配置工作区根 `AGENTS` 指令注入 MCP 初始化上下文，使客户端在调用工具前即可看到；嵌套目录和运行中变化继续通过 `codex_instructions` 读取。Skills 仍先暴露有界元数据用于隐式/显式匹配，再加载单个完整 `SKILL.md` 和被引用资源。OpenAI 平台内部提示词不属于同步范围。
-- `local-tools` 已将同步 `run_command` 收紧为默认 30 秒、最大 45 秒，并增加继承 stdio 的子进程回归：超时时终止整棵进程树，短暂宽限后即使 `close` 未到也强制释放管道；随后同一 MCP 连接的 `workspace_info` 必须继续成功。
-
-- 2026-08-15 用户确认关闭/重启 Codex 可短暂改善、运行后鼠标再次周期性卡顿。现场官方 Codex 已更新为 `26.810.6296.0`，根进程仅运行约 5 分钟即持续约 134% 单核 CPU，其中一个 `AboveNormal` 线程约 65%，其余多个线程各约 7–10%；GPU、DPC、磁盘无饱和。此时没有运行中的 codex-plus、主进程没有 CDP 参数且 9229 不可达，确认复发不由 plus 注入引起。当前进程临时降为 `BelowNormal` 后仍消耗约 138% 单核，但不再以普通/更高调度优先级与桌面输入竞争。
-- 0.2.0 已让 launcher 用 `BELOW_NORMAL_PRIORITY_CLASS` 创建官方 Codex，并新增真实 Windows 子进程测试；登录自启从单次 takeover 改为每次受管 Codex 结束后重新静默待命，根进程发现读取最小身份/命令行并排除 `--type=` Electron 子进程与 `codex app-server`，避免官方更新重启后脱离管理或残留子进程误触发。
-- 0.2.0 已修复 launcher 常驻期间每秒 `System::new_all()` 全量采集所有进程 CPU/内存/磁盘信息导致的持续占用：普通启动现在持有 Codex 根进程 `Child` 并用 `try_wait()` 监测，只在根进程退出后确认 CDP 端点；登录等待复用轻量 `System`，每 2 秒只刷新进程名称与可执行路径；停止清理同样只刷新身份字段和目标 PID。2026-08-15 热部署前后 20 秒采样从约 31.4% 单核、38MB private 降至 0.00%、3.6MB private。
-- CDP 固定健康心跳由 2 秒降至 15 秒，健康时不再重复调用 `install()`；账户/API MutationObserver 只对菜单相关 mutation 排队扫描。新增回归覆盖 100 次无关 DOM 变更不触发全菜单扫描，同时新个人资料菜单仍正确注入。
-- 0.2.0 已将账户/API 菜单注入目标收紧为同一容器内同时具有原生“设置”和“退出登录”的个人资料菜单，避免顶部“编辑”菜单中的“设置”被误判并注入两个自定义选项。
-- 0.2.0 已修复读取模型后表单清空、原生模型列表缺失，以及 `prewarmThreadStart` 绕过 `sendRequest` 导致 routeId 仍配对 `openai` 的问题；自动化检查、release 构建及用户实机对话均已通过。
-- 0.2.0 已将账户与 API 注入 UI 调整为 Codex 原生化风格：菜单图标为 16px，弹窗使用灰阶分组面板、行分隔线、30px 紧凑按钮与蓝色强调；实机检查账户弹窗 680px 宽、12px 圆角，4 个账户无换行或溢出。
-- 0.2.0 已修复 Windows 强停旧 Codex 后 9229 留下失效监听端点、导致以后所有启动都无 CDP/无注入的问题；正常启动在 stop/lock/config 后实际绑定探测 9229，被占用时改用动态本机端口，并让 launch、watchdog 和退出监测使用同一端口。
-- 0.2.0 已区分登录自启与显式点击：`--login-startup` 持锁静默等待，不启动 Codex；检测到用户从官方入口打开 Codex 后释放等待锁并进入普通接管生命周期。无参数双击仍立即重启 Codex。
-- 0.2.0 已统一将账户切换 helper、重启 launcher、Codex 与安装位置查询 PowerShell 作为无窗口后台子进程启动，避免切换后重新解析 Store 安装路径时闪现命令行窗口。
-- 0.2.0 已修复 WSL mirrored networking/FSE 将动态范围内的固定 broker 端口 57321 标记为不可绑定、导致登录接管在 `broker` 阶段以 `WSAEACCES 10013` 退出的问题；broker 改用动态范围外的首选端口 43121，任何绑定失败都直接持有系统分配的备用 listener，并用实际端口更新配置。
-- 0.2.0 已为账户列表增加非当前账户删除；Rust 层拒绝删除当前实时账户。列表底部同时提供 `auth.json` 导入和网页登录，后者用 pending action 保存当前账户、移走实时凭据、重启到原生登录页并自动捕获新账户。
-- 2026-08-14 已清理状态库中 142 条明确的临时记录（子代理、CLI/exec/未知来源及一条已确认的翻译校对侧会话），活动目录由 377 条降至 307 条；当时曾为回滚创建任务级副本，但误放在 `%LOCALAPPDATA%\codex-plus\backups\thread-cleanup-20260814-195125`，该副本现已清理，今后此类回滚副本必须使用 `%LOCALAPPDATA%\Temp\.agents\<任务名>\`。正常用户任务未按项目目录批量删除。
-- 路由脚本在当前 CLI 使用 `thread/list.modelProviders=[]`，并保留 `sourceKinds`、`archived` 等范围参数；旧版本使用 null 的假设已被 2026-10-29 原生验证推翻。
-- Codex `26.803.10989.0` 不支持已有任务跨 provider 原地切换；v16 候选改为发送前明确询问，确认后以目标 model/provider 执行 `thread/fork`，验证新任务 provider，再把本条消息发送到继承完整历史的分支并自动导航。取消或验证失败时不发送且原任务不变。2026-08-14 审阅当前 `26.810.4967.0` app.asar 后，已移除普通 fork fallback 错误使用的 `excludeTurns: true`；自动化与隔离构建通过，尚未实机验收。
-
-- 文件部署已清理构建/脚本临时产物；ROG 的旧常驻 launcher 仍映射 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-upgrade-20261001\running-previous-codex-plus.exe`，Windows 拒绝删除该映像。保留至进程自然退出后清理，不为此停止 launcher。以前的 `.codex-plus/release-backups/20261001-package-identity` 属于上一轮恢复资料，本次未动。
+- 0.3.14 发布后各端需显式启动新版 codex-plus；从旧版升级时运行中的 Codex 会在重启后读到新的 broker 令牌。待自然观察：日志不再出现 `injection.models.pending` 误翻转与成串 `injection.target.waiting`。
+- 0.3.13 实机验收待用户显式启动新版：登录额度耗尽时选择有额度的外接 API 或订阅池模型，发送一条真实消息，切回官方模型确认限制恢复。
+- 订阅 API 勾选框显示修复、普通 PDF/LaTeX 预览、未登录页按钮的目视验收仍待用户在新版界面确认。
+- 待决策：原生网关缺少“停用/还原 `openai_base_url`”入口（launcher 不运行时其他官方客户端不可用）。
+- ROG 旧常驻 launcher 映像 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-upgrade-20261001\running-previous-codex-plus.exe` 待进程自然退出后清理；OMEN 有 13 个既有未提交文件，同步源码前须先处理。
 
 # Build / Run / Test
 
 - 订阅路由真实验收：`node scripts/verify-account-pool.mjs --binary=target/account-pool-build/debug/codex-plus --auth-dir=.codex-plus/accounts --model=<可用模型> --proxy=<HTTP代理> --app-server=<官方codex可执行文件>`；脚本只运行隔离 broker/app-server，临时凭据在 finally 清理，切勿改成生产 CODEX_HOME。无重启候选构建显式使用 `--target-dir target/account-pool-build`，签名也明确该候选路径，不调用替换正式入口的 release 脚本。
+
+- 隔离 broker：debug 构建的 `codex-plus --broker-only [--test-config]`（必须设置隔离的 `CODEX_PLUS_STATE_DIR` 与 `CODEX_HOME`）在 stdout 打印 `{"brokerPort","brokerToken"}`；`verify-native-auto-review.mjs` / `verify-native-pool-compaction.mjs` 需通过环境变量 `CODEX_PLUS_BROKER_TOKEN` 传入该令牌。
+- 修改 `assets/` 页面脚本时，测试须先 `eval` `assets/core.js`；CDP 注入顺序为 bridge → core → 其余脚本。
 
 - PDF 预览修改额外执行 `node --test tests/pdf-preview.test.mjs`，并按 `docs/design/pdf-preview-cmaps.md` 用官方应用自己的 PDF.js 做实际渲染验证；TeX 编译成功不能替代预览验收。
 ```powershell

@@ -176,7 +176,7 @@ impl BridgeService {
     }
 
     async fn api_catalog(&self) -> anyhow::Result<Value> {
-        Ok(json!({"status":"ok", "models":self.apis.catalog()?}))
+        Ok(json!({"status":"ok", "models":self.apis.catalog_checked()?}))
     }
 }
 

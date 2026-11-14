@@ -4,7 +4,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const TOKEN = "codex-plus-desktop-loopback";
+// Helpers started before endpoint version 2 accept only this fixed marker.
+const LEGACY_TOKEN = "codex-plus-desktop-loopback";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDir, "..", "..");
 const stateDir = process.env.CODEX_PLUS_STATE_DIR
@@ -150,7 +151,7 @@ async function main() {
     response = await fetch(`http://127.0.0.1:${port}/v1/desktop`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${TOKEN}`,
+        authorization: `Bearer ${typeof endpoint.token === "string" && endpoint.token ? endpoint.token : LEGACY_TOKEN}`,
         "content-type": "application/json",
       },
       body: JSON.stringify(request),

@@ -285,7 +285,7 @@ async fn auto_review_uses_the_enabled_pool_from_both_broker_endpoints() {
     for endpoint in ["/subscription/v1/responses", "/v1/responses"] {
         let response = client
             .post(format!("http://127.0.0.1:{}{endpoint}", broker.port()))
-            .bearer_auth(crate::config::BROKER_TOKEN)
+            .bearer_auth(broker.token())
             .json(&body)
             .send()
             .await
@@ -741,7 +741,7 @@ async fn rejects_legacy_compact_and_exposes_native_pool_catalog_through_broker()
     let url = format!("http://127.0.0.1:{}/v1/models", broker.port());
     let response = reqwest::Client::new()
         .get(url)
-        .bearer_auth(crate::config::BROKER_TOKEN)
+        .bearer_auth(broker.token())
         .send()
         .await
         .unwrap();
@@ -771,7 +771,7 @@ async fn previous_model_compaction_is_routed_only_on_the_subscription_endpoint()
     ]});
     let compact = client
         .post(format!("{base}/subscription/v1/responses"))
-        .bearer_auth(crate::config::BROKER_TOKEN)
+        .bearer_auth(broker.token())
         .json(&body)
         .send()
         .await
@@ -792,7 +792,7 @@ async fn previous_model_compaction_is_routed_only_on_the_subscription_endpoint()
     ] {
         let r = client
             .post(format!("{base}{endpoint}"))
-            .bearer_auth(crate::config::BROKER_TOKEN)
+            .bearer_auth(broker.token())
             .json(&json!({"model":model,"stream":true,"input":body["input"]}))
             .send()
             .await
@@ -804,7 +804,7 @@ async fn previous_model_compaction_is_routed_only_on_the_subscription_endpoint()
     f.config.save(&f.router.paths).unwrap();
     let r = client
         .post(format!("{base}/subscription/v1/responses"))
-        .bearer_auth(crate::config::BROKER_TOKEN)
+        .bearer_auth(broker.token())
         .json(&body)
         .send()
         .await

@@ -1,6 +1,7 @@
 (() => {
   "use strict";
-  const VERSION = 1;
+  const core = window.__codexPlusCore;
+  const VERSION = 2;
   if (window.__codexPlusQuotaRouting?.version === VERSION) return;
 
   const patches = [];
@@ -13,8 +14,7 @@
   let installed = false;
 
   function diagnostic(event, detail = {}) {
-    diagnostics.push({ event, ...detail });
-    if (diagnostics.length > 30) diagnostics.shift();
+    core.pushDiagnostic(diagnostics, 30, event, detail);
   }
 
   function managed(model) {

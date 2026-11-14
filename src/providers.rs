@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
 
 use anyhow::{Context as _, bail};
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue};
@@ -7,7 +6,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::accounts::{AccountPaths, atomic_write};
+use crate::accounts::AccountPaths;
+
+/// Every model route codex-plus owns, API or subscription, starts with this.
+pub const ROUTE_PREFIX: &str = "cp-";
+
+pub fn is_managed_route(model: &str) -> bool {
+    model.starts_with(ROUTE_PREFIX)
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -143,19 +149,13 @@ pub struct CatalogModel {
 
 impl ProviderStore {
     pub fn load(paths: &AccountPaths) -> anyhow::Result<Self> {
-        match fs::read(paths.providers_path()) {
-            Ok(bytes) => serde_json::from_slice(&bytes).context("providers.json 无效"),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self {
-                version: 1,
-                providers: Vec::new(),
-            }),
-            Err(error) => Err(error).context("无法读取 providers.json"),
-        }
+        let mut store: Self = crate::store::load(&paths.providers_path(), " providers.json ")?;
+        store.version = store.version.max(1);
+        Ok(store)
     }
 
     pub fn save(&self, paths: &AccountPaths) -> anyhow::Result<()> {
-        let bytes = serde_json::to_vec_pretty(self).context("无法序列化 API 配置")?;
-        atomic_write(&paths.providers_path(), &bytes).map_err(anyhow::Error::from)
+        crate::store::save(&paths.providers_path(), self)
     }
 
     pub fn summaries(&self) -> Vec<ProviderSummary> {
@@ -307,19 +307,21 @@ pub async fn discover_models(
         bail!("API Key 不能为空");
     }
     let auth = HeaderValue::from_str(&format!("Bearer {api_key}")).context("API Key 无效")?;
-    let response = reqwest::Client::builder()
-        .user_agent("codex-plus/0.2")
-        .build()?
+    let response = crate::net::external_client()?
         .get(models_url(&base_url))
         .header(AUTHORIZATION, auth)
         .header(ACCEPT, "application/json")
+        .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
-        .context("无法连接模型接口")?;
+        .context("无法连接模型接口，或 20 秒内没有响应")?;
     if !response.status().is_success() {
         bail!("模型接口返回 HTTP {}", response.status().as_u16());
     }
-    let body: Value = response.json().await.context("模型接口返回的不是 JSON")?;
+    let body: Value = response
+        .json()
+        .await
+        .context("模型接口返回的不是 JSON，或读取超时")?;
     let items = body
         .get("data")
         .and_then(Value::as_array)
@@ -464,7 +466,7 @@ fn models_url(base_url: &str) -> String {
 
 fn stable_route_id(provider_id: &str, model_id: &str) -> String {
     let digest = Sha256::digest(format!("{provider_id}\0{model_id}").as_bytes());
-    format!("cp-{}", hex_lower(&digest[..12]))
+    format!("{ROUTE_PREFIX}{}", hex_lower(&digest[..12]))
 }
 
 fn new_provider_id() -> String {

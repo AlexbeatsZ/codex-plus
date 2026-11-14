@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Json, State};
-use axum::http::{HeaderMap, HeaderValue, Response, StatusCode, header};
+use axum::http::{HeaderMap, Response, StatusCode};
 use axum::routing::{get, post};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -19,7 +19,6 @@ use crate::accounts::AccountPaths;
 use crate::runtime::background_command;
 
 pub const PREFERRED_DESKTOP_PORT: u16 = 43122;
-pub const DESKTOP_TOKEN: &str = "codex-plus-desktop-loopback";
 #[cfg(windows)]
 const WINDOWS_SCRIPT: &str = include_str!("../desktop/windows.ps1");
 #[cfg(target_os = "macos")]
@@ -32,6 +31,7 @@ mod codex_task;
 #[derive(Clone)]
 struct DesktopState {
     state_dir: Arc<PathBuf>,
+    token: Arc<str>,
 }
 
 pub struct DesktopHandle {
@@ -69,7 +69,11 @@ async fn start_on_port(paths: &AccountPaths, preferred_port: u16) -> anyhow::Res
         Ok(listener) => (listener, None),
         Err(preferred_error) => {
             if existing_helper_healthy(preferred_port).await {
-                write_endpoint(paths, preferred_port, true)?;
+                // The running helper's token lives in its endpoint file; keep
+                // that file when it already names this port.
+                if endpoint_port(paths) != Some(preferred_port) {
+                    write_endpoint(paths, preferred_port, None, true)?;
+                }
                 return Ok(DesktopHandle {
                     port: preferred_port,
                     preferred_bind_error: Some(preferred_error.to_string()),
@@ -86,14 +90,19 @@ async fn start_on_port(paths: &AccountPaths, preferred_port: u16) -> anyhow::Res
         }
     };
     let port = listener.local_addr()?.port();
-    write_endpoint(paths, port, false)?;
+    // Input injection and screenshots are guarded by a per-helper secret that
+    // only the current user can read from the 0600 endpoint file.
+    let token = format!("cpd{}", uuid::Uuid::new_v4().simple());
+    write_endpoint(paths, port, Some(&token), false)?;
 
     let state = DesktopState {
         state_dir: Arc::new(paths.state_dir.clone()),
+        token: token.as_str().into(),
     };
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/desktop", post(desktop_request))
+        .layer(axum::middleware::from_fn(crate::http::loopback_host_only))
         .with_state(state);
     let task = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -108,19 +117,33 @@ async fn start_on_port(paths: &AccountPaths, preferred_port: u16) -> anyhow::Res
     })
 }
 
-fn write_endpoint(paths: &AccountPaths, port: u16, reused: bool) -> anyhow::Result<()> {
-    fs::create_dir_all(&paths.state_dir)?;
-    let endpoint = json!({
-        "version": 1,
+fn endpoint_path(paths: &AccountPaths) -> PathBuf {
+    paths.state_dir.join("desktop-endpoint.json")
+}
+
+fn endpoint_port(paths: &AccountPaths) -> Option<u16> {
+    let endpoint: Value = serde_json::from_slice(&fs::read(endpoint_path(paths)).ok()?).ok()?;
+    endpoint["port"]
+        .as_u64()
+        .and_then(|port| u16::try_from(port).ok())
+}
+
+fn write_endpoint(
+    paths: &AccountPaths,
+    port: u16,
+    token: Option<&str>,
+    reused: bool,
+) -> anyhow::Result<()> {
+    let mut endpoint = json!({
+        "version": 2,
         "port": port,
         "publisherPid": std::process::id(),
         "reused": reused,
     });
-    fs::write(
-        paths.state_dir.join("desktop-endpoint.json"),
-        serde_json::to_vec_pretty(&endpoint)?,
-    )?;
-    Ok(())
+    if let Some(token) = token {
+        endpoint["token"] = json!(token);
+    }
+    crate::store::save(&endpoint_path(paths), &endpoint)
 }
 
 async fn existing_helper_healthy(port: u16) -> bool {
@@ -147,7 +170,7 @@ async fn desktop_request(
     headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> Response<Body> {
-    if !authorized(&headers) {
+    if !crate::http::bearer_matches(&headers, &state.token) {
         return error_response(StatusCode::UNAUTHORIZED, "desktop authorization failed");
     }
     let state_dir = (*state.state_dir).clone();
@@ -199,7 +222,7 @@ fn execute_request(mut request: Value, state_dir: &Path) -> anyhow::Result<Value
         let platform = capture_screenshot(&request, &output_path)?;
         let (width, height) = png_dimensions(&output_path)?;
         let workspace_path = output_path
-            .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .strip_prefix(crate::layout::repository_root())
             .ok()
             .map(|path| path.to_string_lossy().replace('\\', "/"));
         return Ok(json!({
@@ -376,22 +399,8 @@ fn run_script(
     })
 }
 
-fn authorized(headers: &HeaderMap) -> bool {
-    let expected = format!("Bearer {DESKTOP_TOKEN}");
-    headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        == Some(expected.as_str())
-}
-
 fn json_response(status: StatusCode, value: Value) -> Response<Body> {
-    let mut response = Response::new(Body::from(value.to_string()));
-    *response.status_mut() = status;
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json; charset=utf-8"),
-    );
-    response
+    crate::http::json(status, &value)
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response<Body> {
@@ -404,6 +413,7 @@ fn error_response(status: StatusCode, message: &str) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header;
     use std::net::TcpListener as StdTcpListener;
     use tempfile::TempDir;
 
@@ -432,6 +442,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(endpoint["port"], preferred_port);
+        let token = endpoint["token"].as_str().unwrap().to_string();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("http://127.0.0.1:{preferred_port}/v1/desktop");
+        let unauthorized = client
+            .post(&url)
+            .bearer_auth("codex-plus-desktop-loopback")
+            .json(&json!({"operation": "noop"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let rebound = client
+            .post(&url)
+            .header(header::HOST, "attacker.example")
+            .bearer_auth(&token)
+            .json(&json!({"operation": "noop"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rebound.status(), StatusCode::FORBIDDEN);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(paths.state_dir.join("desktop-endpoint.json"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "endpoint token must be private");
+        }
         handle._task.unwrap().abort();
     }
 
