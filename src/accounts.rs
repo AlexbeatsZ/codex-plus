@@ -16,32 +16,17 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const MAX_AUTH_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const REFRESH_URL: &str = "https://auth.openai.com/oauth/token";
 const DEFAULT_USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
-const PROJECT_STATE_DIR: &str = ".codex-plus";
-
 fn discover_project_state_dir() -> anyhow::Result<PathBuf> {
     if let Some(explicit) =
         std::env::var_os("CODEX_PLUS_STATE_DIR").filter(|value| !value.is_empty())
     {
         return Ok(PathBuf::from(explicit));
     }
-
-    if let Ok(executable) = std::env::current_exe() {
-        for ancestor in executable.ancestors() {
-            if ancestor.file_name().is_some_and(|name| name == "target")
-                && let Some(repository_root) = ancestor.parent()
-            {
-                return Ok(repository_root.join(PROJECT_STATE_DIR));
-            }
-        }
-    }
-
-    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if repository_root.is_dir() {
-        return Ok(repository_root.join(PROJECT_STATE_DIR));
-    }
-
-    anyhow::bail!("无法定位 codex-plus 项目目录")
+    let root = crate::layout::repository_root();
+    anyhow::ensure!(root.is_dir(), "无法定位 codex-plus 项目目录");
+    Ok(root.join(crate::layout::STATE_DIR))
 }
 
 #[derive(Debug, Error)]
@@ -314,7 +299,22 @@ impl AccountVault {
                 continue;
             }
             let raw = fs::read(entry.path())?;
-            let auth = parse_auth(&raw)?;
+            // One damaged or hand-edited snapshot must not hide every other
+            // account (and with them the pool, quotas and switching).
+            let auth = match parse_auth(&raw) {
+                Ok(auth) => auth,
+                Err(error) => {
+                    crate::runtime::append_log(
+                        &self.paths,
+                        "accounts.snapshot.unreadable",
+                        serde_json::json!({
+                            "file": entry.file_name().to_string_lossy(),
+                            "message": error.to_string(),
+                        }),
+                    );
+                    continue;
+                }
+            };
             let filename = entry.file_name().to_string_lossy().to_string();
             let expected_filename = account_filename(&auth.record_id);
             if filename != expected_filename {

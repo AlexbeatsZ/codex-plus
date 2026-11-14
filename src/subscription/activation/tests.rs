@@ -253,7 +253,7 @@ async fn used_exhausted_unknown_reserved_and_cooled_accounts_are_skipped() {
     fixture.api.cool(
         &fixture.ids[1],
         "gpt-test",
-        "请求频率限制",
+        CoolReason::RateLimit,
         unix_now() + 300,
     );
     fixture.api.activate_idle_accounts().await.unwrap();

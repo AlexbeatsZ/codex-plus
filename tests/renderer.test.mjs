@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 
+const coreScript = await readFile(new URL("../assets/core.js", import.meta.url), "utf8");
 const script = await readFile(new URL("../assets/renderer.js", import.meta.url), "utf8");
 const apiScript = await readFile(new URL("../assets/api-providers.js", import.meta.url), "utf8");
 const routingScript = await readFile(new URL("../assets/model-routing.js", import.meta.url), "utf8");
@@ -28,8 +29,11 @@ function setup(invoke) {
   dom.window.Response = class { async json() { return {}; } };
   dom.window.codexPlusInvoke = invoke;
   dom.window.electronBridge = { sendMessageFromView: (message) => message };
+  dom.window.eval(coreScript);
   dom.window.eval(script);
+  dom.window.eval(coreScript);
   dom.window.eval(apiScript);
+  dom.window.eval(coreScript);
   dom.window.eval(routingScript);
   return dom;
 }
@@ -130,6 +134,7 @@ function setupSignedOut(invoke, body) {
     url: "app://-/index.html",
   });
   dom.window.codexPlusInvoke = invoke;
+  dom.window.eval(coreScript);
   dom.window.eval(script);
   return dom;
 }
@@ -193,7 +198,10 @@ test("reinjecting model routing does not add document click listeners", async ()
     return original(type, ...args);
   };
 
+  dom.window.eval(coreScript);
+
   dom.window.eval(routingScript);
+  dom.window.eval(coreScript);
   dom.window.eval(routingScript);
   await flush();
   assert.equal(added, 0);
@@ -298,12 +306,12 @@ test("installs with a non-extensible Electron bridge and keeps API bridge usable
   dom.window.Response = class { async json() { return {}; } };
   dom.window.codexPlusInvoke = async (path) => { calls.push(path); return path === "/api-providers/catalog" ? { status: "ok", models: [] } : { status: "ok", providers: [] }; };
   dom.window.electronBridge = Object.freeze({ sendMessageFromView: (message) => message });
-  assert.doesNotThrow(() => { dom.window.eval(script); dom.window.eval(apiScript); dom.window.eval(routingScript); });
+  assert.doesNotThrow(() => { dom.window.eval(coreScript); dom.window.eval(script); dom.window.eval(apiScript); dom.window.eval(routingScript); });
   await flush();
   dom.window.document.querySelector("[data-codex-plus-api-item]").click();
   await flush();
   assert.ok(calls.includes("/api-providers/list"));
-  assert.equal(dom.window.__codexPlusModelRouting.version, 24);
+  assert.equal(dom.window.__codexPlusModelRouting.version, 25);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /color-scheme:dark/);
   assert.match(dom.window.document.getElementById("codex-plus-api-style").textContent, /\.cp-api-select option \{ color:var\(--cp-text\); background:var\(--cp-bg\); \}/);
 });
@@ -799,6 +807,7 @@ test("bridge fails the promise when the launcher never answers", async () => {
   const dom = bridgeDom();
   const seen = [];
   dom.window.codexPlusAccountsBridgeV1 = (raw) => seen.push(JSON.parse(raw));
+  dom.window.eval(coreScript);
   dom.window.eval(bridgeScript);
 
   await assert.rejects(
@@ -814,6 +823,7 @@ test("bridge resolves a request when the launcher answers", async () => {
   const dom = bridgeDom();
   let payload = null;
   dom.window.codexPlusAccountsBridgeV1 = (raw) => { payload = JSON.parse(raw); };
+  dom.window.eval(coreScript);
   dom.window.eval(bridgeScript);
 
   const pending = dom.window.codexPlusInvoke("/accounts/list", {});
@@ -828,11 +838,14 @@ test("bridge resolves a request when the launcher answers", async () => {
 test("re-injecting the bridge fails requests left over from the dead connection", async () => {
   const dom = bridgeDom();
   dom.window.codexPlusAccountsBridgeV1 = () => {};
+  dom.window.eval(coreScript);
   dom.window.eval(bridgeScript);
 
   const stranded = dom.window.codexPlusInvoke("/accounts/list", {});
   await flush();
   assert.equal(dom.window.__codexPlusPending.size, 1);
+
+  dom.window.eval(coreScript);
 
   dom.window.eval(bridgeScript);
   await assert.rejects(stranded, /重新连接/);

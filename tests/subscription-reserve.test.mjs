@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 
+const coreScript = await readFile(new URL("../assets/core.js", import.meta.url), "utf8");
 const script = await readFile(new URL("../assets/api-providers.js", import.meta.url), "utf8");
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
 
@@ -18,6 +19,7 @@ async function setup(config = {}, quotaStates = []) {
     if (path === "/api-providers/subscription/save") { saves.push(structuredClone(payload)); return { status: "ok", config: payload }; }
     return { status: "ok", models: [] };
   };
+  dom.window.eval(coreScript);
   dom.window.eval(script);
   dom.window.__codexPlusApi.open(); await flush();
   dom.window.document.querySelector('[data-api-edit="chatgpt-subscription"]').click(); await flush();

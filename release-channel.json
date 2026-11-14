@@ -1,8 +1,8 @@
 {
-    "channel":  "omen",
-    "branch":  "codex/omen",
-    "version":  "0.3.13-omen",
-    "components":  [
-                       "local-tools"
-                   ]
+    "channel": "omen",
+    "branch": "codex/omen",
+    "version": "0.3.14-omen",
+    "components": [
+        "local-tools"
+    ]
 }

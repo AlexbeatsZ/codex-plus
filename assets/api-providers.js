@@ -1,12 +1,14 @@
 (() => {
   "use strict";
   const String = window.String;
-  const VERSION = 14;
+  const core = window.__codexPlusCore;
+  const VERSION = 15;
+  const OBSERVER_KEY = "api";
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
   const ROOT_ID = "codex-plus-api-modal";
   const STYLE_ID = "codex-plus-api-style";
-  const state = { observer: null, scanQueued: false, providers: [], editing: null, models: [], loading: false, message: "", error: false, subscription: null, subscriptionAccounts: [], subscriptionStates: [], subscriptionBusy: false };
+  const state = { unsubscribe: null, scanQueued: false, providers: [], editing: null, models: [], loading: false, message: "", error: false, subscription: null, subscriptionAccounts: [], subscriptionStates: [], subscriptionBusy: false };
 
   if (window.__codexPlusApi?.version === VERSION) { window.__codexPlusApi.install(); return; }
   window.__codexPlusApi?.destroy?.();
@@ -82,11 +84,10 @@
     document.head.appendChild(style);
   }
 
-  function text(node) { return String(node?.textContent || "").replace(/\s+/g, " ").trim(); }
-  function settings(node) { return /^(设置|Settings(?:\s|$))/i.test(text(node)); }
-  function logout(node) { return /^(退出登录|登出|Sign out(?:\s|$)|Log out(?:\s|$))/i.test(text(node)); }
-  function esc(value) { return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
-  async function invoke(path, payload = {}) { const result = await window.codexPlusInvoke(path, payload); if (["failed","error"].includes(String(result?.status || "").toLowerCase())) throw new Error(result?.message || "操作失败"); return result; }
+  const text = core.text;
+  const esc = core.escapeHtml;
+  const invoke = core.invoke;
+  const mutationMayContainMenu = core.mutationMayContainMenu;
 
   function createItem(template) {
     const item = template.cloneNode(false); item.removeAttribute("id"); item.removeAttribute("aria-haspopup"); item.removeAttribute("data-state");
@@ -97,24 +98,11 @@
   }
 
   function scan() {
-    for (const item of [...document.querySelectorAll('[role="menuitem"]')].filter(settings)) {
-      const parent = item.parentElement;
-      if (!parent || ![...parent.children].some(logout) || parent.querySelector(`:scope > [${ITEM_ATTR}]`)) continue;
+    for (const { parent, settings: item } of core.profileMenus()) {
+      if (parent.querySelector(`:scope > [${ITEM_ATTR}]`)) continue;
       const api = createItem(item); const account = parent.querySelector(`:scope > [${ACCOUNT_ATTR}]`);
       if (account) parent.insertBefore(api, account); else item.insertAdjacentElement("afterend", api);
     }
-  }
-
-  function mutationMayContainMenu(records) {
-    if (!records) return true;
-    return records.some((record) => {
-      const target = record.target;
-      if (target?.nodeType === 1 && (target.matches?.('[role="menuitem"]') || target.closest?.('[role="menuitem"]'))) return true;
-      return Array.from(record.addedNodes || []).some((node) =>
-        (node.nodeType === 1 || node.nodeType === 11)
-        && (node.matches?.('[role="menuitem"]') || node.querySelector?.('[role="menuitem"]'))
-      );
-    });
   }
 
   function queueScan(records) {
@@ -285,8 +273,8 @@
     const overlay = document.createElement("div"); overlay.id = ROOT_ID; overlay.className = "cp-api-overlay"; overlay.innerHTML = `<section class="cp-api-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-api-title"><header class="cp-api-header"><div><h2 class="cp-api-title" id="cp-api-title">API 接入</h2><p class="cp-api-subtitle">多个 OpenAI 兼容 API 可同时使用；密钥不会回显。</p></div><button class="cp-api-close" aria-label="关闭">${closeIcon()}</button></header><div class="cp-api-body" data-api-body></div></section>`;
     overlay.addEventListener("click", (event) => { if (event.target === overlay || event.target.closest(".cp-api-close")) close(); }); document.body.appendChild(overlay); void load();
   }
-  function install() { installStyle(); queueScan(); if (!state.observer) { state.observer = new MutationObserver(queueScan); state.observer.observe(document.documentElement, { childList: true, subtree: true }); } }
-  function destroy() { state.observer?.disconnect(); state.observer = null; state.scanQueued = false; document.querySelectorAll(`[${ITEM_ATTR}]`).forEach((node) => node.remove()); close(); document.getElementById(STYLE_ID)?.remove(); }
+  function install() { installStyle(); queueScan(); if (!core.observing(OBSERVER_KEY)) state.unsubscribe = core.subscribe(OBSERVER_KEY, queueScan); }
+  function destroy() { state.unsubscribe?.(); state.unsubscribe = null; state.scanQueued = false; document.querySelectorAll(`[${ITEM_ATTR}]`).forEach((node) => node.remove()); close(); document.getElementById(STYLE_ID)?.remove(); }
   window.__codexPlusApi = { version: VERSION, install, destroy, open: openModal, state };
   install();
 })();

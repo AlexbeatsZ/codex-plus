@@ -7,9 +7,9 @@
 ## 登录自启
 
 - Windows 当前用户登录启动项使用 `codex-plus.exe --login-startup`，不能使用无参数入口。
-- 进入 launcher 等待循环前先幂等确保 `local-tools` managed runtime 可用；该 sidecar 启动不应打开 Codex 窗口，失败只记录日志且不阻断后续账户/注入生命周期。
-- 登录模式先获取 launcher 锁并静默等待，不启动 broker、不修改配置，也不主动打开 Codex；若已有 launcher 持锁则直接退出。
-- 用户之后从官方入口打开 Codex 时，登录模式检测到受支持的 OpenAI 进程，释放等待锁，再进入与普通启动相同的 `stop → lock → broker → config → launch → inject` 生命周期。
+- 每个入口（账户 helper 除外）都在后台幂等确保 `local-tools` managed runtime 可用，不等待其完成；该 sidecar 启动不应打开 Codex 窗口，失败或卡住只记录日志且不阻断、不延迟后续账户/注入生命周期。进程退出前 tokio 会等待该任务结束，因此提前退出的入口也会完成启动。
+- 登录模式先获取 launcher 锁并静默等待，不启动 broker、不修改配置，也不主动打开 Codex；若已有 launcher 持锁则直接退出。desktop helper 在取得锁之后启动。
+- 用户之后从官方入口打开 Codex 时，登录模式**继续持有同一把锁**（0.3.14 起不再释放后重拿，避免期间被其他 launcher 抢占），启动 broker、核对配置，然后与常驻重新接管共用同一个 `take_over`：新进程已有 CDP 端口则直接附加，否则只停止并带 CDP 参数重启官方 Codex。它不会再调用会结束其他 codex-plus 进程的完整停止流程，因此不会误杀正在执行的账户切换 helper。
 - 接管的 Codex 会以 Windows `BelowNormal` priority class 启动，避免官方 Electron 主进程出现持续 CPU 忙循环时以普通或更高线程优先级阻塞桌面输入；该设置仅作用于本次 Codex 进程树，不修改系统全局调度配置。
 - 首次接管后，登录模式与普通启动共用常驻监测循环；Codex 关闭时保留同一 launcher 锁和 broker，静默等待用户再次打开，不主动弹窗。根进程发现必须排除带 `--type=` 的 Electron 子进程和 `codex app-server`，避免残留 crashpad/renderer 触发无意义重启。
 - 用户直接双击无参数 EXE 时，仍立即执行普通启动；它会停止等待中的登录实例，因此不会被后台 monitor 阻塞。
@@ -29,6 +29,8 @@
 
 - 旧实现仅登录自启模式有外层循环，普通启动和网页登录随第一轮 Codex 退出而结束；仅附加模式则永远轮询旧端口。三者现统一进入常驻 supervisor。
 - Codex 退出后保留同一个 launcher、desktop helper、API broker、provider 配置和独占锁；broker 端口不会因界面重启而变化，也不重复启动 Tunnel。CDP 没有主页面或仅有无关 HTTP 响应不算实例存活；连续五次缺失后进入 `launcher.codex.rearmed`，不重新打开已关闭的 Codex。
+- 根进程仍存活但 CDP 主页面连续 120 秒不可达时（每 10 秒探测一次），本轮监测以 `launcher.codex.cdp_lost` 结束；重新接管发现同一进程后安静等待（`launcher.codex.cdp_waiting` 只记一次），直到 CDP 恢复或进程退出，**不会为此重启用户的 Codex**。这取代了旧版“进程活着就永远只查进程”的行为。
+- CDP target 发现失败时，前 30 次每秒重试，之后每 5 秒；`injection.target.waiting` 只在消息变化或每约 120 次尝试记录一次（10-12 至 10-15 曾在旧版连续写入 19 万条）。
 - 用户重新打开或官方自重启后，读取新根进程真实的 `--remote-debugging-port`（支持等号及独立参数、动态端口）。已有端口直接重新注入，不终止新进程；同端口重启由原 watchdog 直接重连。
 - 新进程没有 CDP 参数时无法直接注入，须按既定启动方式仅受控重启官方 Codex，重新解析安装位置并补齐 CDP 参数；不能调用会同时结束其他 launcher 的完整停止流程，也不能销毁当前 broker。失败写 `launcher.codex.recovery_failed` 后继续等待，不把暂时接管失败变成常驻进程退出。
 - `--attach-existing` 同样持有 launcher 独占锁，避免两个注入 owner 和两个 broker 同时存在；它仅用于没有其他 launcher 持锁的现有 CDP 实例。账户切换 helper 仍按原设计停止整个旧 launcher，不能被常驻等待逻辑拦截。
@@ -38,8 +40,8 @@
 
 macOS 睡眠唤醒后，launcher 已建立的 CDP WebSocket 会长期保持 `ESTABLISHED`，但渲染器不再处理其中的消息：launcher 侧发送队列持续增长，ChatGPT 侧接收队列堆积（现场实测约 583 KB）。如果心跳只是 `Runtime.evaluate` 单向写入，watchdog 永远收不到断开事件，旧 socket 会一直存在，账户弹窗就会永久停在“正在读取本地账户…”，只能靠重启应用恢复。因此：
 
-- 心跳必须是可确认的命令，发送时记录命令 id，收到同 id 的回包才算本轮健康。
-- 45 秒内没有回包即判定连接假存活，结束本次会话；由 watchdog 丢弃旧 socket、重新发现 target 并重新注入脚本。重新注入是幂等的：`bridge.js`、`renderer.js`、`api-providers.js`、`model-routing.js` 都有版本守卫，不会重建已挂载的 UI。
+- 心跳必须是可确认的命令，发送时记录命令 id，收到同 id 的回包才算本轮健康。比较时必须先确认有心跳在途：CDP 事件没有 id，`None == None` 会把任意事件当成回包（0.3.13 及以前因此把就绪状态误记为 `injection.models.pending` 614 次）。
+- 45 秒内没有回包即判定连接假存活，结束本次会话；由 watchdog 丢弃旧 socket、重新发现 target 并重新注入脚本。重新注入是幂等的：`bridge.js`、`core.js`、`renderer.js`、`api-providers.js`、`model-routing.js` 都有版本守卫（`core.js` 提供共享 observer，账户与 API 菜单脚本以固定 key 订阅，重复注入只替换回调），不会重建已挂载的 UI。
 - 心跳间隔仍为 15 秒，只做极轻量 evaluate，不引入固定频率的 DOM 扫描。
 - socket 写入也要有 10 秒上限：对端完全停止读取时写缓冲会写满，`send` 会永久等待，届时连失活检测都不再运行。
 

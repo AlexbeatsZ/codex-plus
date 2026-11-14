@@ -1,6 +1,9 @@
 //! Native OpenAI identity with explicit broker-owned model routes. The URL
 //! capability authenticates local clients without replacing their ChatGPT auth.
-use std::{collections::HashMap, fs, io::Read, path::PathBuf, time::Duration};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
+use std::{fs, io::Read, path::PathBuf};
 
 use anyhow::{Context as _, bail};
 use axum::body::{Body, Bytes};
@@ -11,17 +14,21 @@ use sha2::{Digest, Sha256};
 use toml_edit::{DocumentMut, value};
 
 use crate::accounts::{AccountPaths, AccountVault, atomic_write};
+use crate::http::BODY_LIMIT as LIMIT;
 use crate::integrations::ApiIntegrations;
-use crate::providers::{ProviderProtocol, ToolMode};
+use crate::providers::{ProviderProtocol, ToolMode, is_managed_route};
 
 const SETTINGS: &str = "native-gateway.json";
-const LIMIT: usize = 32 * 1024 * 1024;
 const TEMPLATE_ARCHIVE: &str = "native-model-templates.json";
+const THREAD_ROUTES: &str = "native-thread-routes.json";
+/// Thread routes only matter while a task can still compact or be reviewed.
+const THREAD_ROUTE_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+const THREAD_ROUTE_LIMIT: usize = 5000;
 
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     pub capability: String,
     pub original_base: Option<String>,
@@ -139,17 +146,50 @@ fn official_entries(doc: &Value) -> Vec<Value> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|m| m["slug"].as_str().is_some_and(|id| !id.starts_with("cp-")))
+        .filter(|m| m["slug"].as_str().is_some_and(|id| !is_managed_route(id)))
         .cloned()
         .collect()
 }
 
-fn read_entries(path: &std::path::Path) -> Vec<Value> {
-    fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .map(|doc| official_entries(&doc))
-        .unwrap_or_default()
+type CachedEntries = (Option<SystemTime>, u64, Arc<Vec<Value>>);
+static ENTRY_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedEntries>>> = OnceLock::new();
+
+/// Template files are several hundred KB and are read for every routed
+/// request; reparse only when the file's modification time or size changes.
+fn read_entries(path: &std::path::Path) -> Arc<Vec<Value>> {
+    let Ok(metadata) = fs::metadata(path) else {
+        return Arc::default();
+    };
+    let stamp = (metadata.modified().ok(), metadata.len());
+    let cache = ENTRY_CACHE.get_or_init(Mutex::default);
+    if let Some((modified, len, entries)) = cache.lock().unwrap().get(path)
+        && (*modified, *len) == stamp
+        && stamp.0.is_some()
+    {
+        return entries.clone();
+    }
+    let entries = Arc::new(
+        fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .map(|doc| official_entries(&doc))
+            .unwrap_or_default(),
+    );
+    cache
+        .lock()
+        .unwrap()
+        .insert(path.to_path_buf(), (stamp.0, stamp.1, entries.clone()));
+    entries
+}
+
+fn merge_templates(paths: &AccountPaths, settings: &Settings, into: &mut Vec<Value>) {
+    for path in template_sources(paths, settings).into_iter().flatten() {
+        for model in read_entries(&path).iter() {
+            if !into.iter().any(|m| m["slug"] == model["slug"]) {
+                into.push(model.clone());
+            }
+        }
+    }
 }
 
 fn template_sources(paths: &AccountPaths, settings: &Settings) -> [Option<PathBuf>; 4] {
@@ -165,7 +205,7 @@ pub fn native_models(paths: &AccountPaths, settings: &Settings) -> anyhow::Resul
     for path in template_sources(paths, settings).into_iter().flatten() {
         let models = read_entries(&path);
         if !models.is_empty() {
-            return Ok(models);
+            return Ok(models.as_ref().clone());
         }
     }
     bail!("原生模型模板尚未就绪，请先让官方客户端完成一次模型目录读取")
@@ -174,21 +214,23 @@ pub fn native_models(paths: &AccountPaths, settings: &Settings) -> anyhow::Resul
 // The official list can differ between refreshes. Route capabilities must not
 // shrink because one refresh omitted a model, so every seen entry is archived.
 fn archive_templates(paths: &AccountPaths, fresh: &[Value]) -> anyhow::Result<()> {
-    fs::create_dir_all(&paths.state_dir)?;
-    let guard = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(paths.state_dir.join(".native-templates.lock"))?;
-    fs2::FileExt::lock_exclusive(&guard)?;
+    let _guard = crate::store::lock(&paths.state_dir.join(".native-templates.lock"))?;
     let path = paths.state_dir.join(TEMPLATE_ARCHIVE);
-    let mut archived = read_entries(&path);
+    let before = read_entries(&path);
+    let mut archived = before.as_ref().clone();
     for model in fresh {
         archived.retain(|old| old["slug"] != model["slug"]);
         archived.insert(0, model.clone());
     }
     archived.truncate(200);
+    // Most refreshes repeat the same list; skip rewriting an identical archive.
+    if archived.len() == before.len()
+        && archived
+            .iter()
+            .all(|model| before.iter().any(|old| old == model))
+    {
+        return Ok(());
+    }
     atomic_write(&path, &serde_json::to_vec(&json!({"models": archived}))?)?;
     Ok(())
 }
@@ -235,19 +277,9 @@ pub fn missing_configuration(
 
 /// Every official template this host has seen, for checks outside a catalog build.
 pub fn known_templates(paths: &AccountPaths) -> Vec<Value> {
-    let settings = Settings::load(paths).ok().flatten().unwrap_or(Settings {
-        capability: String::new(),
-        original_base: None,
-        original_catalog: None,
-    });
+    let settings = Settings::load(paths).ok().flatten().unwrap_or_default();
     let mut templates: Vec<Value> = Vec::new();
-    for path in template_sources(paths, &settings).into_iter().flatten() {
-        for model in read_entries(&path) {
-            if !templates.iter().any(|m| m["slug"] == model["slug"]) {
-                templates.push(model);
-            }
-        }
-    }
+    merge_templates(paths, &settings, &mut templates);
     templates
 }
 
@@ -272,15 +304,9 @@ fn catalog_with(
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(!official.is_empty(), "原生模型模板尚未就绪");
     let mut templates = official.clone();
-    for path in template_sources(paths, settings).into_iter().flatten() {
-        for model in read_entries(&path) {
-            if !templates.iter().any(|m| m["slug"] == model["slug"]) {
-                templates.push(model);
-            }
-        }
-    }
+    merge_templates(paths, settings, &mut templates);
     let mut models = official;
-    for route in apis.catalog()? {
+    for route in apis.catalog() {
         let subscription = route.provider_id == crate::integrations::SUBSCRIPTION_ID;
         if !missing_configuration(
             &templates,
@@ -387,12 +413,8 @@ fn check_fixed_prompt_at_limit(body: &Value, window: u64, limit: u64) -> anyhow:
 
 pub fn request_preflight(apis: &ApiIntegrations, route: &str, body: &Value) -> anyhow::Result<()> {
     let paths = apis.paths();
-    let settings = Settings::load(paths)?.unwrap_or(Settings {
-        capability: String::new(),
-        original_base: None,
-        original_catalog: None,
-    });
-    let entries = apis.catalog()?;
+    let settings = Settings::load(paths)?.unwrap_or_default();
+    let entries = apis.catalog();
     let entry = entries.iter().find(|m| {
         m.route_id == route
             || (m.provider_id == crate::integrations::SUBSCRIPTION_ID && m.model_id == route)
@@ -443,6 +465,7 @@ pub async fn models(
     query: Option<&str>,
 ) -> anyhow::Result<Response<Body>> {
     // Native refresh is bounded; a network failure keeps the last official template.
+    remember_client_version(query);
     let mut fresh = None;
     if settings.original_catalog.is_none() {
         let upstream_headers =
@@ -467,23 +490,26 @@ pub async fn models(
             && let Ok(doc) = serde_json::from_slice::<Value>(&bytes)
             && doc["models"].as_array().is_some_and(|m| !m.is_empty())
         {
-            let models = official_entries(&doc);
-            crate::runtime::append_log(
-                paths,
-                "native.models.refreshed",
-                json!({"query": query.unwrap_or(""), "count": models.len(),
-                    "slugs": models.iter().filter_map(|m| m["slug"].as_str()).collect::<Vec<_>>()}),
-            );
-            archive_templates(paths, &models)?;
-            atomic_write(&paths.state_dir.join("official-models.json"), &bytes)?;
-            fresh = Some(models).filter(|m| !m.is_empty());
+            fresh = Some((official_entries(&doc), bytes));
         }
     }
-    let official = match fresh {
-        Some(models) => models,
-        None => native_models(paths, settings)?,
-    };
-    let body = serde_json::to_vec(&catalog_with(paths, apis, settings, official)?)?;
+    let query = query.unwrap_or("").to_string();
+    let (paths, apis, settings) = (paths.clone(), apis.clone(), settings.clone());
+    let body = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        let official = match fresh {
+            Some((models, bytes)) if !models.is_empty() => {
+                log_refresh_if_changed(&paths, &query, &models);
+                archive_templates(&paths, &models)?;
+                atomic_write(&paths.state_dir.join("official-models.json"), &bytes)?;
+                models
+            }
+            _ => native_models(&paths, &settings)?,
+        };
+        Ok(serde_json::to_vec(&catalog_with(
+            &paths, &apis, &settings, official,
+        )?)?)
+    })
+    .await??;
     let etag = format!("\"{:x}\"", Sha256::digest(&body));
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
@@ -492,8 +518,63 @@ pub async fn models(
         .body(Body::from(body))?)
 }
 
-pub fn http_client() -> anyhow::Result<reqwest::Client> {
-    crate::subscription::SubscriptionConfig::default().client()
+/// Official traffic honours the proxy configured in the subscription panel,
+/// the same policy as usage reads and the account pool.
+pub fn http_client(paths: &AccountPaths) -> anyhow::Result<reqwest::Client> {
+    let proxy = crate::subscription::SubscriptionConfig::load(paths)
+        .map(|config| config.proxy_url)
+        .unwrap_or_default();
+    crate::net::official_client(&proxy)
+}
+
+static LAST_REFRESH: OnceLock<Mutex<Option<(String, Vec<String>)>>> = OnceLock::new();
+static CLIENT_VERSION: Mutex<Option<String>> = Mutex::new(None);
+/// Used until the official client has refreshed its catalog through us once.
+const FALLBACK_CLIENT_VERSION: &str = "0.169.0";
+
+/// The `client_version` the official client itself sends. The model list is
+/// filtered by it, so subscription discovery asks with the same version.
+pub fn native_client_version() -> String {
+    CLIENT_VERSION
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| FALLBACK_CLIENT_VERSION.to_string())
+}
+
+fn remember_client_version(query: Option<&str>) {
+    let version = query.and_then(|query| {
+        query.split('&').find_map(|pair| {
+            pair.strip_prefix("client_version=")
+                .filter(|v| !v.is_empty() && v.len() <= 32)
+                .filter(|v| {
+                    v.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
+                })
+        })
+    });
+    if let Some(version) = version {
+        *CLIENT_VERSION.lock().unwrap() = Some(version.to_string());
+    }
+}
+
+// The client refreshes the catalog every few seconds; record only changes in
+// the query or slug set, which is what diagnosing list flips needs.
+fn log_refresh_if_changed(paths: &AccountPaths, query: &str, models: &[Value]) {
+    let slugs: Vec<String> = models
+        .iter()
+        .filter_map(|m| m["slug"].as_str().map(str::to_string))
+        .collect();
+    let mut last = LAST_REFRESH.get_or_init(Mutex::default).lock().unwrap();
+    if last.as_ref() == Some(&(query.to_string(), slugs.clone())) {
+        return;
+    }
+    crate::runtime::append_log(
+        paths,
+        "native.models.refreshed",
+        json!({"query": query, "count": slugs.len(), "slugs": slugs}),
+    );
+    *last = Some((query.to_string(), slugs));
 }
 
 fn official_headers(
@@ -597,6 +678,29 @@ pub async fn official(
     Ok(result)
 }
 
+/// A thread's last channel. Older files stored a bare route string; those
+/// entries load with `at = 0` and are refreshed on the next turn.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+enum ThreadRoute {
+    Timed { route: String, at: u64 },
+    Legacy(String),
+}
+
+impl ThreadRoute {
+    fn route(&self) -> &str {
+        match self {
+            Self::Timed { route, .. } | Self::Legacy(route) => route,
+        }
+    }
+    fn at(&self) -> u64 {
+        match self {
+            Self::Timed { at, .. } => *at,
+            Self::Legacy(_) => 0,
+        }
+    }
+}
+
 // Compaction and the exact internal reviewer may recover a managed parent route.
 // The reviewer keeps its own model; ordinary bare models stay official.
 pub fn remember_route(
@@ -611,7 +715,8 @@ pub fn remember_route(
             .and_then(|v| v.to_str().ok())
             .filter(|v| !v.is_empty() && v.len() <= 256)
     };
-    let keys: &[&str] = if model == crate::subscription::AUTO_REVIEW_MODEL {
+    let reviewer = model == crate::subscription::AUTO_REVIEW_MODEL;
+    let keys: &[&str] = if reviewer {
         &["x-codex-parent-thread-id", "thread-id", "session-id"]
     } else {
         &["thread-id", "session-id"]
@@ -619,22 +724,12 @@ pub fn remember_route(
     let Some(thread) = keys.iter().copied().find_map(|key| identity(key)) else {
         return Ok(model.into());
     };
-    let guard_path = paths.state_dir.join(".native-routes.lock");
-    fs::create_dir_all(&paths.state_dir)?;
-    let guard = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(guard_path)?;
-    fs2::FileExt::lock_exclusive(&guard)?;
-    let file = paths.state_dir.join("native-thread-routes.json");
-    let mut routes: HashMap<String, String> = match fs::read(&file) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("原生会话路由记录无效")?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-        Err(e) => return Err(e.into()),
-    };
-    if model == crate::subscription::AUTO_REVIEW_MODEL {
+    let _guard = crate::store::lock(&paths.state_dir.join(".native-routes.lock"))?;
+    let file = paths.state_dir.join(THREAD_ROUTES);
+    // A damaged association file must not take official traffic down with it;
+    // it is moved aside and behaves like a thread with no recorded channel.
+    let mut routes: HashMap<String, ThreadRoute> = crate::store::load_or_quarantine(&file);
+    if reviewer {
         // Native guardian review has its own thread-id. Its explicit parent
         // header (observed with CLI 0.167) is authoritative; only older requests
         // without it may recover a known thread/session association.
@@ -647,9 +742,9 @@ pub fn remember_route(
                 .collect()
         };
         for parent in candidates {
-            if let Some(route) = routes.get(parent) {
-                return Ok(if route.starts_with("cp-") {
-                    route.clone()
+            if let Some(entry) = routes.get(parent) {
+                return Ok(if is_managed_route(entry.route()) {
+                    entry.route().to_string()
                 } else {
                     model.into()
                 });
@@ -657,23 +752,44 @@ pub fn remember_route(
         }
         return Ok(model.into());
     }
-    if compact && !model.starts_with("cp-") {
-        if let Some(route) = routes.get(thread).filter(|route| route.starts_with("cp-")) {
-            return Ok(route.clone());
+    if compact {
+        if !is_managed_route(model)
+            && let Some(entry) = routes.get(thread).filter(|e| is_managed_route(e.route()))
+        {
+            return Ok(entry.route().to_string());
         }
-    } else if !compact && model != crate::subscription::AUTO_REVIEW_MODEL {
-        routes.insert(thread.into(), model.into());
+        return Ok(model.into());
+    }
+    let now = crate::accounts::unix_now();
+    // Turns repeat the same model; only a channel change or a day-old stamp
+    // needs a rewrite, instead of rewriting the whole file on every request.
+    let unchanged = routes
+        .get(thread)
+        .is_some_and(|e| e.route() == model && e.at() + 24 * 60 * 60 > now);
+    if !unchanged {
+        routes.insert(
+            thread.into(),
+            ThreadRoute::Timed {
+                route: model.into(),
+                at: now,
+            },
+        );
+        prune_thread_routes(&mut routes, now);
         atomic_write(&file, &serde_json::to_vec(&routes)?)?;
     }
     Ok(model.into())
 }
 
+fn prune_thread_routes(routes: &mut HashMap<String, ThreadRoute>, now: u64) {
+    routes.retain(|_, e| e.at() == 0 || e.at() + THREAD_ROUTE_TTL_SECS > now);
+    if routes.len() > THREAD_ROUTE_LIMIT {
+        let mut stamps: Vec<u64> = routes.values().map(ThreadRoute::at).collect();
+        stamps.sort_unstable();
+        let cutoff = stamps[routes.len() - THREAD_ROUTE_LIMIT];
+        routes.retain(|_, e| e.at() >= cutoff);
+    }
+}
+
 pub fn failure(status: StatusCode, message: &str) -> Response<Body> {
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({"error":{"type":"codex_plus_native_gateway","message":message}}).to_string(),
-        ))
-        .unwrap()
+    crate::http::error(status, "codex_plus_native_gateway", None, message)
 }

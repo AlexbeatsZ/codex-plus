@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 
+const coreScript = await readFile(new URL("../assets/core.js", import.meta.url), "utf8");
 const script = await readFile(new URL("../assets/model-routing.js", import.meta.url), "utf8");
 const models = [
   { routeId: "cp-api-other", modelId: "other", nativeProviderId: "codex-plus-api" },
@@ -15,6 +16,7 @@ async function fixture(sourceModel, targetModel, options = {}) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { runScripts: "dangerously", url: "app://-/index.html" });
   dom.window.codexPlusInvoke = async () => ({ models });
   dom.window.confirm = () => options.confirm !== false;
+  dom.window.eval(coreScript);
   dom.window.eval(script);
   const routing = dom.window.__codexPlusModelRouting;
   await routing.loadCatalog(true);
@@ -190,6 +192,7 @@ test("native gateway keeps API and subscription changes on the same openai threa
   const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "dangerously", url: "app://-/index.html" });
   const unified = models.map(model => ({ ...model, nativeProviderId: "openai" }));
   dom.window.codexPlusInvoke = async () => ({ models: unified });
+  dom.window.eval(coreScript);
   dom.window.eval(script);
   const routing = dom.window.__codexPlusModelRouting;
   await routing.loadCatalog(true);
@@ -214,6 +217,7 @@ test("explicit legacy migration uses the native history fork and verifies its pr
   const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "dangerously", url: "app://-/index.html" });
   dom.window.codexPlusInvoke = async () => ({ models: [{ ...models[0], nativeProviderId: "openai" }] });
   dom.window.confirm = () => true;
+  dom.window.eval(coreScript);
   dom.window.eval(script);
   const routing = dom.window.__codexPlusModelRouting;
   await routing.loadCatalog(true);

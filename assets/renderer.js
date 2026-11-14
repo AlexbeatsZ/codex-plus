@@ -2,7 +2,9 @@
   "use strict";
   const String = window.String;
 
-  const VERSION = 14;
+  const core = window.__codexPlusCore;
+  const VERSION = 15;
+  const OBSERVER_KEY = "accounts";
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
   const ITEM_ATTR = "data-codex-plus-account-item";
@@ -16,7 +18,7 @@
   window.__codexPlusAccounts?.destroy?.();
 
   const state = {
-    observer: null,
+    unsubscribe: null,
     scanQueued: false,
     scanMenus: false,
     scanSignedOut: false,
@@ -132,17 +134,12 @@
     document.head.appendChild(style);
   }
 
-  function normalizedText(node) {
-    return String(node?.textContent || "").replace(/\s+/g, " ").trim();
-  }
-
-  function isSettings(node) {
-    return /^(设置|Settings(?:\s|$))/i.test(normalizedText(node));
-  }
-
-  function isLogout(node) {
-    return /^(退出登录|登出|Sign out(?:\s|$)|Log out(?:\s|$))/i.test(normalizedText(node));
-  }
+  const normalizedText = core.text;
+  const isSettings = core.isSettings;
+  const isLogout = core.isLogout;
+  const escapeHtml = core.escapeHtml;
+  const invoke = core.invoke;
+  const mutationMayContainMenu = core.mutationMayContainMenu;
 
   // 未登录时 Codex 只显示原生登录页，没有个人资料菜单；以“ChatGPT + 登录动词”的原生按钮作为锚点。
   function isLoginHeading(node) {
@@ -171,14 +168,6 @@
     if (!node || node.hasAttribute?.(SIGNED_OUT_ATTR)) return false;
     const text = normalizedText(node);
     return text.length <= 48 && /API\s*(key|密钥|金钥)/i.test(text);
-  }
-
-  function profileMenuContext(settingsItem) {
-    const parent = settingsItem.parentElement;
-    if (!parent) return null;
-    const siblings = Array.from(parent.children);
-    const logout = siblings.find(isLogout);
-    return logout ? { parent, logout } : null;
   }
 
   function createMenuItem(settingsItem) {
@@ -292,11 +281,7 @@
 
   function scanMenus() {
     if (state.summary && !state.summary.body.isConnected) closeUsageSummary();
-    const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
-    for (const settingsItem of items.filter(isSettings)) {
-      const context = profileMenuContext(settingsItem);
-      if (!context) continue;
-      const { parent, logout } = context;
+    for (const { parent, settings: settingsItem, logout } of core.profileMenus()) {
       if (!parent.querySelector(`:scope > [${ITEM_ATTR}]`)) parent.insertBefore(createMenuItem(settingsItem), logout);
       const nativeHeader = Array.from(parent.querySelectorAll('[role="menuitem"],button')).find((node) => !node.hasAttribute(USAGE_ITEM_ATTR) && /^(剩余用量|用量限制|Usage remaining|Usage limits|Remaining usage|Usage)(?:\s*[\d.,]+\s*%)?$/i.test(normalizedText(node)));
       if (nativeHeader && !parent.querySelector('[data-codex-plus-usage-section]')) {
@@ -305,18 +290,6 @@
         parent.insertBefore(createUsageSection(nativeHeader), nativeBlock.nextSibling);
       }
     }
-  }
-
-  function mutationMayContainMenu(records) {
-    if (!records) return true;
-    return records.some((record) => {
-      const target = record.target;
-      if (target?.nodeType === 1 && (target.matches?.('[role="menuitem"]') || target.closest?.('[role="menuitem"]'))) return true;
-      return Array.from(record.addedNodes || []).some((node) =>
-        (node.nodeType === 1 || node.nodeType === 11)
-        && (node.matches?.('[role="menuitem"]') || node.querySelector?.('[role="menuitem"]'))
-      );
-    });
   }
 
   function mutationMayContainChatGptLogin(records) {
@@ -355,10 +328,7 @@
 
   function install() {
     installStyle();
-    if (!state.observer || !state.observer.takeRecords) {
-      state.observer = new MutationObserver(queueScan);
-      state.observer.observe(document.documentElement, { childList: true, characterData: true, attributes: true, attributeFilter: ["aria-label"], subtree: true });
-    }
+    if (!core.observing(OBSERVER_KEY)) state.unsubscribe = core.subscribe(OBSERVER_KEY, queueScan);
     queueScan();
     return health();
   }
@@ -366,7 +336,7 @@
   function health() {
     return {
       ready: document.getElementById(STYLE_ID) != null,
-      observerReady: !!state.observer,
+      observerReady: core.observing(OBSERVER_KEY),
       modalOpen: !!document.getElementById(ROOT_ID),
       version: VERSION,
     };
@@ -390,26 +360,6 @@
   function messageMarkup() {
     if (!state.message) return "";
     return `<div class="cp-account-status" data-type="${escapeHtml(state.messageType)}" role="status">${escapeHtml(state.message)}</div>`;
-  }
-
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-  }
-
-  async function invoke(path, payload = {}) {
-    if (typeof window.codexPlusInvoke !== "function") {
-      throw new Error("codex-plus bridge 尚未就绪");
-    }
-    const result = await window.codexPlusInvoke(path, payload);
-    if (["failed", "error"].includes(String(result?.status || "").toLowerCase())) {
-      throw new Error(result?.message || "操作失败");
-    }
-    return result;
   }
 
   function renderBody() {
@@ -774,8 +724,8 @@
   function destroy() {
     closeUsageSummary();
     state.generation += 1;
-    state.observer?.disconnect?.();
-    state.observer = null;
+    state.unsubscribe?.();
+    state.unsubscribe = null;
     document.querySelectorAll(`[${ITEM_ATTR}],[data-codex-plus-usage-section],[${SIGNED_OUT_ATTR}]`).forEach((node) => node.remove());
     document.getElementById(ROOT_ID)?.remove();
     document.getElementById(STYLE_ID)?.remove();

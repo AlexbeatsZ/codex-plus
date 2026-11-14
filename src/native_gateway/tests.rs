@@ -70,7 +70,7 @@ async fn oversized_tools_never_reach_any_upstream_including_compaction_and_legac
     ] {
         for _ in 0..2 {
             let response = client.post(format!("http://127.0.0.1:{}{endpoint}", broker.port()))
-                .bearer_auth("codex-plus-loopback")
+                .bearer_auth(broker.token())
                 .json(&json!({"model":model,"input":[],"tools":[{"type":"function","description":"fixed tool description ".repeat(12000)}]}))
                 .send().await.unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{endpoint}");
@@ -82,7 +82,7 @@ async fn oversized_tools_never_reach_any_upstream_including_compaction_and_legac
     for endpoint in [format!("{native}/responses"), "/v1/responses".to_string()] {
         let response = client
             .post(format!("http://127.0.0.1:{}{endpoint}", broker.port()))
-            .bearer_auth("codex-plus-loopback")
+            .bearer_auth(broker.token())
             .json(&json!({"model":unset,"input":[]}))
             .send()
             .await
@@ -225,7 +225,6 @@ fn catalog_uses_real_capabilities_and_keeps_same_name_channels_distinct() {
     assert!(models[1..].iter().all(|m| m["use_responses_lite"] == false));
     assert!(
         apis.catalog()
-            .unwrap()
             .iter()
             .all(|m| m.native_provider_id == "openai")
     );
@@ -530,4 +529,63 @@ async fn native_gateway_auth_routing_and_official_credentials_are_separate() {
             .any(|m| m["slug"] == route)
     );
     broker.shutdown().await;
+}
+
+#[test]
+fn thread_routes_accept_the_legacy_format_and_survive_corruption() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    std::fs::create_dir_all(&paths.state_dir).unwrap();
+    let file = paths.state_dir.join("native-thread-routes.json");
+    std::fs::write(&file, json!({"old": "cp-legacy"}).to_string()).unwrap();
+    let mut old = HeaderMap::new();
+    old.insert("thread-id", "old".parse().unwrap());
+    // Pre-0.3.14 entries still recover their channel for compaction.
+    assert_eq!(
+        remember_route(&paths, &old, "gpt-real", true).unwrap(),
+        "cp-legacy"
+    );
+    // A damaged file is moved aside and treated like a missing record (the
+    // same as a thread never seen before) instead of failing every request.
+    std::fs::write(&file, "{broken").unwrap();
+    assert_eq!(
+        remember_route(&paths, &old, "gpt-real", false).unwrap(),
+        "gpt-real"
+    );
+    let stored: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(stored["old"]["route"], "gpt-real");
+    // An unchanged turn does not rewrite the file.
+    let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    remember_route(&paths, &old, "gpt-real", false).unwrap();
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().modified().unwrap(),
+        before
+    );
+}
+
+#[test]
+fn thread_routes_are_pruned_by_age_and_count() {
+    let mut routes = HashMap::new();
+    let now = 10_000_000_u64;
+    routes.insert(
+        "stale".to_string(),
+        ThreadRoute::Timed {
+            route: "cp-a".into(),
+            at: now - THREAD_ROUTE_TTL_SECS - 1,
+        },
+    );
+    for index in 0..(THREAD_ROUTE_LIMIT + 10) {
+        routes.insert(
+            format!("t{index}"),
+            ThreadRoute::Timed {
+                route: "cp-a".into(),
+                at: now - 1000 + index as u64,
+            },
+        );
+    }
+    prune_thread_routes(&mut routes, now);
+    assert!(!routes.contains_key("stale"));
+    assert!(routes.len() <= THREAD_ROUTE_LIMIT);
+    assert!(routes.contains_key(&format!("t{}", THREAD_ROUTE_LIMIT + 9)));
 }

@@ -31,7 +31,7 @@ MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本
 - 除 `--apply-pending-action` 账户事务 helper 外，每个 `codex-plus.exe` 入口都先幂等确保 managed runtime 已启动。
 - `--login-startup` 在进入“等待用户打开 Codex”的循环前启动 runtime，因此登录后 MCP 可用，但官方 Codex 窗口仍不会被主动打开。
 - 普通点击、网页登录和 attach 模式也执行同一幂等检查；已有健康 runtime 时不得创建重复进程。
-- MCP 启动失败只写入 `%LOCALAPPDATA%\codex-plus\codex-plus.log`，不阻止账户、broker 或 Codex 注入功能继续运行。
+- MCP 启动在后台进行，失败只写入仓库 `.codex-plus/codex-plus.log`，不阻止也不延迟账户、broker 或 Codex 注入功能。
 - `run_command` 超时必须终止整个子进程树并在短暂宽限期后强制关闭继承管道；不能只杀 shell 父进程后继续等待 `close`，否则 Tunnel health/ready 仍为 200 时 stdio 也可能永久阻塞。
 
 ## 组件发现
