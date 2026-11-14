@@ -60,7 +60,7 @@ remote_compaction="v2"
 name="isolated pool"
 base_url="${poolBase}"
 wire_api="responses"
-experimental_bearer_token="codex-plus-loopback"
+experimental_bearer_token=${JSON.stringify(brokerToken())}
 requires_openai_auth=false
 supports_websockets=false
 [model_providers.codex-plus-account-pool.capabilities]
@@ -110,4 +110,12 @@ try {
   // Wait for native process handles before removing the Windows fixture.
   if (app.exitCode === null) await new Promise(resolve => app.once("exit", resolve));
   await removeFixture(root);
+}
+
+// The broker's token is random per state directory; `--broker-only` prints it
+// and the isolated run passes it here.
+function brokerToken() {
+  const token = process.env.CODEX_PLUS_BROKER_TOKEN;
+  if (!token) throw new Error("Set CODEX_PLUS_BROKER_TOKEN to the token printed by codex-plus --broker-only");
+  return token;
 }

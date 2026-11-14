@@ -54,18 +54,47 @@ impl ApiIntegrations {
         );
         Ok(entries)
     }
-    pub fn catalog(&self) -> anyhow::Result<Vec<CatalogModel>> {
+    /// Strict catalog for the editor: any unreadable source is reported.
+    pub fn catalog_checked(&self) -> anyhow::Result<Vec<CatalogModel>> {
         let mut catalog = ProviderStore::load(&self.paths)?.catalog();
         catalog.extend(SubscriptionConfig::load(&self.paths)?.catalog());
-        if crate::native_gateway::Settings::load(&self.paths)?.is_some() {
-            for model in &mut catalog {
+        self.mark_native(&mut catalog);
+        Ok(catalog)
+    }
+
+    /// Request-path catalog. One damaged source only withdraws its own routes:
+    /// a bad providers.json must not break the official model list or the
+    /// subscription pool, and vice versa. Each new failure is logged once.
+    pub fn catalog(&self) -> Vec<CatalogModel> {
+        let mut catalog = Vec::new();
+        let mut failures = Vec::new();
+        match ProviderStore::load(&self.paths) {
+            Ok(store) => catalog.extend(store.catalog()),
+            Err(error) => failures.push(format!("{error:#}")),
+        }
+        match SubscriptionConfig::load(&self.paths) {
+            Ok(config) => catalog.extend(config.catalog()),
+            Err(error) => failures.push(format!("{error:#}")),
+        }
+        self.mark_native(&mut catalog);
+        report_catalog_failures(&self.paths, failures);
+        catalog
+    }
+
+    fn mark_native(&self, catalog: &mut [CatalogModel]) {
+        if crate::native_gateway::Settings::load(&self.paths)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            for model in catalog {
                 model.native_provider_id = "openai".into();
             }
         }
-        Ok(catalog)
     }
+
     pub fn resolve(&self, route: &str) -> anyhow::Result<ModelRoute> {
-        if route.starts_with("cp-pool-") {
+        if crate::subscription::is_pool_route(route) {
             return Ok(ModelRoute::Subscription);
         }
         ProviderStore::load(&self.paths)?
@@ -138,6 +167,21 @@ impl ApiIntegrations {
     }
 }
 
+fn report_catalog_failures(paths: &AccountPaths, failures: Vec<String>) {
+    static LAST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut last = LAST.lock().unwrap();
+    if *last != failures {
+        if !failures.is_empty() {
+            crate::runtime::append_log(
+                paths,
+                "integrations.catalog.degraded",
+                json!({"errors": failures}),
+            );
+        }
+        *last = failures;
+    }
+}
+
 // Lets the editor show which windows come from an official model and which
 // the user must supply.
 fn mark_matched(templates: &[Value], models: &mut Value) {
@@ -182,6 +226,21 @@ mod tests {
             ModelRoute::Subscription
         ));
         assert!(apis.resolve("cp-regular").is_err());
+    }
+    #[test]
+    fn one_damaged_source_only_withdraws_its_own_routes() {
+        let (_temp, apis) = fixture();
+        std::fs::create_dir_all(&apis.paths.state_dir).unwrap();
+        std::fs::write(apis.paths.providers_path(), "corrupt").unwrap();
+        std::fs::write(
+            apis.paths.state_dir.join("subscription.json"),
+            json!({"enabled":true,"accountOrder":["a"],"models":[{"modelId":"gpt-x","visible":true}]}).to_string(),
+        )
+        .unwrap();
+        let catalog = apis.catalog();
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].provider_id, SUBSCRIPTION_ID);
+        assert!(apis.catalog_checked().is_err());
     }
     #[test]
     fn saving_requires_declarations_instead_of_guessing() {

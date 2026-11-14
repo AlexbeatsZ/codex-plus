@@ -4,6 +4,7 @@ import test from "node:test";
 import { atom, createStore } from "jotai/vanilla";
 import { JSDOM } from "jsdom";
 
+const coreScript = await readFile(new URL("../assets/core.js", import.meta.url), "utf8");
 const script = await readFile(new URL("../assets/quota-routing.js", import.meta.url), "utf8");
 
 export function nativeFixture(dom, factories = {}) {
@@ -71,6 +72,7 @@ export function nativeFixture(dom, factories = {}) {
 
 async function fixture() {
   const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "dangerously" });
+  dom.window.eval(coreScript);
   dom.window.eval(script);
   const native = nativeFixture(dom);
   return { ...native, dom, close() { native.controller.destroy(); dom.window.close(); } };
@@ -197,6 +199,7 @@ test("unknown, remote and nonlocal composer contexts retain native limits", asyn
 test("unsupported native module contracts remain untouched", async () => {
   const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "dangerously" });
   try {
+    dom.window.eval(coreScript);
     dom.window.eval(script);
     const f = nativeFixture(dom, { a6kU() {} });
     assert.equal(f.installed, false);
@@ -211,6 +214,7 @@ test("catalog discovery works before legacy request-client or manager discovery"
     dom.window.document.getElementById("root").__reactContainer$fixture = {};
     let loads = 0;
     dom.window.__codexPlusModelRouting = { loadCatalog: async () => { loads++; } };
+    dom.window.eval(coreScript);
     dom.window.eval(script);
     await dom.window.__codexPlusQuotaRouting.install();
     assert.equal(loads, 1);

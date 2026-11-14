@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 
-const DESKTOP_TOKEN = "codex-plus-desktop-loopback";
+// Helpers started before endpoint version 2 accept only this fixed marker.
+const LEGACY_DESKTOP_TOKEN = "codex-plus-desktop-loopback";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(moduleDirectory, "..", "..");
 const defaultStateDirectory = path.join(repositoryRoot, ".codex-plus");
@@ -24,14 +25,15 @@ export class DesktopClient {
   constructor(stateDirectory = process.env.CODEX_PLUS_STATE_DIR ?? defaultStateDirectory) { this.stateDirectory = path.resolve(stateDirectory); }
   async request<T extends JsonObject>(request: JsonObject): Promise<T> {
     const endpointPath = path.join(this.stateDirectory, "desktop-endpoint.json");
-    const endpoint = JSON.parse(await readFile(endpointPath, "utf8")) as { port?: unknown };
+    const endpoint = JSON.parse(await readFile(endpointPath, "utf8")) as { port?: unknown; token?: unknown };
+    const token = typeof endpoint.token === "string" && endpoint.token ? endpoint.token : LEGACY_DESKTOP_TOKEN;
     const port = Number(endpoint.port);
     if (!Number.isInteger(port) || port <= 0 || port > 65_535) throw new Error(`Desktop helper endpoint contains an invalid port: ${endpointPath}`);
     let response: Response;
     try {
       response = await fetch(`http://127.0.0.1:${port}/v1/desktop`, {
         method: "POST",
-        headers: { authorization: `Bearer ${DESKTOP_TOKEN}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify(request),
         signal: AbortSignal.timeout(15_000),
       });

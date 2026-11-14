@@ -27,7 +27,7 @@ renderer 只使用 `/api-providers/list|discover|save|delete|catalog`。`list` �
 
 ## 单 broker provider
 
-启动顺序是：`stop → lock → broker → config → launch → inject`。broker 只监听 `127.0.0.1`，只接受 codex-plus 配置的本机 Bearer token。首选稳定端口为 43121，刻意避开 Windows 默认动态客户端端口范围 49152–65535；若该端口仍因普通占用、Windows 保留范围或 WSL mirrored networking/FSE 端口跟踪而无法绑定，必须直接绑定系统分配的空闲本机端口，并在保持该 listener 的同时把实际端口写入 Codex 配置。不能先探测再释放端口，也不能因一个固定端口失败而终止整个接管生命周期。
+启动顺序是：`stop → lock → broker → config → launch → inject`。broker 只监听 `127.0.0.1`，只接受 codex-plus 配置的本机 Bearer token，并拒绝 Host 不是 `127.0.0.1`/`localhost`/`::1` 的请求（防 DNS rebinding 网页）。0.3.14 起 token 为首次启动时生成的随机值，保存在 `.codex-plus/broker-token`（0600），之后保持稳定：运行中的 Codex 持有它启动时读到的 token，轮换会让该会话的 API 路由全部 401。从旧版升级时，已在运行、未重启的 Codex（仅 `--attach-existing` 场景）在重启前会对 API 路由报 401。首选稳定端口为 43121，刻意避开 Windows 默认动态客户端端口范围 49152–65535；若该端口仍因普通占用、Windows 保留范围或 WSL mirrored networking/FSE 端口跟踪而无法绑定，必须直接绑定系统分配的空闲本机端口，并在保持该 listener 的同时把实际端口写入 Codex 配置。不能先探测再释放端口，也不能因一个固定端口失败而终止整个接管生命周期。
 
 登录自启会在同一 launcher 进程内反复接管 Codex。每轮受管生命周期结束时必须取消并等待该轮 broker 任务退出、释放 listener，再进入下一轮；仅丢弃 `JoinHandle` 会让服务器继续运行并占住旧端口。
 
@@ -38,12 +38,14 @@ renderer 只使用 `/api-providers/list|discover|save|delete|catalog`。`list` �
 name = "codex-plus API broker"
 base_url = "http://127.0.0.1:43121/v1"
 wire_api = "responses"
-experimental_bearer_token = "codex-plus-loopback"
+experimental_bearer_token = "<.codex-plus/broker-token 中的随机值>"
 ```
 
 以上是首选端口示例；发生回退时 `base_url` 使用本次 broker 实际持有的端口。0.3.8 增量维护顶层 `openai_base_url`，将内置 openai 的模型流量交给受能力值保护的同一 broker；原官方 URL 记录在忽略的 native-gateway.json 中。默认 provider 仅在原为 codex-plus 两个旧 provider 时迁回 openai，其他自定义默认 provider 明确拒绝接管；官方 auth.json、ChatGPT 控制平面、其他 provider 和未知配置保持原样。第一次变更前保留 `config.toml.codex-plus.bak`。
 
-broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 model ID，替换后并发转发。Responses 上游保持原协议和 SSE；Chat Completions 上游转换输入、非流式响应和流式事件，保留工具调用、推理内容、usage 与错误隔离。不存在、停用或隐藏的 routeId 必须明确失败，绝不回退到其他 API。
+broker 从请求的 `model` 读取 routeId，加载对应 provider 与真实 model ID，替换后并发转发。原生网关与旧 provider 入口共用同一个 `dispatch` 管线（预检 → 订阅/外接解析 → 转发），原生入口不再构造带固定 token 的内部请求。上游返回非 2xx 时，即使请求是 stream，也按 JSON 错误原样给出状态码与有界错误体（最多 1 MB），不能交给 SSE 转换器生成空的 `response.completed`。
+
+请求路径上的模型目录按来源容错：`providers.json` 或 `subscription.json` 任一损坏只撤下它自己的路由并记一次 `integrations.catalog.degraded`，不影响官方模型目录和另一来源；API 编辑器的 `/api-providers/catalog` 仍严格报错，保存前不会用默认值覆盖损坏文件。Responses 上游保持原协议和 SSE；Chat Completions 上游转换输入、非流式响应和流式事件，保留工具调用、推理内容、usage 与错误隔离。不存在、停用或隐藏的 routeId 必须明确失败，绝不回退到其他 API。
 
 ## 原生模型目录与路由
 

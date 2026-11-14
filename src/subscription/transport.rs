@@ -41,7 +41,7 @@ pub(super) async fn read_bounded(
     Ok(bytes)
 }
 
-pub(super) fn recoverable(value: &Value, retry_after: Option<u64>) -> Option<(&'static str, u64)> {
+pub(super) fn recoverable(value: &Value, retry_after: Option<u64>) -> Option<(CoolReason, u64)> {
     let e = value
         .get("error")
         .or_else(|| value.pointer("/response/error"))
@@ -54,9 +54,11 @@ pub(super) fn recoverable(value: &Value, retry_after: Option<u64>) -> Option<(&'
         "usage_limit_reached"
         | "usage_limit_exceeded"
         | "insufficient_quota"
-        | "subscription_sharing_usage_limit_exceeded" => "额度限制",
-        "rate_limit_exceeded" => "请求频率限制",
-        "model_not_found" | "model_not_available" | "unsupported_model" => "该账户不可用此模型",
+        | "subscription_sharing_usage_limit_exceeded" => CoolReason::Quota,
+        "rate_limit_exceeded" => CoolReason::RateLimit,
+        "model_not_found" | "model_not_available" | "unsupported_model" => {
+            CoolReason::ModelUnavailable
+        }
         _ => return None,
     };
     let reset = e["resets_at"]
@@ -153,20 +155,5 @@ pub(super) async fn prepare_stream(response: reqwest::Response) -> anyhow::Resul
 }
 
 pub(super) fn error(status: StatusCode, code: &str, message: &str) -> Response<Body> {
-    response_body(
-        status,
-        "application/json",
-        Body::from(
-            json!({"error":{"type":"codex_plus_subscription_error","code":code,"message":message}})
-                .to_string(),
-        ),
-    )
-}
-pub(super) fn response_body(status: StatusCode, content_type: &str, body: Body) -> Response<Body> {
-    Response::builder()
-        .status(status)
-        .header("Content-Type", content_type)
-        .header("Cache-Control", "no-cache")
-        .body(body)
-        .unwrap()
+    crate::http::error(status, "codex_plus_subscription_error", Some(code), message)
 }

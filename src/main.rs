@@ -5,15 +5,18 @@ mod broker;
 mod cdp;
 mod config;
 mod desktop;
+mod http;
 mod integrations;
+mod layout;
 mod local_tools;
 mod native_gateway;
+mod net;
 mod pdf_preview;
-#[allow(dead_code)]
 mod protocol_proxy;
 mod providers;
 mod runtime;
 mod service;
+mod store;
 mod subscription;
 
 use anyhow::Context as _;
@@ -84,7 +87,10 @@ async fn main_impl() -> anyhow::Result<()> {
         if args.iter().any(|arg| arg == "--test-config") {
             config::reconcile_codex_config(&AccountPaths::discover()?, broker.port())?;
         }
-        println!("{}", json!({"brokerPort":broker.port()}));
+        println!(
+            "{}",
+            json!({"brokerPort": broker.port(), "brokerToken": broker.token()})
+        );
         return broker.wait().await;
     }
     // 不阻止启动，只在身份不稳时留一条可查的日志：adhoc 签名会让 TCC 授权随重新
@@ -92,11 +98,38 @@ async fn main_impl() -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     runtime::warn_if_code_signature_is_unstable(&paths);
     let mode = LaunchMode::from_args(&args);
-    let mut _desktop: Option<desktop::DesktopHandle> = None;
+    if mode == LaunchMode::ApplyPendingAction {
+        return runtime::apply_pending_action(&paths);
+    }
+    // The Tunnel sidecar is independent of the Codex lifecycle; a slow or hung
+    // tunnel-client must not delay taking over Codex. The runtime waits for this
+    // blocking task before the process exits, so even early exits finish it.
+    let tools_paths = paths.clone();
+    tokio::spawn(async move { local_tools::ensure_runtime(&tools_paths).await });
 
-    if mode != LaunchMode::ApplyPendingAction {
-        local_tools::ensure_runtime(&paths).await;
-        match desktop::start(&paths).await {
+    match mode {
+        LaunchMode::ApplyPendingAction => unreachable!("handled above"),
+        LaunchMode::WebLogin => run_managed_codex(paths, "launcher.web_login_start", true).await,
+        LaunchMode::AttachExisting(debug_port) => run_attach_existing(paths, debug_port).await,
+        LaunchMode::LoginStartup => run_login_startup(paths).await,
+        LaunchMode::Explicit => run_managed_codex(paths, "launcher.explicit_start", false).await,
+    }
+}
+
+/// Everything one resident launcher owns while it holds the launcher lock.
+struct Launcher {
+    paths: AccountPaths,
+    service: BridgeService,
+    _guard: runtime::LauncherGuard,
+    _desktop: Option<desktop::DesktopHandle>,
+}
+
+impl Launcher {
+    /// The desktop helper starts only after the lock: before it, an older
+    /// launcher may still own 43122 and would be "reused" moments before this
+    /// launcher stops it, leaving the endpoint file pointing at a dead helper.
+    async fn new(paths: AccountPaths, guard: runtime::LauncherGuard) -> Self {
+        let desktop = match desktop::start(&paths).await {
             Ok(handle) => {
                 runtime::append_log(
                     &paths,
@@ -109,45 +142,56 @@ async fn main_impl() -> anyhow::Result<()> {
                         "preferredBindError": handle.preferred_bind_error(),
                     }),
                 );
-                _desktop = Some(handle);
+                Some(handle)
             }
-            Err(error) => runtime::append_log(
-                &paths,
-                "launcher.desktop_helper.failed",
-                json!({"message": error.to_string()}),
-            ),
+            Err(error) => {
+                runtime::append_log(
+                    &paths,
+                    "launcher.desktop_helper.failed",
+                    json!({"message": error.to_string()}),
+                );
+                None
+            }
+        };
+        Self {
+            service: BridgeService::new(paths.clone()),
+            paths,
+            _guard: guard,
+            _desktop: desktop,
         }
     }
 
-    match mode {
-        LaunchMode::ApplyPendingAction => runtime::apply_pending_action(&paths),
-        LaunchMode::WebLogin => run_managed_codex(paths, "launcher.web_login_start", true).await,
-        LaunchMode::AttachExisting(debug_port) => run_attach_existing(paths, debug_port).await,
-        LaunchMode::LoginStartup => run_login_startup(paths).await,
-        LaunchMode::Explicit => run_managed_codex(paths, "launcher.explicit_start", false).await,
+    /// broker → config, shared by every takeover path.
+    async fn start_broker(&self) -> anyhow::Result<broker::BrokerHandle> {
+        let broker =
+            broker::start(broker::PREFERRED_BROKER_PORT, self.service.apis.clone()).await?;
+        log_broker_port_selection(&self.paths, &broker);
+        config::reconcile_codex_config(&self.paths, broker.port())?;
+        Ok(broker)
+    }
+
+    async fn run(self, broker: broker::BrokerHandle, session: CodexSession) -> anyhow::Result<()> {
+        run_resident_launcher(self.paths, self.service, broker, session).await
     }
 }
 
 async fn run_attach_existing(paths: AccountPaths, debug_port: u16) -> anyhow::Result<()> {
-    let _guard = runtime::acquire_launcher_guard(&paths)?;
-    let service = BridgeService::new(paths.clone());
+    let launcher = Launcher::new(paths.clone(), runtime::acquire_launcher_guard(&paths)?).await;
     runtime::append_log(
         &paths,
         "launcher.attach_existing",
         json!({"port": debug_port}),
     );
-    let broker = broker::start(broker::PREFERRED_BROKER_PORT, service.apis.clone()).await?;
-    log_broker_port_selection(&paths, &broker);
-    config::reconcile_codex_config(&paths, broker.port())?;
+    let broker = launcher.start_broker().await?;
     let session = CodexSession {
         process: runtime::observe_codex_on_port(debug_port),
         debug_port,
     };
-    run_resident_launcher(paths, service, broker, session).await
+    launcher.run(broker, session).await
 }
 
 async fn run_login_startup(paths: AccountPaths) -> anyhow::Result<()> {
-    let monitor_guard = match runtime::acquire_launcher_guard(&paths) {
+    let guard = match runtime::acquire_launcher_guard(&paths) {
         Ok(guard) => guard,
         Err(error) => {
             runtime::append_log(
@@ -158,11 +202,25 @@ async fn run_login_startup(paths: AccountPaths) -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    // The lock is held from here on. Releasing and re-acquiring it around the
+    // takeover would let another launcher slip in between.
+    let launcher = Launcher::new(paths.clone(), guard).await;
     runtime::append_log(&paths, "launcher.login_startup.waiting", json!({}));
-    runtime::wait_until_codex_starts().await;
+    let discovered = runtime::wait_until_codex_starts().await;
     runtime::append_log(&paths, "launcher.login_startup.detected", json!({}));
-    drop(monitor_guard);
-    run_managed_codex(paths, "launcher.login_startup.takeover", false).await
+    let broker = launcher.start_broker().await?;
+    let mut pending = Some(discovered);
+    let session = loop {
+        let discovered = match pending.take() {
+            Some(discovered) => discovered,
+            None => runtime::wait_until_codex_starts().await,
+        };
+        if let Some(session) = take_over(&paths, discovered).await {
+            break session;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    };
+    launcher.run(broker, session).await
 }
 
 async fn run_managed_codex(
@@ -170,25 +228,35 @@ async fn run_managed_codex(
     start_event: &str,
     capture_web_login: bool,
 ) -> anyhow::Result<()> {
-    let service = BridgeService::new(paths.clone());
-
     // Resolve read-only installation metadata before terminating the app, but the
     // state-changing lifecycle remains stop -> lock -> launch -> inject.
     let codex_target = runtime::resolve_codex_target()?;
-    let codex_executable = codex_target.executable_path().to_path_buf();
     runtime::append_log(
         &paths,
         start_event,
         json!({"phases": runtime::START_PHASES}),
     );
-    runtime::stop_existing_runtime(&paths)?;
-    let _guard = runtime::acquire_launcher_guard(&paths)?;
-    let broker = broker::start(broker::PREFERRED_BROKER_PORT, service.apis.clone()).await?;
-    log_broker_port_selection(&paths, &broker);
-    config::reconcile_codex_config(&paths, broker.port())?;
-    let debug_port = runtime::select_debug_port(DEBUG_PORT)?;
+    let stop_paths = paths.clone();
+    tokio::task::spawn_blocking(move || runtime::stop_existing_runtime(&stop_paths)).await??;
+    let launcher = Launcher::new(paths.clone(), runtime::acquire_launcher_guard(&paths)?).await;
+    let broker = launcher.start_broker().await?;
+    let session = launch_session(&paths, &codex_target, "launcher.codex_started").await?;
+    if capture_web_login {
+        tokio::spawn(runtime::capture_web_login(paths.clone()));
+    }
+    launcher.run(broker, session).await
+}
+
+/// Selects the CDP port and launches Codex with it; shared by the first start
+/// and by the controlled restart of an instance opened without CDP.
+async fn launch_session(
+    paths: &AccountPaths,
+    target: &runtime::CodexAppTarget,
+    event: &str,
+) -> anyhow::Result<CodexSession> {
+    let debug_port = runtime::select_debug_port(DEBUG_PORT).await?;
     runtime::append_log(
-        &paths,
+        paths,
         "launcher.debug_port.selected",
         json!({
             "preferredPort": DEBUG_PORT,
@@ -198,23 +266,20 @@ async fn run_managed_codex(
             "preferredBindAttempts": debug_port.preferred_bind_attempts,
         }),
     );
-    let codex_process = runtime::launch_codex(&codex_target, debug_port.port)?;
-    let codex_pid = codex_process.id();
+    let process = runtime::launch_codex(target, debug_port.port)?;
     runtime::append_log(
-        &paths,
-        "launcher.codex_started",
-        json!({"executable": codex_executable, "debugPort": debug_port.port, "pid": codex_pid}),
+        paths,
+        event,
+        json!({
+            "executable": target.executable_path(),
+            "debugPort": debug_port.port,
+            "pid": process.id(),
+        }),
     );
-
-    if capture_web_login {
-        tokio::spawn(runtime::capture_web_login(paths.clone()));
-    }
-
-    let session = CodexSession {
-        process: Some(codex_process),
+    Ok(CodexSession {
+        process: Some(process),
         debug_port: debug_port.port,
-    };
-    run_resident_launcher(paths, service, broker, session).await
+    })
 }
 
 struct CodexSession {
@@ -259,51 +324,84 @@ async fn monitor_codex_session(
     service: BridgeService,
     session: CodexSession,
 ) -> anyhow::Result<()> {
-    tokio::select! {
-        result = cdp::run_watchdog(session.debug_port, service) => result.context("注入监测意外结束"),
-        result = runtime::wait_until_codex_stops(session.process, session.debug_port) => result.context("Codex 退出监测意外结束"),
+    let paths = service.paths().clone();
+    let stopped = tokio::select! {
+        result = cdp::run_watchdog(session.debug_port, service) => return result.context("注入监测意外结束"),
+        result = runtime::wait_until_codex_stops(session.process, session.debug_port) => result.context("Codex 退出监测意外结束")?,
+    };
+    if stopped == runtime::CodexStop::CdpLost {
+        runtime::append_log(
+            &paths,
+            "launcher.codex.cdp_lost",
+            json!({"debugPort": session.debug_port}),
+        );
     }
+    Ok(())
 }
 
 async fn recover_codex_session(paths: &AccountPaths) -> anyhow::Result<CodexSession> {
     runtime::append_log(paths, "launcher.codex.rearmed", json!({}));
     loop {
         let discovered = runtime::wait_until_codex_starts().await;
-        runtime::append_log(
-            paths,
-            "launcher.codex.detected",
-            json!({"pid": discovered.process.id(), "debugPort": discovered.debug_port}),
-        );
-        if let Some(debug_port) = discovered.debug_port {
-            return Ok(CodexSession {
-                process: Some(discovered.process),
-                debug_port,
-            });
+        if let Some(session) = take_over(paths, discovered).await {
+            return Ok(session);
         }
-        let result: anyhow::Result<CodexSession> = (|| {
-            let target = runtime::resolve_codex_target()?;
-            runtime::stop_codex_runtime(paths)?;
-            let debug_port = runtime::select_debug_port(DEBUG_PORT)?;
-            let process = runtime::launch_codex(&target, debug_port.port)?;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Attaches to an instance that already exposes CDP, or restarts only Codex
+/// with CDP when it was opened without it. `None` means keep waiting.
+async fn take_over(
+    paths: &AccountPaths,
+    mut discovered: runtime::DiscoveredCodex,
+) -> Option<CodexSession> {
+    runtime::append_log(
+        paths,
+        "launcher.codex.detected",
+        json!({"pid": discovered.process.id(), "debugPort": discovered.debug_port}),
+    );
+    if let Some(debug_port) = discovered.debug_port {
+        // An instance whose CDP endpoint stays down is watched quietly until
+        // it either serves CDP again or exits; it is never restarted for this.
+        let mut waited = false;
+        while !cdp::endpoint_available(debug_port).await {
+            if !discovered.process.is_running().unwrap_or(false) {
+                return None;
+            }
+            if !waited {
+                runtime::append_log(
+                    paths,
+                    "launcher.codex.cdp_waiting",
+                    json!({"pid": discovered.process.id(), "debugPort": debug_port}),
+                );
+                waited = true;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        return Some(CodexSession {
+            process: Some(discovered.process),
+            debug_port,
+        });
+    }
+    drop(discovered);
+    let result: anyhow::Result<CodexSession> = async {
+        let target = runtime::resolve_codex_target()?;
+        let stop_paths = paths.clone();
+        tokio::task::spawn_blocking(move || runtime::stop_codex_runtime(&stop_paths)).await??;
+        launch_session(paths, &target, "launcher.codex.restarted").await
+    }
+    .await;
+    match result {
+        Ok(session) => Some(session),
+        Err(error) => {
             runtime::append_log(
-                paths,
-                "launcher.codex.restarted",
-                json!({"pid": process.id(), "debugPort": debug_port.port}),
-            );
-            Ok(CodexSession {
-                process: Some(process),
-                debug_port: debug_port.port,
-            })
-        })();
-        match result {
-            Ok(session) => return Ok(session),
-            Err(error) => runtime::append_log(
                 paths,
                 "launcher.codex.recovery_failed",
                 json!({"message": format!("{error:#}")}),
-            ),
+            );
+            None
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
 
@@ -461,7 +559,27 @@ fn show_error(message: &str) {
     }
 }
 
-#[cfg(not(windows))]
+/// LaunchAgent and account-switch helpers have no terminal, so a fatal start
+/// error is also shown as a system alert. The message is passed as an
+/// argument, never interpolated into the AppleScript source.
+#[cfg(target_os = "macos")]
+fn show_error(message: &str) {
+    eprintln!("{message}");
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "display alert \"codex-plus\" message (item 1 of argv) as critical",
+            "-e",
+            "end run",
+            message,
+        ])
+        .stdin(std::process::Stdio::null())
+        .spawn();
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn show_error(message: &str) {
     eprintln!("{message}");
 }

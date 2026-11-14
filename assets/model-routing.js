@@ -3,7 +3,8 @@
 
   const String = window.String;
   const functionToString = (() => {}).toString;
-  const VERSION = 24;
+  const core = window.__codexPlusCore;
+  const VERSION = 25;
   const PROVIDER = "codex-plus-api";
   const POOL_PROVIDER = "codex-plus-account-pool";
   const SELECTED_KEY = "codex-plus:selected-model";
@@ -47,16 +48,10 @@
   }
 
   function diagnostic(event, detail = {}) {
-    state.diagnostics.push({ event, at: Date.now(), ...detail });
-    if (state.diagnostics.length > 100) state.diagnostics.shift();
+    core.pushDiagnostic(state.diagnostics, 100, event, detail);
   }
 
-  async function invoke(path, payload = {}) {
-    if (typeof window.codexPlusInvoke !== "function") throw new Error("codex-plus bridge 尚未就绪");
-    const result = await window.codexPlusInvoke(path, payload);
-    if (["failed", "error"].includes(String(result?.status || "").toLowerCase())) throw new Error(result?.message || "操作失败");
-    return result;
-  }
+  const invoke = core.invoke;
 
   function cloneModelContainer(value) {
     if (Array.isArray(value)) return [...value];

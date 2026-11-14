@@ -7,9 +7,32 @@ use crate::accounts::{AccountPaths, atomic_write};
 
 pub const BROKER_PROVIDER_ID: &str = "codex-plus-api";
 pub const POOL_PROVIDER_ID: &str = "codex-plus-account-pool";
-pub const BROKER_TOKEN: &str = "codex-plus-loopback";
+const BROKER_TOKEN_FILE: &str = "broker-token";
+
+/// The bearer token Codex presents to the local broker. It is generated once
+/// and then kept stable, because a running Codex keeps the token it read from
+/// config.toml at startup; rotating it would break that session's API routes.
+pub fn broker_token(paths: &AccountPaths) -> anyhow::Result<String> {
+    let path = paths.state_dir.join(BROKER_TOKEN_FILE);
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let existing = existing.trim();
+        if existing.len() >= 32 && existing.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Ok(existing.to_string());
+        }
+    }
+    let token = format!(
+        "cp{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    atomic_write(&path, token.as_bytes())
+        .map_err(anyhow::Error::from)
+        .context("无法保存本机 broker 令牌")?;
+    Ok(token)
+}
 
 pub fn reconcile_codex_config(paths: &AccountPaths, port: u16) -> anyhow::Result<()> {
+    let token = broker_token(paths)?;
     let path = paths.codex_config();
     let original = match fs::read_to_string(&path) {
         Ok(value) => value,
@@ -34,13 +57,13 @@ pub fn reconcile_codex_config(paths: &AccountPaths, port: u16) -> anyhow::Result
     managed["name"] = value("codex-plus API broker");
     managed["base_url"] = value(format!("http://127.0.0.1:{port}/v1"));
     managed["wire_api"] = value("responses");
-    managed["experimental_bearer_token"] = value(BROKER_TOKEN);
+    managed["experimental_bearer_token"] = value(token.as_str());
     providers[BROKER_PROVIDER_ID] = Item::Table(managed);
     let mut pool = Table::new();
     pool["name"] = value("codex-plus ChatGPT account pool");
     pool["base_url"] = value(format!("http://127.0.0.1:{port}/subscription/v1"));
     pool["wire_api"] = value("responses");
-    pool["experimental_bearer_token"] = value(BROKER_TOKEN);
+    pool["experimental_bearer_token"] = value(token.as_str());
     pool["requires_openai_auth"] = value(false);
     pool["supports_websockets"] = value(false);
     pool["capabilities"]["remote_compaction"] = value("v2");
@@ -106,5 +129,16 @@ mod tests {
         assert!(output.contains("wire_api = \"responses\""));
         assert!(output.contains("base_url = \"http://127.0.0.1:57321/v1\""));
         assert!(paths.codex_home.join("config.toml.codex-plus.bak").exists());
+        let token = broker_token(&paths).unwrap();
+        assert_eq!(
+            config["model_providers"][POOL_PROVIDER_ID]["experimental_bearer_token"].as_str(),
+            Some(token.as_str())
+        );
+        assert_ne!(token, "codex-plus-loopback");
+        assert_eq!(
+            broker_token(&paths).unwrap(),
+            token,
+            "token must stay stable"
+        );
     }
 }

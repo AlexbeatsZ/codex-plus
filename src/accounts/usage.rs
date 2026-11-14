@@ -1,7 +1,6 @@
 use super::*;
 use reqwest::StatusCode;
 
-const REFRESH_URL: &str = "https://auth.openai.com/oauth/token";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(25);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 

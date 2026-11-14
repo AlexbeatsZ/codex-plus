@@ -1,5 +1,4 @@
 use std::ffi::OsString;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -8,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::accounts::AccountPaths;
 
-const COMPONENT_DIR: &str = "local-tools";
+use crate::layout::LOCAL_TOOLS_DIR as COMPONENT_DIR;
 
 #[cfg(windows)]
 const DEFAULT_TUNNEL_ID: &str = "tunnel_6a971ae4c9c0819192f1a813a4120a88";
@@ -189,12 +188,7 @@ fn discover_component_root() -> anyhow::Result<PathBuf> {
     {
         candidates.push(PathBuf::from(explicit));
     }
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(release_dir) = executable.parent()
-        && let Some(repository_root) = release_dir.ancestors().nth(2)
-    {
-        candidates.push(repository_root.join(COMPONENT_DIR));
-    }
+    candidates.push(crate::layout::repository_root().join(COMPONENT_DIR));
     candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(COMPONENT_DIR));
 
     let mut checked = Vec::new();
@@ -249,29 +243,7 @@ fn read_runtime_key(path: &Path) -> anyhow::Result<OsString> {
 }
 
 fn read_optional_env_value(path: &Path, name: &str) -> anyhow::Result<Option<String>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("无法读取 local-tools 配置文件 {}", path.display()))?;
-    Ok(contents
-        .lines()
-        .filter_map(|line| line.split_once('='))
-        .filter(|(candidate, _)| candidate.trim() == name)
-        .map(|(_, value)| unquote(value.trim()).to_string())
-        .next_back()
-        .filter(|value| !value.trim().is_empty()))
-}
-
-fn unquote(value: &str) -> &str {
-    if value.len() >= 2
-        && ((value.starts_with('"') && value.ends_with('"'))
-            || (value.starts_with('\'') && value.ends_with('\'')))
-    {
-        &value[1..value.len() - 1]
-    } else {
-        value
-    }
+    crate::layout::env_file_value(path, name)
 }
 
 fn command_path(path: &Path) -> String {
@@ -290,6 +262,7 @@ fn shell_quote(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn runtime_key_parser_uses_last_assignment_and_unquotes_it() {

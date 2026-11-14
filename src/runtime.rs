@@ -56,8 +56,15 @@ pub struct DebugPortSelection {
     pub preferred_bind_attempts: u32,
 }
 
+/// The log rotates to `codex-plus.log.1` beyond this size, keeping two files.
+const LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+
 pub fn append_log(paths: &AccountPaths, event: &str, details: serde_json::Value) {
     let _ = fs::create_dir_all(&paths.state_dir);
+    let path = paths.log_path();
+    if fs::metadata(&path).is_ok_and(|metadata| metadata.len() > LOG_ROTATE_BYTES) {
+        let _ = fs::rename(&path, path.with_extension("log.1"));
+    }
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -67,11 +74,7 @@ pub fn append_log(paths: &AccountPaths, event: &str, details: serde_json::Value)
         "event": sanitize_event(event),
         "details": details,
     });
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.log_path())
-    {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "{value}");
     }
 }
@@ -89,7 +92,7 @@ pub fn acquire_launcher_guard(paths: &AccountPaths) -> anyhow::Result<LauncherGu
     Ok(LauncherGuard { _file: file })
 }
 
-pub fn select_debug_port(preferred_port: u16) -> anyhow::Result<DebugPortSelection> {
+pub async fn select_debug_port(preferred_port: u16) -> anyhow::Result<DebugPortSelection> {
     let mut last_error = None;
     let mut attempts = 0_u32;
     for attempt in 1..=DEBUG_PORT_BIND_ATTEMPTS {
@@ -112,7 +115,7 @@ pub fn select_debug_port(preferred_port: u16) -> anyhow::Result<DebugPortSelecti
                 if !retryable || attempt == DEBUG_PORT_BIND_ATTEMPTS {
                     break;
                 }
-                std::thread::sleep(DEBUG_PORT_BIND_INTERVAL);
+                tokio::time::sleep(DEBUG_PORT_BIND_INTERVAL).await;
             }
         }
     }
@@ -320,12 +323,15 @@ impl Drop for CodexProcess {
     }
 }
 
-pub fn resolve_codex_target() -> anyhow::Result<CodexAppTarget> {
-    if let Some(explicit) = std::env::var_os("CODEX_PLUS_APP_PATH")
+fn explicit_app_executable() -> Option<PathBuf> {
+    std::env::var_os("CODEX_PLUS_APP_PATH")
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        let executable = normalize_app_candidate(&explicit)
+        .and_then(|value| normalize_app_candidate(Path::new(&value)))
+}
+
+pub fn resolve_codex_target() -> anyhow::Result<CodexAppTarget> {
+    if std::env::var_os("CODEX_PLUS_APP_PATH").is_some_and(|value| !value.is_empty()) {
+        let executable = explicit_app_executable()
             .ok_or_else(|| anyhow::anyhow!("CODEX_PLUS_APP_PATH 中未找到 ChatGPT.exe/Codex.exe"))?;
         return Ok(CodexAppTarget::Executable(executable));
     }
@@ -404,11 +410,6 @@ $packages | Sort-Object Version -Descending | ForEach-Object { "$($_.PackageFami
     }
 
     bail!("未找到官方 OpenAI Codex/ChatGPT 桌面应用")
-}
-
-#[allow(dead_code)]
-pub fn resolve_codex_executable() -> anyhow::Result<PathBuf> {
-    resolve_codex_target().map(|target| target.executable_path().to_path_buf())
 }
 
 pub fn launch_codex(target: &CodexAppTarget, debug_port: u16) -> anyhow::Result<CodexProcess> {
@@ -657,7 +658,7 @@ pub(crate) fn background_command(program: impl AsRef<OsStr>) -> Command {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn apply_codex_desktop_proxy(command: &mut Command) {
-    let Some(proxy) = resolve_codex_desktop_proxy() else {
+    let Some(proxy) = crate::net::codex_desktop_proxy() else {
         return;
     };
     command
@@ -665,49 +666,6 @@ pub(crate) fn apply_codex_desktop_proxy(command: &mut Command) {
         .env("HTTP_PROXY", &proxy)
         .env("ALL_PROXY", &proxy)
         .env("NO_PROXY", "127.0.0.1,localhost");
-}
-
-#[cfg(target_os = "macos")]
-fn resolve_codex_desktop_proxy() -> Option<String> {
-    for key in ["CODEX_PLUS_CODEX_PROXY", "HTTPS_PROXY", "https_proxy"] {
-        if let Ok(value) = std::env::var(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("local-tools/.env.local");
-    let text = fs::read_to_string(path).ok()?;
-    proxy_from_env_text(&text)
-}
-
-#[cfg(target_os = "macos")]
-fn proxy_from_env_text(text: &str) -> Option<String> {
-    let keys = [
-        "CODEX_DESKTOP_HTTP_PROXY",
-        "CODEX_CLI_HTTP_PROXY",
-        "TUNNEL_HTTP_PROXY",
-    ];
-    for key in keys {
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((candidate, raw_value)) = line.split_once('=') else {
-                continue;
-            };
-            if candidate.trim() != key {
-                continue;
-            }
-            let value = raw_value.trim().trim_matches(['"', '\'']).trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
 }
 
 fn codex_command(program: impl AsRef<OsStr>) -> Command {
@@ -786,24 +744,50 @@ fn refresh_process_discovery(system: &mut System) {
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexStop {
+    /// The root process (or, without a handle, the CDP page) is gone.
+    Exited,
+    /// The root process lives on but has not served CDP for a long time.
+    CdpLost,
+}
+
+/// How long a live root process may go without a CDP page before the session
+/// is handed back to recovery, which then waits quietly for CDP or an exit.
+const CDP_LOST_AFTER: Duration = Duration::from_secs(120);
+const CDP_PROBE_INTERVAL: Duration = Duration::from_secs(10);
+
 pub async fn wait_until_codex_stops(
     mut root_process: Option<CodexProcess>,
     debug_port: u16,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<CodexStop> {
     let mut missing = 0_u8;
+    let mut cdp_seen_at = tokio::time::Instant::now();
+    let mut next_probe = tokio::time::Instant::now() + CDP_PROBE_INTERVAL;
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        if let Some(process) = root_process.as_mut() {
-            if process.is_running().context("无法查询 Codex 主进程状态")? {
-                missing = 0;
-                continue;
+        if let Some(process) = root_process.as_mut()
+            && process.is_running().context("无法查询 Codex 主进程状态")?
+        {
+            missing = 0;
+            // The live process is cheap to check every second; CDP is probed
+            // rarely, only to notice an instance that silently dropped it.
+            let now = tokio::time::Instant::now();
+            if now >= next_probe {
+                next_probe = now + CDP_PROBE_INTERVAL;
+                if crate::cdp::endpoint_available(debug_port).await {
+                    cdp_seen_at = now;
+                } else if now.duration_since(cdp_seen_at) >= CDP_LOST_AFTER {
+                    return Ok(CodexStop::CdpLost);
+                }
             }
+            continue;
         }
 
         if !crate::cdp::endpoint_available(debug_port).await {
             missing = missing.saturating_add(1);
             if missing >= 5 {
-                return Ok(());
+                return Ok(CodexStop::Exited);
             }
         } else {
             missing = 0;
@@ -836,6 +820,13 @@ fn wait_for_pids(system: &mut System, mut pids: Vec<Pid>) -> anyhow::Result<()> 
 }
 
 fn is_openai_codex_process(name: &OsStr, executable: Option<&Path>) -> bool {
+    // A user-selected app (CODEX_PLUS_APP_PATH) must be recognised by the same
+    // stop/monitor logic that launched it, wherever it is installed.
+    if let (Some(executable), Some(explicit)) = (executable, explicit_app_executable())
+        && normalized_path(executable) == normalized_path(&explicit)
+    {
+        return true;
+    }
     let name = name.to_string_lossy().to_ascii_lowercase();
     if !matches!(
         name.as_str(),
@@ -997,22 +988,6 @@ mod tests {
         ));
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn desktop_proxy_prefers_dedicated_key_then_cli_then_tunnel() {
-        assert_eq!(
-            proxy_from_env_text(
-                "TUNNEL_HTTP_PROXY=http://127.0.0.1:1\nCODEX_CLI_HTTP_PROXY=http://127.0.0.1:2\nCODEX_DESKTOP_HTTP_PROXY=http://127.0.0.1:3\n"
-            ),
-            Some("http://127.0.0.1:3".to_string())
-        );
-        assert_eq!(
-            proxy_from_env_text("TUNNEL_HTTP_PROXY='http://127.0.0.1:7897'\n"),
-            Some("http://127.0.0.1:7897".to_string())
-        );
-        assert_eq!(proxy_from_env_text("# empty\nOTHER=value\n"), None);
-    }
-
     #[test]
     fn root_process_filter_excludes_electron_children_and_app_server() {
         assert!(is_auxiliary_codex_command(&[
@@ -1077,13 +1052,14 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
             .mount(&server)
             .await;
-        tokio::time::timeout(
+        let stop = tokio::time::timeout(
             Duration::from_secs(8),
             wait_until_codex_stops(None, server.address().port()),
         )
         .await
         .unwrap()
         .unwrap();
+        assert_eq!(stop, CodexStop::Exited);
     }
 
     #[test]
@@ -1093,13 +1069,13 @@ mod tests {
         assert!(!is_codex_plus_launcher(OsStr::new("other-launcher.exe")));
     }
 
-    #[test]
-    fn debug_port_selection_falls_back_when_preferred_port_stays_occupied() {
+    #[tokio::test]
+    async fn debug_port_selection_falls_back_when_preferred_port_stays_occupied() {
         let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let preferred_port = occupied.local_addr().unwrap().port();
 
         // 端口在整个重试窗口内都被占用：必须回退，并且记录到确实重试过。
-        let selected = select_debug_port(preferred_port).unwrap();
+        let selected = select_debug_port(preferred_port).await.unwrap();
 
         assert_ne!(selected.port, 0);
         assert_ne!(selected.port, preferred_port);
@@ -1108,14 +1084,14 @@ mod tests {
         TcpListener::bind((Ipv4Addr::LOCALHOST, selected.port)).unwrap();
 
         drop(occupied);
-        let recovered = select_debug_port(preferred_port).unwrap();
+        let recovered = select_debug_port(preferred_port).await.unwrap();
         assert_eq!(recovered.port, preferred_port);
         assert!(recovered.preferred_bind_error.is_none());
         assert_eq!(recovered.preferred_bind_attempts, 1);
     }
 
-    #[test]
-    fn debug_port_selection_waits_for_preferred_port_to_be_released() {
+    #[tokio::test]
+    async fn debug_port_selection_waits_for_preferred_port_to_be_released() {
         let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let preferred_port = occupied.local_addr().unwrap().port();
 
@@ -1127,7 +1103,7 @@ mod tests {
             drop(occupied);
         });
 
-        let selected = select_debug_port(preferred_port).unwrap();
+        let selected = select_debug_port(preferred_port).await.unwrap();
         release.join().unwrap();
 
         assert_eq!(
@@ -1174,6 +1150,24 @@ mod tests {
             parse_designated_requirement("codesign: not signed at all\n"),
             None
         );
+    }
+
+    #[test]
+    fn log_rotates_past_its_size_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AccountPaths {
+            codex_home: temp.path().join("codex"),
+            state_dir: temp.path().join("state"),
+            usage_endpoint: String::new(),
+        };
+        fs::create_dir_all(&paths.state_dir).unwrap();
+        let file = File::create(paths.log_path()).unwrap();
+        file.set_len(LOG_ROTATE_BYTES + 1).unwrap();
+        append_log(&paths, "test.event", json!({}));
+        assert!(paths.log_path().with_extension("log.1").exists());
+        let current = fs::read_to_string(paths.log_path()).unwrap();
+        assert_eq!(current.lines().count(), 1);
+        assert!(current.contains("test.event"));
     }
 
     #[test]

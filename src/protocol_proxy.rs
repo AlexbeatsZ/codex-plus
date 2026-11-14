@@ -11,8 +11,6 @@ use serde_json::{Value, json};
 
 use crate::providers::{ProviderProfile, ProviderProtocol};
 
-pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 43121;
-const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 const THINK_OPEN_TAG: &str = "<think>";
@@ -125,10 +123,6 @@ impl CodexToolContext {
     }
 }
 
-pub fn local_responses_proxy_base_url(port: u16) -> String {
-    format!("http://127.0.0.1:{port}/v1")
-}
-
 pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     let mut result = json!({});
 
@@ -216,10 +210,6 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     Ok(result)
 }
 
-pub fn chat_completion_to_response(body: Value) -> anyhow::Result<Value> {
-    chat_completion_to_response_with_context(body, &CodexToolContext::default(), None)
-}
-
 pub fn chat_completion_to_response_with_request(
     body: Value,
     original_request: &Value,
@@ -275,12 +265,6 @@ fn chat_completion_to_response_with_context(
     Ok(response)
 }
 
-pub struct ProxyHttpResponse {
-    pub status: String,
-    pub content_type: String,
-    pub body: Vec<u8>,
-}
-
 pub struct UpstreamProxyResponse {
     pub status_code: u16,
     pub content_type: String,
@@ -298,39 +282,6 @@ pub struct ProviderProxyResponse {
 pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
-    AudioTranscriptions,
-}
-
-impl UpstreamProxyResponse {
-    pub fn status(&self) -> String {
-        http_status_line(self.status_code)
-    }
-
-    pub fn is_success(&self) -> bool {
-        (200..300).contains(&self.status_code)
-    }
-}
-
-pub fn upstream_header_timeout() -> Duration {
-    UPSTREAM_HEADER_TIMEOUT
-}
-
-pub fn upstream_stream_header_timeout() -> Duration {
-    UPSTREAM_STREAM_HEADER_TIMEOUT
-}
-
-pub fn upstream_http_client() -> anyhow::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
-        .user_agent("codex-plus/0.2 protocol-proxy")
-        .build()
-        .context("failed to build upstream HTTP client")
-}
-
-pub async fn send_upstream_request(
-    request: reqwest::RequestBuilder,
-) -> anyhow::Result<reqwest::Response> {
-    send_upstream_request_with_header_timeout(request, UPSTREAM_HEADER_TIMEOUT).await
 }
 
 pub async fn send_upstream_request_for_responses(
@@ -455,21 +406,6 @@ impl ChatSseToResponsesConverter {
     }
 }
 
-pub fn is_responses_proxy_path(path: &str) -> bool {
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    matches!(
-        path,
-        "/responses"
-            | "/v1/responses"
-            | "/v1/v1/responses"
-            | "/codex/v1/responses"
-            | "/responses/compact"
-            | "/v1/responses/compact"
-            | "/v1/v1/responses/compact"
-            | "/codex/v1/responses/compact"
-    )
-}
-
 pub fn is_responses_compact_proxy_path(path: &str) -> bool {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
     matches!(
@@ -478,36 +414,6 @@ pub fn is_responses_compact_proxy_path(path: &str) -> bool {
             | "/v1/responses/compact"
             | "/v1/v1/responses/compact"
             | "/codex/v1/responses/compact"
-    )
-}
-
-pub fn is_chat_completions_proxy_path(path: &str) -> bool {
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    matches!(
-        path,
-        "/chat/completions"
-            | "/v1/chat/completions"
-            | "/v1/v1/chat/completions"
-            | "/codex/v1/chat/completions"
-    )
-}
-
-pub fn is_models_proxy_path(path: &str) -> bool {
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    matches!(
-        path,
-        "/models" | "/v1/models" | "/v1/v1/models" | "/codex/v1/models"
-    )
-}
-
-pub fn is_audio_transcriptions_proxy_path(path: &str) -> bool {
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    matches!(
-        path,
-        "/audio/transcriptions"
-            | "/v1/audio/transcriptions"
-            | "/v1/v1/audio/transcriptions"
-            | "/codex/v1/audio/transcriptions"
     )
 }
 
@@ -550,7 +456,7 @@ pub async fn open_provider_responses_request(
             UpstreamWireApi::ChatCompletions,
         ),
     };
-    let client = upstream_http_client()?;
+    let client = crate::net::external_client()?;
     let mut request = client
         .post(endpoint)
         .bearer_auth(profile.api_key.trim())
@@ -616,9 +522,6 @@ pub fn provider_non_stream_response(
                 serde_json::to_vec(&response)?,
             ))
         }
-        UpstreamWireApi::AudioTranscriptions => {
-            anyhow::bail!("音频响应不能作为 Responses 响应处理")
-        }
     }
 }
 
@@ -644,75 +547,6 @@ pub fn responses_compact_url(base_url: &str) -> String {
         return base.to_string();
     }
     format!("{}/compact", responses_url(base_url).trim_end_matches('/'))
-}
-
-pub fn audio_transcriptions_url(base_url: &str) -> String {
-    let skip_version_prefix = base_url.trim().ends_with('#');
-    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
-    if base.to_ascii_lowercase().ends_with("/audio/transcriptions") {
-        return base.to_string();
-    }
-    let origin_only = base
-        .split_once("://")
-        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
-    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
-        format!("{base}/audio/transcriptions")
-    } else {
-        format!("{base}/v1/audio/transcriptions")
-    };
-    while url.contains("/v1/v1") {
-        url = url.replace("/v1/v1", "/v1");
-    }
-    url
-}
-
-pub fn models_url(base_url: &str) -> String {
-    let skip_version_prefix = base_url.trim().ends_with('#');
-    let mut base = base_url
-        .trim()
-        .trim_end_matches('#')
-        .trim_end_matches('/')
-        .to_string();
-    if base.to_ascii_lowercase().ends_with("/chat/completions") {
-        base.truncate(base.len() - "/chat/completions".len());
-    }
-    if base.to_ascii_lowercase().ends_with("/models") {
-        return base;
-    }
-    let origin_only = base
-        .split_once("://")
-        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
-    let mut url = if skip_version_prefix || has_version_suffix(&base) || !origin_only {
-        format!("{base}/models")
-    } else {
-        format!("{base}/v1/models")
-    };
-    while url.contains("/v1/v1") {
-        url = url.replace("/v1/v1", "/v1");
-    }
-    url
-}
-
-pub(crate) fn has_version_suffix(base_url: &str) -> bool {
-    let segment = base_url.rsplit('/').next().unwrap_or(base_url);
-    let Some(rest) = segment.strip_prefix('v') else {
-        return false;
-    };
-    rest.chars().next().is_some_and(|ch| ch.is_ascii_digit())
-}
-
-pub fn chat_sse_to_responses_sse(input: &str) -> String {
-    let mut converter = ChatSseToResponsesConverter::default();
-    let mut output = converter.push_bytes(input.as_bytes());
-    output.extend(converter.finish());
-    String::from_utf8(output).unwrap_or_default()
-}
-
-pub fn chat_sse_to_responses_sse_with_request(input: &str, original_request: &Value) -> String {
-    let mut converter = ChatSseToResponsesConverter::with_request(original_request);
-    let mut output = converter.push_bytes(input.as_bytes());
-    output.extend(converter.finish());
-    String::from_utf8(output).unwrap_or_default()
 }
 
 pub fn response_id_from_chat_id(id: Option<&str>) -> String {
@@ -1477,21 +1311,6 @@ fn extract_chat_sse_error(value: &Value) -> (String, Option<String>) {
         .and_then(Value::as_str)
         .map(ToString::to_string);
     (message, error_type)
-}
-
-fn http_status_line(status: u16) -> String {
-    match status {
-        200 => "200 OK".to_string(),
-        400 => "400 Bad Request".to_string(),
-        401 => "401 Unauthorized".to_string(),
-        403 => "403 Forbidden".to_string(),
-        404 => "404 Not Found".to_string(),
-        429 => "429 Too Many Requests".to_string(),
-        500 => "500 Internal Server Error".to_string(),
-        502 => "502 Bad Gateway".to_string(),
-        503 => "503 Service Unavailable".to_string(),
-        _ => format!("{status} Upstream"),
-    }
 }
 
 pub fn responses_error_from_upstream(status_code: u16, content_type: &str, body: &[u8]) -> Value {

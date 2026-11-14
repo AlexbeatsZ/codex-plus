@@ -41,10 +41,11 @@ ChatGPT Web
 
 - 所有非 `--apply-pending-action` 的 `codex-plus` 启动模式都会确保 desktop helper 可用。
 - 首选地址固定为 `127.0.0.1:43122`，仅监听 loopback。
-- 若 43122 已被健康的 codex-plus helper 占用，新 launcher 复用现有实例，不再创建第二个 helper。
+- helper 在取得 launcher 锁之后才启动。此前它在停止旧 launcher 之前启动，会“复用”旧 launcher 的 helper，随后旧 launcher 被停止，端点指向已死的 helper（日志中 18 次复用有 17 次如此）。
+- 若 43122 已被健康的 codex-plus helper 占用，新 launcher 复用现有实例，不再创建第二个 helper；端点文件已指向该端口时保留原文件（其中有该 helper 的 token）。
 - 若 43122 被其他程序占用，则绑定随机 loopback 端口。
 - 当前端点写入 `.codex-plus/desktop-endpoint.json`，薄客户端每次调用都重新读取，因此端口 fallback 不需要修改 MCP 配置。
-- `POST /v1/desktop` 要求固定的 loopback bearer marker；它不是跨主机认证凭据，真正的安全边界仍是 loopback + 当前用户权限。
+- `POST /v1/desktop` 要求每个 helper 启动时随机生成的 bearer token，写在 0600 的 `desktop-endpoint.json`（version 2）里，只有当前用户可读；并拒绝非回环 Host。客户端每次读取端点文件，缺少 token 时（version 1 的旧 helper）回退旧固定标记。本机其他用户或浏览器页面因此无法注入键鼠或截图。
 
 ## 客户端
 
