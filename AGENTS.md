@@ -10,6 +10,7 @@
 
 - 公共源码 `main` 为 0.3.14（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
 - 0.3.14（2026-11-14）是架构整理与缺陷修复版：新增 `layout`（仓库路径与 `.env.local`）、`net`（代理策略与 client 缓存）、`store`（JSON 状态文件）、`http`（响应与回环 Host 校验）模块和 `assets/core.js`（页面脚本公共层，单一菜单 observer）。修复 CDP 心跳误判、CDP 失联不结束、桌面 helper 被误杀、流式请求吞掉上游错误、原生路由文件损坏导致全部 500、官方流量忽略账户池代理等。broker 与桌面 helper 改用随机令牌并校验 Host。详细见 `docs/log/2026-11.md`。
+- 0.3.14 部署（2026-11-14）：Mac 固定入口已签名替换（源码 c556598），ROG 固定入口已替换为 0.3.14-rog（61699a0，旧映像在 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0314\running-previous-codex-plus.exe`，进程退出后可删）。OMEN 的 0.3.14-omen（efed103）只上传了 Release，**未替换 OMEN 固定入口**：新版桌面 helper 拒绝旧固定令牌，OMEN 只部署过二进制、其 local-tools 客户端仍是旧版，需同时更新后再部署。三端运行中的进程均未重启。
 - 0.3.13 及以前的逐版本历史见 `docs/log/`，以及 git 历史中 0.3.14 之前的 AGENTS.md。
 
 ## 环境
@@ -31,7 +32,8 @@
 - 0.3.13 实机验收待用户显式启动新版：登录额度耗尽时选择有额度的外接 API 或订阅池模型，发送一条真实消息，切回官方模型确认限制恢复。
 - 订阅 API 勾选框显示修复、普通 PDF/LaTeX 预览、未登录页按钮的目视验收仍待用户在新版界面确认。
 - 待决策：原生网关缺少“停用/还原 `openai_base_url`”入口（launcher 不运行时其他官方客户端不可用）。
-- ROG 旧常驻 launcher 映像 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-upgrade-20261001\running-previous-codex-plus.exe` 待进程自然退出后清理；OMEN 有 13 个既有未提交文件，同步源码前须先处理。
+- 待决策：OMEN 部署 0.3.14-omen 时如何同步其 local-tools（`scripts/desktop-helper.mjs` 与 `dist/`），见 Current State。
+- ROG 旧常驻 launcher 映像（`...\.agents\codex-plus-upgrade-20261001\` 与 `...\.agents\codex-plus-0314\running-previous-codex-plus.exe`）待进程自然退出后清理；OMEN 有 13 个既有未提交文件，同步源码前须先处理。
 
 # Build / Run / Test
 
