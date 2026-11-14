@@ -36,6 +36,16 @@ Windows launcher. Verify the release manifest before copying the binary to the
 standard release path. Record its version, branch and source commit in ignored
 `.codex-plus/release.json`. No private bridge configuration is copied to OMEN.
 
+The 0.3.14 helper endpoint includes a per-process token. Deploy both desktop
+clients with the EXE, including `local-tools/scripts/desktop-helper.mjs` and the
+compiled `local-tools/dist/desktop-mcp.js` with its matching source and declaration
+files. The updated clients also support version 1 endpoint files. OMEN retains
+its existing source worktree and 13 local changes, with these two desktop client
+source files synchronized from the committed release. Its full source worktree
+therefore has 15 modified files while the deployed executable comes from the
+recorded clean channel build. Preserve all 15 changes during later source
+integration.
+
 For the 2026-10-01 Windows deployment, the user forbids starting, stopping or
 restarting Codex, its launcher and Tunnel. Replacing files does not change a running process; actual
 acceptance waits for the user's own next launcher start or Windows login. Keep
