@@ -298,7 +298,27 @@ fn zstd_decodes_before_routing_and_original_body_stays_opaque() {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_ENCODING, "zstd".parse().unwrap());
     assert_eq!(decode(&headers, &bytes).unwrap()["model"], "cp-test");
-    assert!(decode(&headers, &Bytes::from_static(b"invalid")).is_err());
+    let invalid = decode(&headers, &Bytes::from_static(b"invalid")).unwrap_err();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn oversized_zstd_body_is_reported_as_too_large_not_malformed() {
+    let mut raw = br#"{"model":"cp-test","input":""#.to_vec();
+    raw.resize(LIMIT + 16, b'A');
+    raw.extend_from_slice(br#""}"#);
+    let bytes = Bytes::from(zstd::stream::encode_all(raw.as_slice(), 1).unwrap());
+    assert!(bytes.len() < LIMIT);
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_ENCODING, "zstd".parse().unwrap());
+    let error = decode(&headers, &bytes).unwrap_err();
+    assert!(matches!(error, DecodeError::TooLarge));
+    assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(!error.to_string().contains("格式无效"));
+
+    headers.insert(header::CONTENT_ENCODING, "br".parse().unwrap());
+    let error = decode(&headers, &Bytes::from_static(b"{}")).unwrap_err();
+    assert_eq!(error.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 #[test]

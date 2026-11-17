@@ -603,7 +603,32 @@ fn official_headers(
     Ok(headers)
 }
 
-pub fn decode(headers: &HeaderMap, bytes: &Bytes) -> anyhow::Result<Value> {
+/// Why a native request body could not be decoded. Each case keeps its own
+/// status and message: image-heavy histories hit `TooLarge`, which must not be
+/// reported as a malformed request.
+#[derive(Debug, thiserror::Error)]
+pub enum DecodeError {
+    #[error("原生模型请求解压后超过 {} MiB，请新开任务或减少历史中的图片", LIMIT / (1024 * 1024))]
+    TooLarge,
+    #[error("原生模型请求压缩格式不受支持：{0}")]
+    Encoding(String),
+    #[error("原生模型请求 zstd 解压失败：{0}")]
+    Zstd(std::io::Error),
+    #[error("原生模型请求 JSON 无效：{0}")]
+    Json(serde_json::Error),
+}
+
+impl DecodeError {
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::Encoding(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::Zstd(_) | Self::Json(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+}
+
+pub fn decode(headers: &HeaderMap, bytes: &Bytes) -> Result<Value, DecodeError> {
     let encoding = headers
         .get(header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
@@ -611,15 +636,21 @@ pub fn decode(headers: &HeaderMap, bytes: &Bytes) -> anyhow::Result<Value> {
     let decoded = match encoding {
         "identity" | "" => bytes.to_vec(),
         "zstd" => {
-            let decoder = zstd::stream::read::Decoder::new(bytes.as_ref())?;
+            let decoder =
+                zstd::stream::read::Decoder::new(bytes.as_ref()).map_err(DecodeError::Zstd)?;
             let mut decoded = Vec::new();
-            decoder.take((LIMIT + 1) as u64).read_to_end(&mut decoded)?;
-            anyhow::ensure!(decoded.len() <= LIMIT, "原生请求解压后过大");
+            decoder
+                .take((LIMIT + 1) as u64)
+                .read_to_end(&mut decoded)
+                .map_err(DecodeError::Zstd)?;
+            if decoded.len() > LIMIT {
+                return Err(DecodeError::TooLarge);
+            }
             decoded
         }
-        _ => bail!("原生请求压缩格式不受支持"),
+        other => return Err(DecodeError::Encoding(other.to_string())),
     };
-    serde_json::from_slice(&decoded).context("原生模型请求 JSON 无效")
+    serde_json::from_slice(&decoded).map_err(DecodeError::Json)
 }
 
 pub fn forward_headers(headers: &HeaderMap) -> HeaderMap {
