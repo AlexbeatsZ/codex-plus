@@ -6,7 +6,9 @@ use axum::middleware::Next;
 use serde_json::{Value, json};
 
 /// Largest request body any local endpoint accepts, before or after zstd.
-pub const BODY_LIMIT: usize = 32 * 1024 * 1024;
+/// Codex resends every inline base64 screenshot with each turn, so image-heavy
+/// tasks exceeded the former 32 MiB after about 75 images.
+pub const BODY_LIMIT: usize = 128 * 1024 * 1024;
 
 pub fn response(status: StatusCode, content_type: &str, body: Body) -> Response<Body> {
     let mut response = Response::new(body);

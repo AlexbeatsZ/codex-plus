@@ -230,7 +230,14 @@ async fn native_request(
     }
     let mut value = match gateway::decode(&headers, &body) {
         Ok(value) => value,
-        Err(_) => return failure(StatusCode::BAD_REQUEST, "原生模型请求格式无效"),
+        Err(error) => {
+            crate::runtime::append_log(
+                &paths,
+                "native.request.decode_failed",
+                json!({"error": error.to_string(), "bodyBytes": body.len()}),
+            );
+            return failure(error.status(), &error.to_string());
+        }
     };
     let Some(model) = value["model"].as_str().map(str::to_string) else {
         return failure(StatusCode::BAD_REQUEST, "原生模型请求缺少 model");

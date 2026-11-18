@@ -466,44 +466,51 @@ pub async fn models(
 ) -> anyhow::Result<Response<Body>> {
     // Native refresh is bounded; a network failure keeps the last official template.
     remember_client_version(query);
-    let mut fresh = None;
-    if settings.original_catalog.is_none() {
-        let upstream_headers =
-            official_headers(paths, settings, headers).unwrap_or_else(|_| forward_headers(headers));
-        let mut url = format!(
-            "{}/models",
-            settings.upstream(&upstream_headers).trim_end_matches('/')
-        );
-        if let Some(query) = query {
-            url.push('?');
-            url.push_str(query);
-        }
-        if let Ok(response) = client
-            .get(url)
-            .headers(upstream_headers)
-            .header(header::ACCEPT_ENCODING, "identity")
-            .timeout(Duration::from_secs(3))
-            .send()
-            .await
-            && response.status().is_success()
-            && let Ok(bytes) = response.bytes().await
-            && let Ok(doc) = serde_json::from_slice::<Value>(&bytes)
-            && doc["models"].as_array().is_some_and(|m| !m.is_empty())
-        {
-            fresh = Some((official_entries(&doc), bytes));
-        }
-    }
+    let version = query
+        .and_then(client_version_from_query)
+        .map(str::to_string);
+    let fresh = if settings.original_catalog.is_none() {
+        fetch_official(client, paths, settings, headers, query).await
+    } else {
+        Err(anyhow::anyhow!("original catalog is pinned"))
+    };
     let query = query.unwrap_or("").to_string();
     let (paths, apis, settings) = (paths.clone(), apis.clone(), settings.clone());
     let body = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
         let official = match fresh {
-            Some((models, bytes)) if !models.is_empty() => {
+            Ok((models, bytes)) => {
                 log_refresh_if_changed(&paths, &query, &models);
                 archive_templates(&paths, &models)?;
                 atomic_write(&paths.state_dir.join("official-models.json"), &bytes)?;
+                if let Some(version) = &version {
+                    atomic_write(&version_snapshot(&paths, version), &bytes)?;
+                }
                 models
             }
-            _ => native_models(&paths, &settings)?,
+            Err(error) => {
+                // Several official clients of different versions share this
+                // gateway and the server filters the list by version. A fallback
+                // must answer with the list this same version last received;
+                // another version's list silently drops models and the client
+                // then sizes them with fallback metadata (small window, inlined tools).
+                let snapshot = version
+                    .as_deref()
+                    .filter(|_| settings.original_catalog.is_none())
+                    .map(|version| read_entries(&version_snapshot(&paths, version)))
+                    .filter(|models| !models.is_empty());
+                let served = if snapshot.is_some() {
+                    "version_snapshot"
+                } else {
+                    "shared"
+                };
+                if settings.original_catalog.is_none() {
+                    log_refresh_failure(&paths, &query, &error.to_string(), served);
+                }
+                match snapshot {
+                    Some(models) => models.as_ref().clone(),
+                    None => native_models(&paths, &settings)?,
+                }
+            }
         };
         Ok(serde_json::to_vec(&catalog_with(
             &paths, &apis, &settings, official,
@@ -527,13 +534,62 @@ pub fn http_client(paths: &AccountPaths) -> anyhow::Result<reqwest::Client> {
     crate::net::official_client(&proxy)
 }
 
+async fn fetch_official(
+    client: &reqwest::Client,
+    paths: &AccountPaths,
+    settings: &Settings,
+    headers: &HeaderMap,
+    query: Option<&str>,
+) -> anyhow::Result<(Vec<Value>, Bytes)> {
+    let upstream_headers =
+        official_headers(paths, settings, headers).unwrap_or_else(|_| forward_headers(headers));
+    let mut url = format!(
+        "{}/models",
+        settings.upstream(&upstream_headers).trim_end_matches('/')
+    );
+    if let Some(query) = query {
+        url.push('?');
+        url.push_str(query);
+    }
+    let response = client
+        .get(url)
+        .headers(upstream_headers)
+        .header(header::ACCEPT_ENCODING, "identity")
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .map_err(|error| anyhow::anyhow!("request failed: {}", error.without_url()))?;
+    let status = response.status();
+    anyhow::ensure!(status.is_success(), "HTTP {}", status.as_u16());
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| anyhow::anyhow!("body failed: {}", error.without_url()))?;
+    let doc = serde_json::from_slice::<Value>(&bytes).context("invalid JSON")?;
+    let models = official_entries(&doc);
+    anyhow::ensure!(!models.is_empty(), "empty model list");
+    Ok((models, bytes))
+}
+
+/// The last successful official list per client version; the version string
+/// is validated to a filename-safe charset by `client_version_from_query`.
+fn version_snapshot(paths: &AccountPaths, version: &str) -> PathBuf {
+    paths
+        .state_dir
+        .join("official-models")
+        .join(format!("{version}.json"))
+}
+
 static LAST_REFRESH: OnceLock<Mutex<Option<(String, Vec<String>)>>> = OnceLock::new();
+static LAST_FAILURE: Mutex<Option<(String, String)>> = Mutex::new(None);
 static CLIENT_VERSION: Mutex<Option<String>> = Mutex::new(None);
 /// Used until the official client has refreshed its catalog through us once.
 const FALLBACK_CLIENT_VERSION: &str = "0.169.0";
 
-/// The `client_version` the official client itself sends. The model list is
-/// filtered by it, so subscription discovery asks with the same version.
+/// The newest `client_version` seen. The model list is filtered by version and
+/// other official clients (an older CLI, an MCP bridge's app-server) share
+/// this gateway; the last caller must not decide what subscription discovery
+/// asks for, or newer models vanish from the desktop's routes.
 pub fn native_client_version() -> String {
     CLIENT_VERSION
         .lock()
@@ -542,20 +598,54 @@ pub fn native_client_version() -> String {
         .unwrap_or_else(|| FALLBACK_CLIENT_VERSION.to_string())
 }
 
+fn client_version_from_query(query: &str) -> Option<&str> {
+    query.split('&').find_map(|pair| {
+        pair.strip_prefix("client_version=")
+            .filter(|v| !v.is_empty() && v.len() <= 32 && !v.starts_with('.'))
+            .filter(|v| {
+                v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
+            })
+    })
+}
+
+fn version_key(version: &str) -> Vec<u64> {
+    version
+        .split(['-', '+'])
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .map(|part| part.parse().unwrap_or(0))
+        .collect()
+}
+
+fn newer_version(current: Option<&str>, seen: &str) -> bool {
+    current.is_none_or(|current| version_key(seen) > version_key(current))
+}
+
 fn remember_client_version(query: Option<&str>) {
-    let version = query.and_then(|query| {
-        query.split('&').find_map(|pair| {
-            pair.strip_prefix("client_version=")
-                .filter(|v| !v.is_empty() && v.len() <= 32)
-                .filter(|v| {
-                    v.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
-                })
-        })
-    });
-    if let Some(version) = version {
-        *CLIENT_VERSION.lock().unwrap() = Some(version.to_string());
+    if let Some(version) = query.and_then(client_version_from_query) {
+        let mut current = CLIENT_VERSION.lock().unwrap();
+        if newer_version(current.as_deref(), version) {
+            *current = Some(version.to_string());
+        }
     }
+}
+
+// Failures repeat on every refresh while upstream is unreachable; record only
+// changes, and forget the state once a refresh succeeds.
+fn log_refresh_failure(paths: &AccountPaths, query: &str, reason: &str, served: &str) {
+    let key = (query.to_string(), format!("{reason}|{served}"));
+    let mut last = LAST_FAILURE.lock().unwrap();
+    if last.as_ref() == Some(&key) {
+        return;
+    }
+    crate::runtime::append_log(
+        paths,
+        "native.models.refresh_failed",
+        json!({"query": query, "reason": reason, "served": served}),
+    );
+    *last = Some(key);
 }
 
 // The client refreshes the catalog every few seconds; record only changes in
@@ -565,6 +655,7 @@ fn log_refresh_if_changed(paths: &AccountPaths, query: &str, models: &[Value]) {
         .iter()
         .filter_map(|m| m["slug"].as_str().map(str::to_string))
         .collect();
+    *LAST_FAILURE.lock().unwrap() = None;
     let mut last = LAST_REFRESH.get_or_init(Mutex::default).lock().unwrap();
     if last.as_ref() == Some(&(query.to_string(), slugs.clone())) {
         return;
@@ -603,7 +694,32 @@ fn official_headers(
     Ok(headers)
 }
 
-pub fn decode(headers: &HeaderMap, bytes: &Bytes) -> anyhow::Result<Value> {
+/// Why a native request body could not be decoded. Each case keeps its own
+/// status and message: image-heavy histories hit `TooLarge`, which must not be
+/// reported as a malformed request.
+#[derive(Debug, thiserror::Error)]
+pub enum DecodeError {
+    #[error("原生模型请求解压后超过 {} MiB，请新开任务或减少历史中的图片", LIMIT / (1024 * 1024))]
+    TooLarge,
+    #[error("原生模型请求压缩格式不受支持：{0}")]
+    Encoding(String),
+    #[error("原生模型请求 zstd 解压失败：{0}")]
+    Zstd(std::io::Error),
+    #[error("原生模型请求 JSON 无效：{0}")]
+    Json(serde_json::Error),
+}
+
+impl DecodeError {
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::Encoding(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::Zstd(_) | Self::Json(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+}
+
+pub fn decode(headers: &HeaderMap, bytes: &Bytes) -> Result<Value, DecodeError> {
     let encoding = headers
         .get(header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
@@ -611,15 +727,21 @@ pub fn decode(headers: &HeaderMap, bytes: &Bytes) -> anyhow::Result<Value> {
     let decoded = match encoding {
         "identity" | "" => bytes.to_vec(),
         "zstd" => {
-            let decoder = zstd::stream::read::Decoder::new(bytes.as_ref())?;
+            let decoder =
+                zstd::stream::read::Decoder::new(bytes.as_ref()).map_err(DecodeError::Zstd)?;
             let mut decoded = Vec::new();
-            decoder.take((LIMIT + 1) as u64).read_to_end(&mut decoded)?;
-            anyhow::ensure!(decoded.len() <= LIMIT, "原生请求解压后过大");
+            decoder
+                .take((LIMIT + 1) as u64)
+                .read_to_end(&mut decoded)
+                .map_err(DecodeError::Zstd)?;
+            if decoded.len() > LIMIT {
+                return Err(DecodeError::TooLarge);
+            }
             decoded
         }
-        _ => bail!("原生请求压缩格式不受支持"),
+        other => return Err(DecodeError::Encoding(other.to_string())),
     };
-    serde_json::from_slice(&decoded).context("原生模型请求 JSON 无效")
+    serde_json::from_slice(&decoded).map_err(DecodeError::Json)
 }
 
 pub fn forward_headers(headers: &HeaderMap) -> HeaderMap {
