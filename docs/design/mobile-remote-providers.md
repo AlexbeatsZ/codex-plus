@@ -94,6 +94,15 @@ Windows 显式传入其官方内嵌 `codex.exe` 与本机目录模板路径；�
 
 `/models` 返回原生模型信息，并在 3 秒内尝试更新官方模板，网络失败保留旧模板。
 模板依次采用用户显式目录、上次成功官方目录、本机 models_cache；滤除旧 cp-* 项后追加当前可见模型。
+
+**多版本客户端共用网关（0.3.16）**：官方服务端按 `client_version` 过滤列表，桌面端（0.169）之外，
+tunnel-client 的 Codex 桥会从 PATH 拉起另一版本的 `codex app-server`（Mac 上为 Homebrew 0.162.1），
+二者读同一 `config.toml`、交替刷新 `/models`。上游刷新失败时必须回退到**同一版本**上次成功的列表
+（`.codex-plus/official-models/<client_version>.json`），只有该版本没有快照时才用共享的
+`official-models.json`；否则桌面端会拿到旧版本的短列表，日志出现 `Unknown model … fallback model metadata`，
+当轮按 272000×95% 窗口并内联全部工具（约 15 万 token），表现为每隔几十分钟反复压缩。失败写
+`native.models.refresh_failed`（`served` 为 `version_snapshot` 或 `shared`，只在原因变化时记录）。
+订阅“读取模型”使用见过的**最高** `client_version`，不再被最后一个调用方改写。
 匹配真实 ID 的模型保留原始能力；外接 ID 带命名空间（如 `vendor/gpt-x`）时按最后一段匹配。
 所有 cp-* 禁用 Responses Lite：它提供的 web.run 走 `alpha/search`，属于官方账户，本机路由不得借用。
 
@@ -105,7 +114,7 @@ Windows 显式传入其官方内嵌 `codex.exe` 与本机目录模板路径；�
   内联进每次请求，首请求输入量约 5 倍（不能直接换算订阅额度扣减）并很快触发压缩，而压缩无法缩小工具定义。外接 route 仍为 `direct`，
   不支持代码模式和工具搜索的第三方上游不能接收这些工具形态。订阅模型找不到同名模板时
   仍按原生模型处理，沿用首个官方模板，不使用 32K 外接回退。
-- **模板不随单次官方刷新收缩**。实测官方 `/models` 在两份列表间切换（一份缺少 gpt-6.x），
+- **模板不随单次官方刷新收缩**。实测官方 `/models` 在两份列表间切换（一份缺少 gpt-6.x；0.3.16 查明主要来源是两个不同 `client_version` 的客户端交替刷新，见上文），
   旧实现只读最后一次结果，命中缺少的那份时订阅 gpt-6.1-sol 退回 32K。现在每次成功刷新的条目
   按 slug 归档到 `.codex-plus/native-model-templates.json`（最多 200 项），cp-* 依次在本次官方列表、
   显式目录、上次官方目录、归档和 models_cache 中查找能力；返回给调用方的官方列表仍是本次结果。
@@ -120,10 +129,10 @@ Windows 显式传入其官方内嵌 `codex.exe` 与本机目录模板路径；�
 请求体模型为 cp-* 时明确拒绝，不让外接 API 或订阅借用官方账户。
 原生客户端自行管理目录缓存；更改 API 后手机的出现时间取决于官方目录刷新。显式静态目录模式仅启动时更新。
 WebSocket 握手返回官方支持的 426，让同一原生会话切换为 HTTP/SSE，避免跨上游复用有状态连接。
-zstd 请求有解压上限，官方响应及凭据错误原样转发；cp-* 则使用原有精确 API/订阅路由，失效不回退。
+zstd 请求有解压上限（0.3.15 起与压缩前同为 128 MiB，`http::BODY_LIMIT`），超限返回 413 并说明原因，压缩格式不支持返回 415，zstd/JSON 损坏返回 400，不能合并成同一条“格式无效”；官方响应及凭据错误原样转发；cp-* 则使用原有精确 API/订阅路由，失效不回退。
 
 普通裸模型归当前官方账户。0.3.13 起，原生 reviewer 仅在同一 thread/session 可确认有效 managed 父渠道时复用已启用订阅池；其他 reviewer 保留当前官方账户。旧 provider 的 reviewer 路由保持既有订阅池规则。
-原生 v2 compaction_trigger 和 /responses/compact 通过按 thread-id/session-id 持久化的最后渠道保持归属（`native-thread-routes.json`，0.3.14 起每项带时间戳，90 天未用或超过 5000 项时按最旧裁剪；渠道不变的轮次不重写文件；旧版纯字符串格式照常读取；文件损坏时移到 `.corrupt-<时间>.json` 并按无记录处理，不再让所有原生请求返回 500）。官方流量（`/models`、官方推理与其余原生端点）使用账户池面板配置的代理，与额度查询和订阅池一致；`/models` 刷新日志只在查询参数或 slug 集合变化时记录，订阅“读取模型”使用官方客户端最近一次实际发送的 `client_version`。
+原生 v2 compaction_trigger 和 /responses/compact 通过按 thread-id/session-id 持久化的最后渠道保持归属（`native-thread-routes.json`，0.3.14 起每项带时间戳，90 天未用或超过 5000 项时按最旧裁剪；渠道不变的轮次不重写文件；旧版纯字符串格式照常读取；文件损坏时移到 `.corrupt-<时间>.json` 并按无记录处理，不再让所有原生请求返回 500）。官方流量（`/models`、官方推理与其余原生端点）使用账户池面板配置的代理，与额度查询和订阅池一致；`/models` 刷新日志只在查询参数或 slug 集合变化时记录，订阅“读取模型”使用官方客户端实际发送过的最高 `client_version`（0.3.16 前为最近一次，会被旧版本客户端改写）。
 无法核对历史真实模型与渠道时明确失败，不能误用官方账户。
 
 以下分工已落地：
