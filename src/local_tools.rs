@@ -4,6 +4,7 @@ use std::process::Stdio;
 
 use anyhow::{Context as _, bail};
 use serde_json::{Value, json};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
 
 use crate::accounts::AccountPaths;
 
@@ -48,6 +49,8 @@ fn resolve_runtime_alias(env_file: &Path) -> anyhow::Result<String> {
 #[derive(Debug)]
 struct RuntimeStart {
     component_root: PathBuf,
+    /// Unmanaged `tunnel-client run` processes stopped before connecting.
+    stray: Vec<u32>,
     ready: bool,
     started: bool,
     already_running: bool,
@@ -61,6 +64,7 @@ pub async fn ensure_runtime(paths: &AccountPaths) {
             "local_tools.runtime.ready",
             json!({
                 "componentRoot": start.component_root,
+                "strayStopped": start.stray,
                 "ready": start.ready,
                 "started": start.started,
                 "alreadyRunning": start.already_running,
@@ -117,6 +121,13 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
         shell_quote(workspace_root),
     );
 
+    let stray = stop_stray_runtimes(
+        &tunnel_client,
+        &component_root,
+        &runtime_alias,
+        &profile_name,
+    );
+
     let mut command = crate::runtime::background_command(&tunnel_client);
     command
         .current_dir(&component_root)
@@ -169,6 +180,7 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
 
     Ok(RuntimeStart {
         component_root,
+        stray,
         ready,
         started: status
             .get("started")
@@ -179,6 +191,122 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
             .and_then(Value::as_bool)
             .unwrap_or(false),
     })
+}
+
+/// The runtime manager only tracks the runtime it recorded. When that record
+/// goes stale (its tmux session vanished, a crash) while the old `run` process
+/// lives on, `connect` starts a second one: both poll the same tunnel, both
+/// write the same health URL file (the survivor's file is deleted when either
+/// exits), and each keeps its own Codex app-server bridge alive. A runtime that
+/// the manager does not report as ready is therefore unmanaged and is stopped
+/// before connecting; a ready one is left to `connect` to reuse.
+fn stop_stray_runtimes(
+    tunnel_client: &Path,
+    component_root: &Path,
+    alias: &str,
+    profile: &str,
+) -> Vec<u32> {
+    let state = crate::runtime::background_command(tunnel_client)
+        .current_dir(component_root)
+        .args(["runtimes", "status", alias])
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| runtime_state(&String::from_utf8_lossy(&output.stdout), alias));
+    if state.as_deref() == Some("ready") {
+        return Vec::new();
+    }
+    let client = normalized(tunnel_client);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    let stray: Vec<Pid> = system
+        .processes()
+        .iter()
+        .filter(|(_, process)| {
+            process.exe().is_some_and(|exe| normalized(exe) == client)
+                && is_runtime_command(process.cmd(), profile)
+        })
+        .map(|(pid, _)| *pid)
+        .collect();
+    if stray.is_empty() {
+        return Vec::new();
+    }
+    // Its bridge children are reparented once the runtime exits; note them now.
+    let children: Vec<Pid> = system
+        .processes()
+        .iter()
+        .filter(|(_, process)| {
+            process
+                .parent()
+                .is_some_and(|parent| stray.contains(&parent))
+        })
+        .map(|(pid, _)| *pid)
+        .collect();
+    for pid in &stray {
+        if let Some(process) = system.process(*pid) {
+            // A graceful stop lets tunnel-client release its tunnel lease.
+            if process.kill_with(Signal::Term).is_none() {
+                process.kill();
+            }
+        }
+    }
+    let all: Vec<Pid> = stray.iter().chain(&children).copied().collect();
+    for _ in 0..50 {
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&all),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        if stray.iter().all(|pid| system.process(*pid).is_none()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    for pid in &all {
+        if let Some(process) = system.process(*pid) {
+            process.kill();
+        }
+    }
+    stray.iter().map(|pid| pid.as_u32()).collect()
+}
+
+/// `runtimes status <alias>` prints `alias<TAB>state<TAB>tunnel` lines.
+fn runtime_state(output: &str, alias: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let mut fields = line.split('\t');
+        (fields.next()? == alias).then(|| fields.next().unwrap_or("").trim().to_string())
+    })
+}
+
+fn is_runtime_command(command: &[OsString], profile: &str) -> bool {
+    let args: Vec<String> = command
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let named = args
+        .windows(2)
+        .any(|pair| pair[0] == "--profile" && pair[1] == profile)
+        || args
+            .iter()
+            .any(|arg| arg.strip_prefix("--profile=") == Some(profile));
+    args.iter().skip(1).any(|arg| arg == "run") && named
+}
+
+fn normalized(path: &Path) -> String {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let text = command_path(&path);
+    if cfg!(windows) {
+        text.to_ascii_lowercase()
+    } else {
+        text
+    }
 }
 
 fn discover_component_root() -> anyhow::Result<PathBuf> {
@@ -263,6 +391,42 @@ fn shell_quote(path: &Path) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn only_this_profiles_run_process_counts_as_a_runtime() {
+        let args = |line: &str| -> Vec<OsString> { line.split(' ').map(OsString::from).collect() };
+        let profile = "codex-chat-local-tools-mac";
+        assert!(is_runtime_command(
+            &args(
+                "/x/tunnel-client run --profile-dir .tunnel-client --profile codex-chat-local-tools-mac"
+            ),
+            profile
+        ));
+        assert!(is_runtime_command(
+            &args("tunnel-client run --profile=codex-chat-local-tools-mac"),
+            profile
+        ));
+        assert!(!is_runtime_command(
+            &args("tunnel-client run --profile codex-chat-local-tools-win"),
+            profile
+        ));
+        assert!(!is_runtime_command(
+            &args(
+                "tunnel-client runtimes status codex-chat-local-tools-mac --profile codex-chat-local-tools-mac"
+            ),
+            profile
+        ));
+    }
+
+    #[test]
+    fn runtime_state_reads_the_alias_row() {
+        let output = "other\tready\ttunnel_a\ncodex-chat-local-tools-mac\tstarting\ttunnel_b\n";
+        assert_eq!(
+            runtime_state(output, "codex-chat-local-tools-mac").as_deref(),
+            Some("starting")
+        );
+        assert_eq!(runtime_state(output, "missing"), None);
+    }
 
     #[test]
     fn runtime_key_parser_uses_last_assignment_and_unquotes_it() {

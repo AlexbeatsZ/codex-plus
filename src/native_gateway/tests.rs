@@ -609,3 +609,86 @@ fn thread_routes_are_pruned_by_age_and_count() {
     assert!(routes.len() <= THREAD_ROUTE_LIMIT);
     assert!(routes.contains_key(&format!("t{}", THREAD_ROUTE_LIMIT + 9)));
 }
+
+#[test]
+fn newest_client_version_wins_regardless_of_refresh_order() {
+    assert!(newer_version(None, "0.162.1"));
+    assert!(newer_version(Some("0.162.1"), "0.169.0"));
+    assert!(!newer_version(Some("0.169.0"), "0.162.1"));
+    assert!(newer_version(Some("0.99.0"), "0.169.0"));
+    assert!(!newer_version(Some("0.169.0"), "0.169.0-alpha.11"));
+    assert_eq!(
+        client_version_from_query("a=1&client_version=0.169.0"),
+        Some("0.169.0")
+    );
+    assert_eq!(client_version_from_query("client_version=../x"), None);
+    assert_eq!(client_version_from_query("client_version=a/b"), None);
+}
+
+#[tokio::test]
+async fn failed_refresh_serves_the_same_versions_last_list_not_another_clients() {
+    use wiremock::matchers::query_param;
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    let official = MockServer::start().await;
+    fs::create_dir_all(&paths.codex_home).unwrap();
+    fs::write(
+        paths.codex_config(),
+        format!("openai_base_url='{}'\n", official.uri()),
+    )
+    .unwrap();
+    let mut broker = crate::broker::start_on_port(paths.clone(), 0)
+        .await
+        .unwrap();
+    crate::config::reconcile_codex_config(&paths, broker.port()).unwrap();
+    let settings = Settings::load(&paths).unwrap().unwrap();
+    let base = format!(
+        "http://127.0.0.1:{}/native/{}/backend-api/codex",
+        broker.port(),
+        settings.capability
+    );
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let new = json!({"models":[{"slug":"gpt-new","context_window":500000},{"slug":"gpt-old","context_window":272000}]});
+    let old = json!({"models":[{"slug":"gpt-old","context_window":272000}]});
+    for (version, body) in [("9.169.0", &new), ("9.162.1", &old)] {
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .and(query_param("client_version", version))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&official)
+            .await;
+    }
+    let slugs = |version: &'static str| {
+        let request = client
+            .get(format!("{base}/models?client_version={version}"))
+            .bearer_auth("official-secret")
+            .send();
+        async move {
+            let doc: Value = request.await.unwrap().json().await.unwrap();
+            doc["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|m| m["slug"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        }
+    };
+    // The newer desktop refreshes first, then an older client overwrites the
+    // shared snapshot, exactly the order that dropped gpt-new in production.
+    assert!(slugs("9.169.0").await.contains(&"gpt-new".to_string()));
+    assert!(!slugs("9.162.1").await.contains(&"gpt-new".to_string()));
+    assert_eq!(native_client_version(), "9.169.0");
+
+    official.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&official)
+        .await;
+    assert!(slugs("9.169.0").await.contains(&"gpt-new".to_string()));
+    assert!(!slugs("9.162.1").await.contains(&"gpt-new".to_string()));
+    let log = fs::read_to_string(paths.log_path()).unwrap_or_default();
+    assert!(log.contains("native.models.refresh_failed"));
+    assert!(log.contains("version_snapshot"));
+    broker.shutdown().await;
+}
