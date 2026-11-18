@@ -9,6 +9,7 @@
 ## 版本与部署
 
 - 公共源码 `main` 为 0.3.16（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 0.3.16 已三端文件部署并上传 Release（2026-11-18）：Mac 0.3.16（ca5d22d，签名身份不变）；ROG 0.3.16-rog（57455f7）、OMEN 0.3.16-omen（9e53c17）均在 ROG 构建，OMEN 只替换 EXE（local-tools 自 0.3.14 无改动）。三端运行中的 launcher 未重启，需用户显式启动新版生效；Windows 旧映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0316\running-previous-codex-plus.exe`。三端都存在多版本客户端：Mac Homebrew 0.162.1、ROG Scoop 0.144.5 与 0.167.0、OMEN 0.149.0，与桌面 0.169.0 交替刷新。
 - 0.3.16（2026-11-18）修复“反复压缩上下文”：原生网关上游 `/models` 刷新失败时按 `client_version` 回退到同版本上次成功的列表（`.codex-plus/official-models/<版本>.json`），不再把 tunnel-client 拉起的旧版 codex 的短列表发给桌面端；订阅发现用见过的最高版本；local-tools 启动前清理未被 runtime 管理器登记的残留 `tunnel-client run`。
 - 0.3.15（2026-11-17，仅 Mac）把本机请求体上限（压缩前后）由 32 MiB 提到 128 MiB，原生网关的解码错误按“过大/压缩格式/zstd/JSON”分别返回 413/415/400 并写 `native.request.decode_failed` 日志，不再一律显示“原生模型请求格式无效”。
 - 0.3.14（2026-11-14）是架构整理与缺陷修复版：新增 `layout`（仓库路径与 `.env.local`）、`net`（代理策略与 client 缓存）、`store`（JSON 状态文件）、`http`（响应与回环 Host 校验）模块和 `assets/core.js`（页面脚本公共层，单一菜单 observer）。修复 CDP 心跳误判、CDP 失联不结束、桌面 helper 被误杀、流式请求吞掉上游错误、原生路由文件损坏导致全部 500、官方流量忽略账户池代理等。broker 与桌面 helper 改用随机令牌并校验 Host。详细见 `docs/log/2026-11.md`。
@@ -35,6 +36,7 @@
 - 订阅 API 勾选框显示修复、普通 PDF/LaTeX 预览、未登录页按钮的目视验收仍待用户在新版界面确认。
 - 待决策：原生网关缺少“停用/还原 `openai_base_url`”入口（launcher 不运行时其他官方客户端不可用）。
 - OMEN 源码工作树仍在 3725a65，包含原有 13 处修改和本次同步的两个桌面客户端文件。后续整合完整源码时须一起处理这 15 处差异，当前发布 EXE 的来源为 efed103。
+- 0.3.16 待验收：各端显式启动新版后，日志中 `native.models.refresh_failed` 应为 `served: version_snapshot`，rollout 的 `model_context_window` 不再在 475000/258400 间跳。
 - 本次 OMEN/ROG 的旧映像均位于各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0314\running-previous-codex-plus.exe`，由当前 launcher 持有，待进程自然退出后清理。ROG 更早的占用映像仍见 `...\.agents\codex-plus-upgrade-20261001\`。
 
 # Build / Run / Test
