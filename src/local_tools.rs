@@ -354,15 +354,13 @@ fn descendants(table: &[ProcessEntry], roots: &[u32]) -> Vec<u32> {
 
 /// `codex app-server` started by tunnel-client's bridge (PATH shim or binary).
 fn is_codex_bridge_command(command: &[String]) -> bool {
+    // Either separator: a process table may show a Windows path on any host's tests.
     let program = command
         .first()
-        .map(|arg| {
-            Path::new(arg.trim_matches('"'))
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
+        .and_then(|arg| arg.trim_matches('"').rsplit(['/', '\\']).next())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let program = program.strip_suffix(".exe").unwrap_or(&program);
     program == "codex" && command.iter().skip(1).any(|arg| arg == "app-server")
 }
 
