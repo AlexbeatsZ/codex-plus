@@ -32,7 +32,8 @@ MCP 同时提供只读 Codex 上下文桥接：Node MCP 进程启动时读取本
 - `--login-startup` 在进入“等待用户打开 Codex”的循环前启动 runtime，因此登录后 MCP 可用，但官方 Codex 窗口仍不会被主动打开。
 - 普通点击、网页登录和 attach 模式也执行同一幂等检查；已有健康 runtime 时不得创建重复进程。
 - runtime 管理器只认它登记的那一个 runtime。登记失效（tmux 会话消失、崩溃）而旧 `tunnel-client run` 仍存活时，`connect` 会再起一个：两者轮询同一 Tunnel、写同一个 health URL 文件（任一退出都会删除该文件，另一个随即显示为 starting），并各自带着一个 Codex app-server 桥。因此 0.3.16 起在 `connect` 前先查 `runtimes status <alias>`，只要不是 `ready`，就停止本组件 `tunnel-client` 可执行文件下 `run --profile <alias>` 的进程及其子进程（Unix 先 SIGTERM，5 秒后强制），停止的 PID 记入 `local_tools.runtime.ready` 的 `strayStopped`；`ready` 时不动，交给 `connect` 复用。
-- tunnel-client 0.0.14 内置的 Codex 桥（`pkg/codexappserver`，供其管理页的 assistant 使用，本项目不用）会从 PATH 拉起 `codex app-server`，可用 `TUNNEL_CLIENT_CODEX_APP_SERVER_CMD` 改写；但 runtime 运行在 tmux 中，只有 `CONTROL_PLANE_API_KEY` 会经 `tmux set-environment` 传入，其余变量取自 tmux server 的全局环境，所以不能靠 codex-plus 设置环境变量来关闭它。它与桌面端版本不同造成的模型目录问题由原生网关按版本快照解决，见 `mobile-remote-providers.md`。
+- tunnel-client 内置的 Codex 桥（`pkg/codexappserver`，只供其管理页的 assistant 使用，本项目不用）在 `run` 启动时立即从 PATH 拉起 `codex app-server`，即 Scoop/Homebrew 的 CLI。它与桌面端共用 `~/.codex`，每隔几分钟以自己的 `client_version` 覆写 `models_cache.json`；桌面 app-server 对版本不符的缓存整份丢弃，于是把 6.x 与 `cp-pool-*` 当未知模型，按 258400 窗口、工具全部内联组装请求（首轮约 18 万 token，压缩无效）。原生网关的按版本快照只修正网关回给各版本的列表，挡不住客户端这份共享缓存被覆写。
+- 0.3.17 起从源头关闭它：`runtimes connect` 的进程环境带 `TUNNEL_CLIENT_CODEX_APP_SERVER_CMD=codex-plus-disabled-codex-bridge`（并清除 `_ARGS`）。2026-11-19 三端 `processes.yaml` 均为 `mode: process`，`run` 直接继承 connect 的环境（早先记录的 tmux 模式已不适用）；实测该命令无法解析时桥保持不可用、不重试、不再产生 codex 子进程。已 ready 的 runtime 若其进程树中仍有 `codex app-server`，先 `runtimes stop <alias>` 再结束整棵子树（Windows 下 Scoop shim 还会再拉起真正的 codex.exe 作为孙进程），然后由 `connect` 重建；日志 `local_tools.runtime.ready` 记 `codexBridgeStopped`。
 - MCP 启动在后台进行，失败只写入仓库 `.codex-plus/codex-plus.log`，不阻止也不延迟账户、broker 或 Codex 注入功能。
 - `run_command` 超时必须终止整个子进程树并在短暂宽限期后强制关闭继承管道；不能只杀 shell 父进程后继续等待 `close`，否则 Tunnel health/ready 仍为 200 时 stdio 也可能永久阻塞。
 

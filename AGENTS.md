@@ -8,7 +8,8 @@
 
 ## 版本与部署
 
-- 公共源码 `main` 为 0.3.16（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 公共源码 `main` 为 0.3.17（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 0.3.17（2026-11-19）从源头关闭 tunnel-client 内置 Codex 桥：`runtimes connect` 环境带 `TUNNEL_CLIENT_CODEX_APP_SERVER_CMD=codex-plus-disabled-codex-bridge`，已 ready 但仍挂着 `codex app-server` 的 runtime 会被停止重建。根因：桥拉起的 PATH 旧版 CLI（OMEN Scoop 0.149.0、ROG Scoop 0.144.5、Mac Homebrew 0.162.1）以自身版本覆写共享 `~/.codex/models_cache.json`，桌面 app-server 判定版本不符丢弃缓存，6.x 与 `cp-pool-*` 走未知模型回退（258400 窗口、工具全部内联，首轮约 18 万 token）。0.3.16 的网关版本快照不能覆盖这一路径。
 - 0.3.16 已三端文件部署并上传 Release（2026-11-18）：Mac 0.3.16（ca5d22d，签名身份不变）；ROG 0.3.16-rog（57455f7）、OMEN 0.3.16-omen（9e53c17）均在 ROG 构建，OMEN 只替换 EXE（local-tools 自 0.3.14 无改动）。三端运行中的 launcher 未重启，需用户显式启动新版生效；Windows 旧映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0316\running-previous-codex-plus.exe`。三端都存在多版本客户端：Mac Homebrew 0.162.1、ROG Scoop 0.144.5 与 0.167.0、OMEN 0.149.0，与桌面 0.169.0 交替刷新。
 - 0.3.16（2026-11-18）修复“反复压缩上下文”：原生网关上游 `/models` 刷新失败时按 `client_version` 回退到同版本上次成功的列表（`.codex-plus/official-models/<版本>.json`），不再把 tunnel-client 拉起的旧版 codex 的短列表发给桌面端；订阅发现用见过的最高版本；local-tools 启动前清理未被 runtime 管理器登记的残留 `tunnel-client run`。
 - 0.3.15（2026-11-17，仅 Mac）把本机请求体上限（压缩前后）由 32 MiB 提到 128 MiB，原生网关的解码错误按“过大/压缩格式/zstd/JSON”分别返回 413/415/400 并写 `native.request.decode_failed` 日志，不再一律显示“原生模型请求格式无效”。
@@ -36,7 +37,7 @@
 - 订阅 API 勾选框显示修复、普通 PDF/LaTeX 预览、未登录页按钮的目视验收仍待用户在新版界面确认。
 - 待决策：原生网关缺少“停用/还原 `openai_base_url`”入口（launcher 不运行时其他官方客户端不可用）。
 - OMEN 源码工作树仍在 3725a65，包含原有 13 处修改和本次同步的两个桌面客户端文件。后续整合完整源码时须一起处理这 15 处差异，当前发布 EXE 的来源为 efed103。
-- 0.3.16 待验收：各端显式启动新版后，日志中 `native.models.refresh_failed` 应为 `served: version_snapshot`，rollout 的 `model_context_window` 不再在 475000/258400 间跳。
+- 0.3.17 待验收：各端 launcher 启动新版后 `local_tools.runtime.ready` 首次应记 `codexBridgeStopped: true`，之后 tunnel-client 名下不再有 `codex app-server`，`~/.codex/models_cache.json` 的 `client_version` 只出现桌面端版本，app-server 日志不再有 `Unknown model … fallback model metadata`。
 - 本次 OMEN/ROG 的旧映像均位于各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0314\running-previous-codex-plus.exe`，由当前 launcher 持有，待进程自然退出后清理。ROG 更早的占用映像仍见 `...\.agents\codex-plus-upgrade-20261001\`。
 
 # Build / Run / Test
@@ -127,7 +128,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 - Codex `26.810.6296.0` 可在没有 plus 进程、没有 CDP 参数且 GPU/DPC 均空闲时，由 Electron 根 `ChatGPT.exe` 自身持续消耗约 1.3 个核心；其中热线程可为 `AboveNormal`，足以造成系统级鼠标顿挫。plus 无法修复闭源忙循环，但可用 `BELOW_NORMAL_PRIORITY_CLASS` 隔离其桌面调度影响。官方更新可能先启动无 CDP 的新根进程再结束旧受管实例，因此登录 launcher 必须在生命周期结束后重新待命，并用命令行排除 renderer/GPU/crashpad/app-server 后再次接管。
 - Windows Microsoft Store (MSIX / AppX) 安装的桌面应用在 `C:\Program Files\WindowsApps\` 下具有 NTFS 条件访问控制列表（Conditional ACE：`WIN://SYSAPPID Contains "<PackageFamilyName>"`）。普通非打包 Win32 进程直接调用 `CreateProcessW` / `Command::spawn()` 会因调用令牌缺少该包 Claim 而被操作系统内核安全模型直接拦截，返回 `拒绝访问。(os error 5)`（`0x80070005`）。必须通过 Windows Shell COM 接口 `IApplicationActivationManager::ActivateApplication` 传入 Application User Model ID (`AUMID: <PackageFamilyName>!App`) 和启动参数（如 `--remote-debugging-port`）由 DCOM 系统服务代理创建具备合法包身份的进程；再通过返回的 PID 用 `OpenProcess` 获取句柄后下调为 `BELOW_NORMAL_PRIORITY_CLASS` 并监听退出。
 
-- 同一 `~/.codex` 下常有多个不同版本的官方客户端：桌面端内置 codex 与 PATH 里的 codex（tunnel-client 的 Codex 桥会自动拉起它，Mac 上是 Homebrew 版）。官方 `/models` 按 `client_version` 过滤，`models_cache.json` 版本不符会被整份丢弃；任何“按最后一次结果”保存的目录状态都会被另一版本覆盖。症状是 rollout 中同一模型的 `model_context_window` 在 475000 与 258400（272000×95% 的未知模型回退值）之间跳，首个请求输入多出约 15 万 token；确认看 `~/.codex/logs_2.sqlite` 的 `Unknown model … fallback model metadata`，按 `process_uuid` 对照各进程的 `client_version`，再看 broker 日志里 `native.models.refreshed` 与 `refresh_failed` 的版本交替。
+- 同一 `~/.codex` 下常有多个不同版本的官方客户端：桌面端内置 codex 与 PATH 里的 codex（tunnel-client 的 Codex 桥会自动拉起它，Mac 上是 Homebrew 版，Windows 上是 Scoop 版）。官方 `/models` 按 `client_version` 过滤，`models_cache.json` 版本不符会被整份丢弃（app-server 日志 `models cache: cache version mismatch`）；任何“按最后一次结果”保存的目录状态都会被另一版本覆盖。只修网关一侧不够，必须让不需要的旧客户端根本不运行；0.3.17 以环境变量关闭桥，排查时先确认 tunnel-client 名下没有 `codex app-server` 子进程。症状是 rollout 中同一模型的 `model_context_window` 在 475000 与 258400（272000×95% 的未知模型回退值）之间跳，首个请求输入多出约 15 万 token；确认看 `~/.codex/logs_2.sqlite` 的 `Unknown model … fallback model metadata`，按 `process_uuid` 对照各进程的 `client_version`，再看 broker 日志里 `native.models.refreshed` 与 `refresh_failed` 的版本交替。
 - 原生 Codex 每轮都会重发历史中全部内联 base64 图片：大量“查看图像”的任务（2026-11-16 实例为 76 张、约 34 MiB）会让请求体持续增长并撞上 broker 上限，此后“继续”和手动压缩也都失败，因为压缩请求同样携带完整历史。排查网关 4xx 先看 rollout 末尾 `task_complete.error.type`（`codex_plus_native_gateway` 表示本机拒绝），再估算压缩点之后的历史大小。
 
 # Docs Index
