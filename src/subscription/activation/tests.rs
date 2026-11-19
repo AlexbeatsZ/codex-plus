@@ -408,6 +408,7 @@ async fn temporary_accounts_are_excluded_from_background_auto_activation() {
         config::AccountTemporary {
             short_term_percent: Some(20),
             long_term_percent: None,
+            ..Default::default()
         },
     );
     fixture.api.save(fixture.config.clone()).unwrap();

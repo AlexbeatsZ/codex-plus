@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
   const core = window.__codexPlusCore;
-  const VERSION = 16;
+  const VERSION = 17;
   const OBSERVER_KEY = "api";
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
@@ -93,6 +93,10 @@
       .cp-sub-usage-reset { color:var(--cp-muted); white-space:nowrap; }
       .cp-sub-usage-status { display:flex; align-items:center; flex-wrap:wrap; gap:8px; color:var(--cp-muted); font-size:11px; }
       .cp-sub-temp { flex:0 0 100%; display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; margin-left:22px; padding:8px 10px; border-radius:8px; border:1px solid rgba(51,156,255,.28); background:rgba(51,156,255,.06); box-sizing:border-box; max-width:calc(100% - 22px); }
+      .cp-sub-temp-row { flex:0 0 100%; display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; }
+      .cp-sub-temp-presets { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+      .cp-sub-temp-preset { min-height:26px!important; padding:0 10px!important; border-radius:999px; font-size:11px; }
+      .cp-sub-temp-preset[data-active="true"] { border-color:var(--cp-accent); background:rgba(51,156,255,.22); color:#fff; }
       .cp-sub-row .cp-sub-temp label { display:flex; flex:0 1 auto; align-items:center; gap:6px; color:var(--cp-text); font-size:12px; }
       .cp-sub-temp input { width:78px; min-height:28px; padding:4px 7px; }
       .cp-sub-temp-hint { flex:0 0 100%; color:#8cc9ff; font-size:11px; line-height:1.45; }
@@ -131,6 +135,7 @@
       html.light .cp-sub-badge[data-kind="temp"],html[data-theme="light"] .cp-sub-badge[data-kind="temp"] { color:#0369a1; background:rgba(14,165,233,.14); }
       html.light .cp-sub-badge[data-kind="done"],html[data-theme="light"] .cp-sub-badge[data-kind="done"] { color:#b45309; background:rgba(245,158,11,.14); }
       html.light .cp-sub-health[data-kind="temporary"],html[data-theme="light"] .cp-sub-health[data-kind="temporary"],html.light .cp-sub-temp-hint,html[data-theme="light"] .cp-sub-temp-hint { color:#1d4ed8; }
+      html.light .cp-sub-temp-preset[data-active="true"],html[data-theme="light"] .cp-sub-temp-preset[data-active="true"] { border-color:var(--cp-accent); background:rgba(51,156,255,.15); color:#1d4ed8; }
       html.light .cp-sub-health[data-kind="temporary_completed"],html[data-theme="light"] .cp-sub-health[data-kind="temporary_completed"] { color:#b45309; }
       html.light .cp-sub-health[data-kind="error"],html[data-theme="light"] .cp-sub-health[data-kind="error"] { color:#b91c1c; }
       html.light .cp-api-sub-overview,html[data-theme="light"] .cp-api-sub-overview { background:rgba(0,0,0,.015); }
@@ -205,6 +210,26 @@
     return null;
   }
 
+  function currentResetAt(recordId, kind) {
+    const entry = state.accountUsage.get(String(recordId));
+    if (!entry?.usage) return null;
+    for (const windowValue of usageWindows(entry.usage)) {
+      if (windowKind(windowValue) === kind) {
+        const resetAt = Number(windowValue.reset_at ?? windowValue.resetAt);
+        return Number.isFinite(resetAt) && resetAt > 0 ? resetAt : null;
+      }
+    }
+    return null;
+  }
+
+  function hasTemporaryCondition(temp) {
+    return temp?.shortTermPercent != null
+      || temp?.longTermPercent != null
+      || temp?.durationMinutes != null
+      || temp?.untilReset === "short"
+      || temp?.untilReset === "long";
+  }
+
   function isTemporary(config, id) {
     return !!config?.accountOrder?.includes(id)
       && Object.prototype.hasOwnProperty.call(config?.accountTemporary || {}, id);
@@ -271,6 +296,20 @@
       parts.push(rem != null
         ? `周剩余 ≤ ${Math.max(0, rem - Number(longLimit)).toFixed(0)}% 自动退出`
         : `周使用 ${longLimit}% 后自动退出`);
+    }
+    if (temp?.durationMinutes != null && Number.isFinite(Number(temp.durationMinutes))) {
+      parts.push(`限时 ${Number(temp.durationMinutes)} min 自动退出`);
+    }
+    if (temp?.untilReset === "short") {
+      const resetAt = currentResetAt(id, "short");
+      parts.push(resetAt
+        ? `直到下次 5h 额度刷新（${core.formatUtc8Reset(resetAt)}）自动退出`
+        : "直到下次 5h 额度刷新自动退出");
+    } else if (temp?.untilReset === "long") {
+      const resetAt = currentResetAt(id, "long");
+      parts.push(resetAt
+        ? `直到下次周额度刷新（${core.formatUtc8Reset(resetAt)}）自动退出`
+        : "直到下次周额度刷新自动退出");
     }
     return parts.join(" · ");
   }
@@ -483,7 +522,14 @@
   }
 
   function temporaryEditor(id, temp, disabled) {
-    return `<div class="cp-sub-temp">${[["shortTermPercent", "本次使用 5h 额度"], ["longTermPercent", "本次使用周额度"]].map(([key, label]) => `<label>${label}<input class="cp-api-input" type="number" min="1" max="100" step="1" placeholder="留空不限" aria-label="${label}百分比" data-sub-temp="${key}" data-sub-temp-account="${esc(id)}" value="${esc(temp?.[key] ?? "")}" ${disabled ? "disabled" : ""}>%</label>`).join("")}<div class="cp-sub-temp-hint" data-sub-temp-hint="${esc(id)}">${esc(temporaryHintText(id, temp))}</div></div>`;
+    const percentInputs = [["shortTermPercent", "本次使用 5h 额度"], ["longTermPercent", "本次使用周额度"]]
+      .map(([key, label]) => `<label>${label}<input class="cp-api-input" type="number" min="1" max="100" step="1" placeholder="留空不限" aria-label="${label}百分比" data-sub-temp="${key}" data-sub-temp-account="${esc(id)}" value="${esc(temp?.[key] ?? "")}" ${disabled ? "disabled" : ""}>%</label>`)
+      .join("");
+    const durationInput = `<label>有效时间<input class="cp-api-input" type="number" min="1" max="43200" step="1" placeholder="留空不限" aria-label="临时使用时间（分钟）" data-sub-temp="durationMinutes" data-sub-temp-account="${esc(id)}" value="${esc(temp?.durationMinutes ?? "")}" ${disabled ? "disabled" : ""}>min</label>`;
+    const presetButtons = [["short", "直到下一次 5h 额度刷新为止"], ["long", "直到下一次周额度刷新为止"]]
+      .map(([preset, label]) => `<button type="button" class="cp-api-button cp-sub-temp-preset" data-sub-temp-preset="${preset}" data-sub-temp-account="${esc(id)}" data-active="${temp?.untilReset === preset}" aria-pressed="${temp?.untilReset === preset}" ${disabled ? "disabled" : ""}>${label}</button>`)
+      .join("");
+    return `<div class="cp-sub-temp"><div class="cp-sub-temp-row">${percentInputs}</div><div class="cp-sub-temp-row">${durationInput}<div class="cp-sub-temp-presets">${presetButtons}</div></div><div class="cp-sub-temp-hint" data-sub-temp-hint="${esc(id)}">${esc(temporaryHintText(id, temp))}</div></div>`;
   }
 
   function renderSubscription() {
@@ -519,13 +565,38 @@
       const value = input.value.trim();
       reserve[input.dataset.subReserve] = value === "" ? null : Number(value);
     }));
+    const syncTemporaryControls = (id) => {
+      const temp = config.accountTemporary[id];
+      root.querySelectorAll(`[data-sub-temp-preset][data-sub-temp-account="${id}"]`).forEach((btn) => {
+        const active = temp?.untilReset === btn.dataset.subTempPreset;
+        btn.dataset.active = String(active);
+        btn.setAttribute("aria-pressed", String(active));
+      });
+      const hint = root.querySelector(`[data-sub-temp-hint="${id}"]`);
+      if (hint) hint.textContent = temporaryHintText(id, temp);
+    };
     root.querySelectorAll("[data-sub-temp]").forEach(input => input.addEventListener("input", () => {
       const id = input.dataset.subTempAccount;
       const temp = (config.accountTemporary[id] ||= {});
+      const key = input.dataset.subTemp;
       const value = input.value.trim();
-      temp[input.dataset.subTemp] = value === "" ? null : Number(value);
-      const hint = root.querySelector(`[data-sub-temp-hint="${id}"]`);
-      if (hint) hint.textContent = temporaryHintText(id, temp);
+      temp[key] = value === "" ? null : Number(value);
+      if (key === "durationMinutes" && value !== "") temp.untilReset = null;
+      syncTemporaryControls(id);
+    }));
+    root.querySelectorAll("[data-sub-temp-preset]").forEach(button => button.addEventListener("click", () => {
+      const id = button.dataset.subTempAccount;
+      const preset = button.dataset.subTempPreset;
+      const temp = (config.accountTemporary[id] ||= { shortTermPercent: null, longTermPercent: null, durationMinutes: null, untilReset: null });
+      if (temp.untilReset === preset) {
+        temp.untilReset = null;
+      } else {
+        temp.untilReset = preset;
+        temp.durationMinutes = null;
+        const durationInput = root.querySelector(`[data-sub-temp="durationMinutes"][data-sub-temp-account="${id}"]`);
+        if (durationInput) durationInput.value = "";
+      }
+      syncTemporaryControls(id);
     }));
     root.querySelectorAll("[data-sub-account]").forEach(input => input.addEventListener("change", () => {
       syncModels(root);
@@ -545,7 +616,7 @@
         return;
       }
       if (!order.includes(id)) config.accountOrder.push(id);
-      config.accountTemporary[id] ||= { shortTermPercent: null, longTermPercent: null };
+      config.accountTemporary[id] ||= { shortTermPercent: null, longTermPercent: null, durationMinutes: null, untilReset: null };
       renderSubscription();
       root.querySelector(`[data-sub-temp="shortTermPercent"][data-sub-temp-account="${id}"]`)?.focus();
     }));
@@ -582,8 +653,8 @@
       for (const id of config.accountOrder) {
         if (Object.prototype.hasOwnProperty.call(config.accountTemporary || {}, id)) {
           const temp = config.accountTemporary[id];
-          if (temp?.shortTermPercent == null && temp?.longTermPercent == null) {
-            state.message = "临时加入的账户请至少设置一项 5h 或周使用额度（1 至 100 的整数）";
+          if (!hasTemporaryCondition(temp)) {
+            state.message = "临时加入的账户请至少设置一项 5h 或周使用额度，或设置临时使用时间";
             state.error = true;
             renderSubscription();
             return;
@@ -593,7 +664,7 @@
     }
     config.accountTemporary = Object.fromEntries(
       Object.entries(config.accountTemporary || {}).filter(([id, temp]) =>
-        config.accountOrder.includes(id) && (temp?.shortTermPercent != null || temp?.longTermPercent != null)
+        config.accountOrder.includes(id) && hasTemporaryCondition(temp)
       )
     );
     config.models = state.models.map(m => ({ modelId: m.modelId, displayName: m.displayName, visible: m.visible }));
