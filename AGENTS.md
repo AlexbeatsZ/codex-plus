@@ -9,6 +9,7 @@
 ## 版本与部署
 
 - 公共源码 `main` 为 0.3.17（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 0.3.17 已三端文件部署并上传 Release（2026-11-19）：Mac 0.3.17（91de64b，经一次性 gui/501 LaunchAgent 签名，身份不变）；ROG 0.3.17-rog（5e5e0c9）、OMEN 0.3.17-omen（4499257）均在 ROG 构建。三端 launcher 未重启（ROG 14356、OMEN 20380 仍为旧映像，旧映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0317*\running-previous-codex-plus.exe`）；但三端 tunnel runtime 已按新逻辑手动重建（无 Codex 桥），OMEN `models_cache.json` 随即恢复为桌面 0.169.1 写入、`cp-pool` 6.2 为 500000 窗口与 `code_mode_only`。
 - 0.3.17（2026-11-19）从源头关闭 tunnel-client 内置 Codex 桥：`runtimes connect` 环境带 `TUNNEL_CLIENT_CODEX_APP_SERVER_CMD=codex-plus-disabled-codex-bridge`，已 ready 但仍挂着 `codex app-server` 的 runtime 会被停止重建。根因：桥拉起的 PATH 旧版 CLI（OMEN Scoop 0.149.0、ROG Scoop 0.144.5、Mac Homebrew 0.162.1）以自身版本覆写共享 `~/.codex/models_cache.json`，桌面 app-server 判定版本不符丢弃缓存，6.x 与 `cp-pool-*` 走未知模型回退（258400 窗口、工具全部内联，首轮约 18 万 token）。0.3.16 的网关版本快照不能覆盖这一路径。
 - 0.3.16 已三端文件部署并上传 Release（2026-11-18）：Mac 0.3.16（ca5d22d，签名身份不变）；ROG 0.3.16-rog（57455f7）、OMEN 0.3.16-omen（9e53c17）均在 ROG 构建，OMEN 只替换 EXE（local-tools 自 0.3.14 无改动）。三端运行中的 launcher 未重启，需用户显式启动新版生效；Windows 旧映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0316\running-previous-codex-plus.exe`。三端都存在多版本客户端：Mac Homebrew 0.162.1、ROG Scoop 0.144.5 与 0.167.0、OMEN 0.149.0，与桌面 0.169.0 交替刷新。
 - 0.3.16（2026-11-18）修复“反复压缩上下文”：原生网关上游 `/models` 刷新失败时按 `client_version` 回退到同版本上次成功的列表（`.codex-plus/official-models/<版本>.json`），不再把 tunnel-client 拉起的旧版 codex 的短列表发给桌面端；订阅发现用见过的最高版本；local-tools 启动前清理未被 runtime 管理器登记的残留 `tunnel-client run`。
@@ -37,6 +38,7 @@
 - 订阅 API 勾选框显示修复、普通 PDF/LaTeX 预览、未登录页按钮的目视验收仍待用户在新版界面确认。
 - 待决策：原生网关缺少“停用/还原 `openai_base_url`”入口（launcher 不运行时其他官方客户端不可用）。
 - OMEN 源码工作树仍在 3725a65，包含原有 13 处修改和本次同步的两个桌面客户端文件。后续整合完整源码时须一起处理这 15 处差异，当前发布 EXE 的来源为 efed103。
+- `subscription::quota` 有偶发失败的测试：2026-11-19 在 ROG 整套 `cargo test` 中两次各挂一个不同用例（`quota_events_stop_future_requests_without_replaying_delivered_output`、`reset_requeries_and_saved_threshold_changes_take_effect_without_cooldown`），单独连跑 5 次与随后整套重跑均通过，疑为并发共享状态或计时；待查。
 - 0.3.17 待验收：各端 launcher 启动新版后 `local_tools.runtime.ready` 首次应记 `codexBridgeStopped: true`，之后 tunnel-client 名下不再有 `codex app-server`，`~/.codex/models_cache.json` 的 `client_version` 只出现桌面端版本，app-server 日志不再有 `Unknown model … fallback model metadata`。
 - 本次 OMEN/ROG 的旧映像均位于各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0314\running-previous-codex-plus.exe`，由当前 launcher 持有，待进程自然退出后清理。ROG 更早的占用映像仍见 `...\.agents\codex-plus-upgrade-20261001\`。
 
