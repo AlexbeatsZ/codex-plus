@@ -3,13 +3,93 @@
   // Shared by every codex-plus page script. Injected right after bridge.js.
   // The app's main world shadows bare `String`, so capture the native one.
   const String = window.String;
-  const VERSION = 1;
+  const VERSION = 2;
   if (window.__codexPlusCore?.version === VERSION) return;
   window.__codexPlusCore?.destroy?.();
 
   const MENU_ITEM = '[role="menuitem"]';
+  const UTC8_OFFSET_MINUTES = 480;
   const subscribers = new Map();
   let observer = null;
+
+  const pad2 = (value) => String(value).padStart(2, "0");
+
+  function toUtc8Date(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    const shifted = new Date(date.getTime() + (date.getTimezoneOffset() + UTC8_OFFSET_MINUTES) * 60000);
+    const dstDelta = shifted.getTimezoneOffset() - date.getTimezoneOffset();
+    return dstDelta ? new Date(shifted.getTime() + dstDelta * 60000) : shifted;
+  }
+
+  function utc8Parts(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    const shifted = new Date(date.getTime() + UTC8_OFFSET_MINUTES * 60000);
+    return {
+      year: shifted.getUTCFullYear(),
+      month: shifted.getUTCMonth() + 1,
+      day: shifted.getUTCDate(),
+      hour: shifted.getUTCHours(),
+      minute: shifted.getUTCMinutes(),
+      second: shifted.getUTCSeconds(),
+    };
+  }
+
+  function formatUtcOffsetLabel(offsetMinutesEast) {
+    if (offsetMinutesEast === 0) return "UTC+0";
+    const sign = offsetMinutesEast > 0 ? "+" : "-";
+    const abs = Math.abs(offsetMinutesEast);
+    const hours = Math.floor(abs / 60);
+    const minutes = abs % 60;
+    return minutes ? `UTC${sign}${hours}:${pad2(minutes)}` : `UTC${sign}${hours}`;
+  }
+
+  function timezoneConversionNote() {
+    const offsetEast = -new Date().getTimezoneOffset();
+    if (offsetEast === UTC8_OFFSET_MINUTES) return "时间按 UTC+8 显示";
+    let tz = "";
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    } catch {}
+    const offsetLabel = formatOffsetSafe(offsetEast);
+    return tz
+      ? `电脑时区 ${offsetLabel} (${tz})，已换算为 UTC+8`
+      : `电脑时区 ${offsetLabel}，已换算为 UTC+8`;
+  }
+
+  function formatOffsetSafe(offsetMinutesEast) {
+    return Number.isFinite(offsetMinutesEast) ? formatUtcOffsetLabel(offsetMinutesEast) : "本地时区";
+  }
+
+  function formatUtc8Time(value, { withZone = false } = {}) {
+    const parts = utc8Parts(value);
+    if (!parts) return "";
+    const textValue = `${pad2(parts.hour)}:${pad2(parts.minute)}`;
+    return withZone ? `${textValue} (UTC+8)` : textValue;
+  }
+
+  function formatUtc8DateTime(value, { withZone = false } = {}) {
+    const parts = utc8Parts(value);
+    if (!parts) return "";
+    const textValue = `${parts.month}月${parts.day}日 ${pad2(parts.hour)}:${pad2(parts.minute)}`;
+    return withZone ? `${textValue} (UTC+8)` : textValue;
+  }
+
+  function formatUtc8Reset(resetSeconds, nowMs = Date.now(), { compact = false } = {}) {
+    const resetNum = Number(resetSeconds);
+    if (!Number.isFinite(resetNum) || resetNum <= 0) return "";
+    const resetMs = resetNum * 1000;
+    const parts = utc8Parts(resetMs);
+    if (!parts) return "";
+    if (compact) {
+      const nowParts = utc8Parts(nowMs);
+      if (nowParts && parts.year === nowParts.year && parts.month === nowParts.month && parts.day === nowParts.day) {
+        return formatUtc8Time(resetMs);
+      }
+    }
+    return formatUtc8DateTime(resetMs);
+  }
 
   function text(node) {
     return String(node?.textContent || "").replace(/\s+/g, " ").trim();
@@ -115,5 +195,11 @@
     subscribe,
     observing,
     destroy,
+    toUtc8Date,
+    utc8Parts,
+    timezoneConversionNote,
+    formatUtc8Time,
+    formatUtc8DateTime,
+    formatUtc8Reset,
   };
 })();

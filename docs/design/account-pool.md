@@ -200,3 +200,16 @@ release.json 记录源 commit `323b56a`、分支 `codex/account-pool`，base 版
 0.3.8 的原生网关裸 reviewer 请求使用当前官方账户；上述两个旧 provider 入口仍使用已启用订阅池的 reviewer。手机兼容及原生模型目录见 [mobile-remote-providers.md](mobile-remote-providers.md)。
 
 0.3.13：登录账户额度/Reserve 只按当前 composer 的实际模型隔离；原生 managed 父任务 reviewer 复用已启用订阅池，详见 [quota-routing.md](quota-routing.md)。
+
+## 临时加入与达量自动退出
+
+对于平时不希望常驻额度池的账户，用户在“ChatGPT 订阅 API”配置页可通过“临时加入”将其纳入 `accountOrder` 与 `accountTemporary[recordId]`，并设定本次允许消耗的 5h 额度百分比（`shortTermPercent`，1–100）和/或周额度百分比（`longTermPercent`，1–100）。
+
+- 基准与账本：进度持久化在 `.codex-plus/subscription-temporary.json`，记录加入时的 `short_baseline_used` / `long_baseline_used`、`last_used`、对应 `reset_at` 与 `completed_reason`。若窗口在临时使用期间发生跨周期重置（`reset_at` 前进），将上一周期已用增量折算为新周期负基线 `-prior_consumed`，实现跨重置的连续累计。
+- 自动退出条件：在每次请求分配前（`check_policies`）、响应头（`observe_headers_and_temporary`）、流式 `codex.rate_limits` 事件（`observe_event_and_temporary`）、额度查询（`fetch_usage`）及面板读取（`view`）时，一旦任一已配置窗口满足 `(effective_used - baseline_used).max(0.0) >= 设定百分比`，立即从 `subscription.json` 的 `account_order` 与 `account_temporary` 移除该账户（取消勾选），并将完成说明写入 `subscription-temporary.json` 及 `subscription.temporary.completed` 日志。
+- 输出不重放与后台隔离：若在当前流输出阶段达到设定使用量，已开始的推理与工具流继续完成，仅后续新请求不再调度该账户，直到用户下一次手动加入；后台 5h 自动激活（`activation.rs`）跳过 `account_temporary` 中的账户。
+
+## API 接入页额度展示与 UTC+8 时区换算
+
+- API 接入首页与订阅 API 配置页通过 `/accounts/usage`（最多 3 并发队列）展示已导入账户的 5 小时额度与周额度剩余百分比、进度条及重置时间；订阅配置页移除 HTTP 代理输入框与冗余说明文案，底层仍兼容既有 `proxyUrl` 配置。
+- 页面公共层 `assets/core.js` 按本地时区偏移与 `UTC+8` 差值换算所有重置时间、冷却重试时间与上次更新时间，界面静默显示换算后的时间（不额外标注时区提示）。

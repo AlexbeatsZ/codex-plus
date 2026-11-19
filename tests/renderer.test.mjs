@@ -884,21 +884,22 @@ test("fixed subscription API configures account order and model visibility witho
 test("subscription account opt-out and failed saves preserve the complete API draft", async () => {
   const a="a".repeat(64),b="b".repeat(64);
   const fixed={id:"chatgpt-subscription",kind:"subscription",name:"ChatGPT 订阅",models:[],enabled:false};
+  let savedPayload=null;
   const dom=setup(async(path,payload)=>{
     if(path==="/api-providers/list")return {status:"ok",providers:[fixed]};
-    if(path==="/api-providers/subscription/get")return {status:"ok",config:{enabled:false,accountOrder:[a,b],models:[],proxyUrl:""},accounts:[{recordId:a,email:"a@example.test"},{recordId:b,email:"b@example.test"}],blockedAccounts:[{recordId:a,blocked:true,reason:"凭据失效，请更新"}]};
+    if(path==="/api-providers/subscription/get")return {status:"ok",config:{enabled:false,accountOrder:[a,b],models:[],proxyUrl:"http://127.0.0.1:7897"},accounts:[{recordId:a,email:"a@example.test"},{recordId:b,email:"b@example.test"}],blockedAccounts:[{recordId:a,blocked:true,reason:"凭据失效，请更新"}]};
     if(path==="/api-providers/subscription/discover"){assert.deepEqual(JSON.parse(JSON.stringify(payload.accountOrder)),[b]);return {status:"ok",models:[{modelId:"gpt-test",displayName:"gpt-test",visible:true}]};}
-    if(path==="/api-providers/subscription/save")return {status:"failed",message:"账户不存在，请刷新"};
+    if(path==="/api-providers/subscription/save"){savedPayload=JSON.parse(JSON.stringify(payload));return {status:"failed",message:"账户不存在，请刷新"};}
     return {status:"ok",models:[]};
   });
   dom.window.__codexPlusApi.open();await flush();dom.window.document.querySelector('[data-api-edit="chatgpt-subscription"]').click();await flush();
   assert.match(dom.window.document.body.textContent,/凭据失效/);
+  assert.equal(dom.window.document.querySelector('[data-sub-proxy]'),null);
   const input=dom.window.document.querySelector('[data-sub-account="'+a+'"]');input.checked=false;input.dispatchEvent(new dom.window.Event("change"));
-  const proxy=dom.window.document.querySelector('[data-sub-proxy]');proxy.value="http://127.0.0.1:7897";proxy.dispatchEvent(new dom.window.Event("input"));
   dom.window.document.querySelector('[data-sub-discover]').click();await flush();
   dom.window.document.querySelector('[data-sub-save]').click();await flush();
   assert.match(dom.window.document.body.textContent,/账户不存在/);assert.match(dom.window.document.body.textContent,/gpt-test/);
-  assert.equal(dom.window.document.querySelector('[data-sub-proxy]').value,"http://127.0.0.1:7897");
+  assert.equal(savedPayload?.proxyUrl,"http://127.0.0.1:7897");
   dom.window.close();
 });
 

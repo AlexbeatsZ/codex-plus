@@ -48,6 +48,7 @@ async fn fixture() -> Fixture {
         }],
         proxy_url: String::new(),
         account_reserves: HashMap::new(),
+        account_temporary: HashMap::new(),
     };
     config.save(&paths).unwrap();
     let server = MockServer::start().await;

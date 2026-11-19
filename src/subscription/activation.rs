@@ -126,7 +126,8 @@ impl SubscriptionApi {
         attempts.retain(|_, until| *until > unix_now());
         let client = config.client()?;
         for id in &config.account_order {
-            if attempts.contains_key(id)
+            if config.account_temporary.contains_key(id)
+                || attempts.contains_key(id)
                 || !self.activation_idle(id)?
                 || self.cooling(id, &model.model_id)
                 || self.is_rejected_current(id)

@@ -15,6 +15,8 @@ pub struct SubscriptionConfig {
     pub proxy_url: String,
     #[serde(default)]
     pub account_reserves: HashMap<String, AccountReserve>,
+    #[serde(default)]
+    pub account_temporary: HashMap<String, AccountTemporary>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,15 +34,39 @@ impl AccountReserve {
     }
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountTemporary {
+    #[serde(default)]
+    pub short_term_percent: Option<u8>,
+    #[serde(default)]
+    pub long_term_percent: Option<u8>,
+}
+
+impl AccountTemporary {
+    pub fn enabled(&self) -> bool {
+        self.short_term_percent.is_some() || self.long_term_percent.is_some()
+    }
+}
+
 impl SubscriptionConfig {
     pub fn load(paths: &AccountPaths) -> anyhow::Result<Self> {
         crate::store::load(&paths.state_dir.join("subscription.json"), "账户池配置")
+    }
+
+    pub(crate) fn write_unchecked(&self, paths: &AccountPaths) -> anyhow::Result<()> {
+        atomic_write(
+            &paths.state_dir.join("subscription.json"),
+            &serde_json::to_vec_pretty(self)?,
+        )?;
+        Ok(())
     }
 
     pub fn save(&self, paths: &AccountPaths) -> anyhow::Result<()> {
         if self.account_order.len() > 100
             || self.models.len() > 100
             || self.account_reserves.len() > 100
+            || self.account_temporary.len() > 100
         {
             bail!("账户池最多支持 100 个账户和模型");
         }
@@ -53,6 +79,19 @@ impl SubscriptionConfig {
                     .any(|value| value > 100)
             {
                 bail!("保留额度必须属于已有账户，百分比须为 0 至 100 的整数");
+            }
+        }
+        for (id, temp) in &self.account_temporary {
+            if !accounts.iter().any(|a| a.record_id == *id)
+                || [temp.short_term_percent, temp.long_term_percent]
+                    .into_iter()
+                    .flatten()
+                    .any(|value| value == 0 || value > 100)
+            {
+                bail!("临时使用额度必须属于已有账户，百分比须为 1 至 100 的整数");
+            }
+            if self.account_order.contains(id) && !temp.enabled() {
+                bail!("临时加入的账户请至少设置一项 5h 或周使用额度（1 至 100 的整数）");
             }
         }
         let mut seen = HashSet::new();
@@ -80,10 +119,7 @@ impl SubscriptionConfig {
             bail!("启用账户池前请选择至少一个账户并读取模型");
         }
         crate::net::validate_proxy(&self.proxy_url)?;
-        atomic_write(
-            &paths.state_dir.join("subscription.json"),
-            &serde_json::to_vec_pretty(self)?,
-        )?;
+        self.write_unchecked(paths)?;
         Ok(())
     }
 
