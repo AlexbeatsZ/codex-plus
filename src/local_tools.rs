@@ -46,11 +46,25 @@ fn resolve_runtime_alias(env_file: &Path) -> anyhow::Result<String> {
     Ok(DEFAULT_RUNTIME_ALIAS.to_string())
 }
 
+/// tunnel-client's built-in Codex bridge (`pkg/codexappserver`) only serves its
+/// admin page assistant, which codex-plus never uses. Left enabled it starts
+/// whichever `codex` comes first on PATH (Scoop/Homebrew CLI) as an app-server
+/// sharing `~/.codex`. That older CLI rewrites `models_cache.json` stamped with
+/// its own client version every few minutes; the desktop app-server rejects a
+/// cache from another version, treats its models as unknown and falls back to
+/// a small window with every tool schema inlined. An unresolvable command
+/// leaves the bridge unavailable without retries.
+const CODEX_BRIDGE_CMD_ENV: &str = "TUNNEL_CLIENT_CODEX_APP_SERVER_CMD";
+const CODEX_BRIDGE_ARGS_ENV: &str = "TUNNEL_CLIENT_CODEX_APP_SERVER_ARGS";
+const DISABLED_CODEX_BRIDGE: &str = "codex-plus-disabled-codex-bridge";
+
 #[derive(Debug)]
 struct RuntimeStart {
     component_root: PathBuf,
     /// Unmanaged `tunnel-client run` processes stopped before connecting.
     stray: Vec<u32>,
+    /// A ready runtime was restarted because it still ran the Codex bridge.
+    bridge_stopped: bool,
     ready: bool,
     started: bool,
     already_running: bool,
@@ -65,6 +79,7 @@ pub async fn ensure_runtime(paths: &AccountPaths) {
             json!({
                 "componentRoot": start.component_root,
                 "strayStopped": start.stray,
+                "codexBridgeStopped": start.bridge_stopped,
                 "ready": start.ready,
                 "started": start.started,
                 "alreadyRunning": start.already_running,
@@ -121,7 +136,7 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
         shell_quote(workspace_root),
     );
 
-    let stray = stop_stray_runtimes(
+    let stopped = stop_stray_runtimes(
         &tunnel_client,
         &component_root,
         &runtime_alias,
@@ -150,6 +165,9 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
         .args(["--runtime-api-key", "env:CONTROL_PLANE_API_KEY", "--json"])
         .env_remove("OPENAI_API_KEY")
         .env("CONTROL_PLANE_API_KEY", runtime_key)
+        // The spawned `run` process inherits this environment (process mode).
+        .env(CODEX_BRIDGE_CMD_ENV, DISABLED_CODEX_BRIDGE)
+        .env_remove(CODEX_BRIDGE_ARGS_ENV)
         .stdin(Stdio::null());
     if let Some(proxy) = tunnel_http_proxy {
         command.env("HTTPS_PROXY", proxy);
@@ -180,7 +198,8 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
 
     Ok(RuntimeStart {
         component_root,
-        stray,
+        stray: stopped.runtimes,
+        bridge_stopped: stopped.bridge,
         ready,
         started: status
             .get("started")
@@ -193,19 +212,34 @@ fn ensure_runtime_blocking() -> anyhow::Result<RuntimeStart> {
     })
 }
 
+#[derive(Debug, Default)]
+struct StrayStop {
+    runtimes: Vec<u32>,
+    bridge: bool,
+}
+
+/// A process as seen once, before anything is stopped.
+struct ProcessEntry {
+    pid: u32,
+    parent: Option<u32>,
+    cmd: Vec<String>,
+}
+
 /// The runtime manager only tracks the runtime it recorded. When that record
-/// goes stale (its tmux session vanished, a crash) while the old `run` process
-/// lives on, `connect` starts a second one: both poll the same tunnel, both
-/// write the same health URL file (the survivor's file is deleted when either
-/// exits), and each keeps its own Codex app-server bridge alive. A runtime that
-/// the manager does not report as ready is therefore unmanaged and is stopped
-/// before connecting; a ready one is left to `connect` to reuse.
+/// goes stale (a vanished session, a crash) while the old `run` process lives
+/// on, `connect` starts a second one: both poll the same tunnel, both write the
+/// same health URL file (the survivor's file is deleted when either exits), and
+/// each keeps its own Codex app-server bridge alive. A runtime that the manager
+/// does not report as ready is therefore unmanaged and is stopped before
+/// connecting. A ready one is reused by `connect`, unless it was started with
+/// the Codex bridge enabled (before codex-plus disabled it, or by hand): that
+/// one is stopped through the manager so `connect` restarts it without one.
 fn stop_stray_runtimes(
     tunnel_client: &Path,
     component_root: &Path,
     alias: &str,
     profile: &str,
-) -> Vec<u32> {
+) -> StrayStop {
     let state = crate::runtime::background_command(tunnel_client)
         .current_dir(component_root)
         .args(["runtimes", "status", alias])
@@ -214,9 +248,6 @@ fn stop_stray_runtimes(
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| runtime_state(&String::from_utf8_lossy(&output.stdout), alias));
-    if state.as_deref() == Some("ready") {
-        return Vec::new();
-    }
     let client = normalized(tunnel_client);
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -236,19 +267,42 @@ fn stop_stray_runtimes(
         .map(|(pid, _)| *pid)
         .collect();
     if stray.is_empty() {
-        return Vec::new();
+        return StrayStop::default();
     }
-    // Its bridge children are reparented once the runtime exits; note them now.
-    let children: Vec<Pid> = system
+    let table: Vec<ProcessEntry> = system
         .processes()
         .iter()
-        .filter(|(_, process)| {
-            process
-                .parent()
-                .is_some_and(|parent| stray.contains(&parent))
+        .map(|(pid, process)| ProcessEntry {
+            pid: pid.as_u32(),
+            parent: process.parent().map(Pid::as_u32),
+            cmd: process
+                .cmd()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
         })
-        .map(|(pid, _)| *pid)
         .collect();
+    let roots: Vec<u32> = stray.iter().map(|pid| pid.as_u32()).collect();
+    // Descendants survive the runtime (Windows keeps no tree; a Scoop shim
+    // runs the real codex as its own child), so note the whole tree now.
+    let tree = descendants(&table, &roots);
+    let bridge = tree.iter().any(|pid| {
+        table
+            .iter()
+            .any(|entry| entry.pid == *pid && is_codex_bridge_command(&entry.cmd))
+    });
+    if state.as_deref() == Some("ready") {
+        if !bridge {
+            return StrayStop::default();
+        }
+        // Let the manager release the tunnel lease and clear its record.
+        let _ = crate::runtime::background_command(tunnel_client)
+            .current_dir(component_root)
+            .args(["runtimes", "stop", alias])
+            .stdin(Stdio::null())
+            .output();
+    }
+    let children: Vec<Pid> = tree.iter().map(|pid| Pid::from_u32(*pid)).collect();
     for pid in &stray {
         if let Some(process) = system.process(*pid) {
             // A graceful stop lets tunnel-client release its tunnel lease.
@@ -274,7 +328,42 @@ fn stop_stray_runtimes(
             process.kill();
         }
     }
-    stray.iter().map(|pid| pid.as_u32()).collect()
+    StrayStop {
+        runtimes: roots,
+        bridge,
+    }
+}
+
+/// Every process below `roots`, nearest first.
+fn descendants(table: &[ProcessEntry], roots: &[u32]) -> Vec<u32> {
+    let mut found: Vec<u32> = Vec::new();
+    let mut frontier: Vec<u32> = roots.to_vec();
+    while let Some(parent) = frontier.pop() {
+        for entry in table {
+            if entry.parent == Some(parent)
+                && !roots.contains(&entry.pid)
+                && !found.contains(&entry.pid)
+            {
+                found.push(entry.pid);
+                frontier.push(entry.pid);
+            }
+        }
+    }
+    found
+}
+
+/// `codex app-server` started by tunnel-client's bridge (PATH shim or binary).
+fn is_codex_bridge_command(command: &[String]) -> bool {
+    let program = command
+        .first()
+        .map(|arg| {
+            Path::new(arg.trim_matches('"'))
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    program == "codex" && command.iter().skip(1).any(|arg| arg == "app-server")
 }
 
 /// `runtimes status <alias>` prints `alias<TAB>state<TAB>tunnel` lines.
@@ -416,6 +505,45 @@ mod tests {
             ),
             profile
         ));
+    }
+
+    #[test]
+    fn codex_bridge_is_recognised_through_shims_but_not_other_children() {
+        let cmd = |line: &str| -> Vec<String> { line.split(' ').map(str::to_string).collect() };
+        assert!(is_codex_bridge_command(&cmd("codex app-server")));
+        assert!(is_codex_bridge_command(&cmd(
+            r"C:\Users\Meta\scoop\apps\codex\current\codex.exe app-server"
+        )));
+        assert!(is_codex_bridge_command(&cmd(
+            "/opt/homebrew/bin/codex app-server --listen stdio://"
+        )));
+        assert!(!is_codex_bridge_command(&cmd(
+            "powershell.exe -NoProfile -File start-tunnel-mcp.ps1"
+        )));
+        assert!(!is_codex_bridge_command(&cmd("codex exec --json")));
+        assert!(!is_codex_bridge_command(&cmd("node app-server")));
+    }
+
+    #[test]
+    fn descendants_cover_grandchildren_and_skip_unrelated_processes() {
+        let entry = |pid: u32, parent: Option<u32>| ProcessEntry {
+            pid,
+            parent,
+            cmd: Vec::new(),
+        };
+        // runtime 10 -> shim 11 -> real codex 12; MCP 13 -> node 14; 20 unrelated.
+        let table = vec![
+            entry(10, Some(1)),
+            entry(11, Some(10)),
+            entry(12, Some(11)),
+            entry(13, Some(10)),
+            entry(14, Some(13)),
+            entry(20, Some(1)),
+        ];
+        let mut found = descendants(&table, &[10]);
+        found.sort_unstable();
+        assert_eq!(found, vec![11, 12, 13, 14]);
+        assert!(descendants(&table, &[20]).is_empty());
     }
 
     #[test]
