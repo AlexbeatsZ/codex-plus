@@ -399,3 +399,20 @@ async fn foreground_request_interrupts_pending_background_generation() {
     let log = std::fs::read_to_string(fixture.api.paths.log_path()).unwrap();
     assert!(log.contains("interrupted"));
 }
+
+#[tokio::test]
+async fn temporary_accounts_are_excluded_from_background_auto_activation() {
+    let mut fixture = fixture().await;
+    fixture.config.account_temporary.insert(
+        fixture.ids[1].clone(),
+        config::AccountTemporary {
+            short_term_percent: Some(20),
+            long_term_percent: None,
+        },
+    );
+    fixture.api.save(fixture.config.clone()).unwrap();
+    mount_usage(&fixture, usage()).await;
+    mount_response(&fixture, 200).await;
+    fixture.api.activate_idle_accounts().await.unwrap();
+    assert_eq!(posts(&fixture).await, 0);
+}

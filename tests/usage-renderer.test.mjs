@@ -228,3 +228,23 @@ test("the summary refreshes with current participation and removes deleted accou
     assert.ok(calls.filter((call) => call.path === "/accounts/usage").every((call) => call.payload.recordId === account.recordId));
   } finally { dom.window.close(); }
 });
+
+test("account modal and inline summary convert reset timestamps to UTC+8", async () => {
+  const resetSec = Math.floor(Date.UTC(2026, 10, 19, 10, 31, 0) / 1000); // 18:31 UTC+8
+  const dom = setup(async () => ({
+    usage: {
+      plan_type: "plus",
+      rate_limit: {
+        primary_window: { used_percent: 25, limit_window_seconds: 18000, reset_at: resetSec },
+        secondary_window: { used_percent: 40, limit_window_seconds: 604800, reset_at: resetSec + 86400 },
+      },
+    },
+  }));
+  try {
+    dom.window.__codexPlusAccounts.open(); await flush();
+    const modalText = dom.window.document.querySelector(".cp-account-dialog").textContent;
+    assert.match(modalText, /11月19日 18:31/);
+    assert.match(modalText, /11月20日 18:31/);
+    assert.doesNotMatch(modalText, /UTC\+8/);
+  } finally { dom.window.close(); }
+});
