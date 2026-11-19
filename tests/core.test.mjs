@@ -47,3 +47,23 @@ test("invoke surfaces failures and html escaping covers attributes", async () =>
   for (let index = 0; index < 5; index += 1) core.pushDiagnostic(list, 3, `e${index}`);
   assert.deepEqual(list.map((entry) => entry.event), ["e2", "e3", "e4"]);
 });
+
+test("converts timestamps to UTC+8 regardless of local timezone", () => {
+  const dom = setup();
+  const core = dom.window.__codexPlusCore;
+  // 2026-11-19T10:31:00Z -> UTC+8 is 2026-11-19 18:31
+  const utcMs = Date.UTC(2026, 10, 19, 10, 31, 0);
+  const parts = core.utc8Parts(utcMs);
+  assert.deepEqual({ year: parts.year, month: parts.month, day: parts.day, hour: parts.hour, minute: parts.minute }, {
+    year: 2026, month: 11, day: 19, hour: 18, minute: 31,
+  });
+  assert.equal(core.formatUtc8Time(utcMs), "18:31");
+  assert.equal(core.formatUtc8DateTime(utcMs), "11月19日 18:31");
+  // Same UTC+8 day vs next UTC+8 day in compact reset formatting
+  const sameDayNow = Date.UTC(2026, 10, 19, 5, 0, 0);
+  const nextDayReset = Date.UTC(2026, 10, 19, 17, 0, 0); // UTC+8 is Nov 20 01:00
+  assert.equal(core.formatUtc8Reset(utcMs / 1000, sameDayNow, { compact: true }), "18:31");
+  assert.equal(core.formatUtc8Reset(nextDayReset / 1000, sameDayNow, { compact: true }), "11月20日 01:00");
+  assert.equal(core.formatUtc8Reset(utcMs / 1000, sameDayNow), "11月19日 18:31");
+  assert.match(core.timezoneConversionNote(), /UTC\+8/);
+});

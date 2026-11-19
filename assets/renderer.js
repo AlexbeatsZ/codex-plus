@@ -3,7 +3,7 @@
   const String = window.String;
 
   const core = window.__codexPlusCore;
-  const VERSION = 15;
+  const VERSION = 16;
   const OBSERVER_KEY = "accounts";
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
@@ -66,8 +66,8 @@
       .cp-inline-usage-plan { margin-bottom:3px; opacity:.65; }
       .cp-inline-usage-window { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:baseline; gap:12px; padding:3px 0; }
       .cp-inline-usage-window > :first-child { font-weight:500; }
-      .cp-inline-usage-values { display:flex; align-items:baseline; justify-content:flex-end; gap:6px; font-variant-numeric:tabular-nums; opacity:.7; }
-      .cp-inline-usage-reset { opacity:.8; }
+      .cp-inline-usage-values { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:flex-end; gap:2px 6px; font-variant-numeric:tabular-nums; opacity:.7; }
+      .cp-inline-usage-reset { opacity:.8; white-space:nowrap; }
       .cp-inline-usage-status { margin-top:4px; opacity:.65; overflow-wrap:anywhere; }
       .cp-inline-usage-actions { display:flex; gap:12px; margin-top:6px; }
       .cp-inline-usage-actions button { border:0; border-radius:4px; padding:2px 0; background:transparent; color:inherit; font:inherit; opacity:.7; cursor:pointer; }
@@ -408,9 +408,9 @@
       const windows = Array.from(group.windows.values(), ({ index, seconds, values, resets }) => {
         const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
         const label = seconds === 604800 ? "1 周" : seconds > 0 && seconds % 3600 === 0 ? `${seconds / 3600} 小时` : index ? "长期窗口" : "短期窗口";
-        const reset = resets.length ? new Date(Math.min(...resets) * 1000) : null;
-        const resetText = reset ? (reset.toDateString() === new Date().toDateString() ? reset.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : `${reset.getMonth() + 1}月${reset.getDate()}日`) : "";
-        const detail = `${values.length} 个账户的平均剩余${reset ? `；最早有账户重置于 ${reset.toLocaleString()}` : ""}`;
+        const minReset = resets.length ? Math.min(...resets) : null;
+        const resetText = minReset ? core.formatUtc8Reset(minReset, Date.now(), { compact: true }) : "";
+        const detail = `${values.length} 个账户的平均剩余${minReset ? `；最早有账户重置于 ${core.formatUtc8DateTime(minReset * 1000)}` : ""}`;
         return `<div class="cp-inline-usage-window" title="${escapeHtml(detail)}"><span>${escapeHtml(label)}</span><span class="cp-inline-usage-values"><span data-cp-usage-mean>${mean.toFixed(0)}%</span>${resetText ? `<span class="cp-inline-usage-reset">最早 ${escapeHtml(resetText)}</span>` : ""}</span></div>`;
       }).join("");
       const planName = plan.slice(0, 1).toUpperCase() + plan.slice(1);
@@ -468,7 +468,7 @@
   function usageMarkup(entry, recordId) {
     const loading = !entry || entry.status === "loading";
     const message = loading ? (entry?.usage ? "正在刷新…" : "额度读取中…") : entry.status === "error" ? entry.message || "额度暂不可用" : "";
-    const updated = entry?.updatedAt && entry.status !== "ok" ? `上次更新 ${new Date(entry.updatedAt).toLocaleString()}` : "";
+    const updated = entry?.updatedAt && entry.status !== "ok" ? `上次更新 ${core.formatUtc8DateTime(entry.updatedAt)}` : "";
     const status = `<div class="cp-usage-status"><span class="cp-usage-loading">${escapeHtml([message, updated].filter(Boolean).join(" · "))}</span><button type="button" class="cp-account-button" data-cp-usage-retry="${escapeHtml(recordId)}" ${loading ? "disabled" : ""}>${loading ? "刷新中…" : entry.status === "error" ? "重试" : "刷新额度"}</button></div>`;
     if (!entry?.usage) return status;
     const usage = entry.usage || {};
@@ -480,7 +480,7 @@
       const seconds = Number(windowValue.limit_window_seconds ?? windowValue.limitWindowSeconds);
       const label = seconds && seconds <= 6 * 3600 ? "5 小时额度" : seconds && seconds >= 6 * 24 * 3600 ? "周额度" : "额度窗口";
       const resetAt = Number(windowValue.reset_at ?? windowValue.resetAt);
-      const reset = Number.isFinite(resetAt) && resetAt > 0 ? new Date(resetAt * 1000).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+      const reset = core.formatUtc8Reset(resetAt);
       return `<div class="cp-usage-window"><span>${escapeHtml(label)} · 剩余 ${remaining.toFixed(0)}%</span><span class="cp-usage-track"><span class="cp-usage-fill" style="width:${remaining}%"></span></span><span class="cp-usage-reset">${reset ? `重置 ${escapeHtml(reset)}` : ""}</span></div>`;
     }).join("") + status;
   }

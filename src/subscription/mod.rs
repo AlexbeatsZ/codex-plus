@@ -47,6 +47,7 @@ pub struct SubscriptionApi {
     state: Arc<Mutex<HashMap<(String, String), AccountState>>>,
     rejected: Arc<Mutex<HashMap<String, String>>>,
     quota: Arc<quota::QuotaTracker>,
+    config_lock: Arc<Mutex<()>>,
     activity: Arc<Mutex<activation::Activity>>,
     foreground: Arc<tokio::sync::Notify>,
 }
@@ -95,20 +96,52 @@ impl SubscriptionApi {
             .ok()
             .and_then(|raw| serde_json::from_slice(&raw).ok())
             .unwrap_or_default();
+        let temporary =
+            crate::store::load_or_quarantine(&paths.state_dir.join("subscription-temporary.json"));
         Self {
             paths,
             native_base: NATIVE_BASE.into(),
             refresh_url: REFRESH_URL.into(),
             state: Arc::new(Mutex::new(HashMap::new())),
             rejected: Arc::new(Mutex::new(rejected)),
-            quota: Arc::new(quota::QuotaTracker::default()),
+            quota: Arc::new(quota::QuotaTracker::with_temporary(temporary)),
+            config_lock: Arc::default(),
             activity: Arc::default(),
             foreground: Arc::default(),
         }
     }
 
     pub fn view(&self) -> anyhow::Result<Value> {
-        let config = SubscriptionConfig::load(&self.paths)?;
+        let (config, quota_states) = {
+            let _guard = self.config_lock.lock().unwrap();
+            let mut config = SubscriptionConfig::load(&self.paths)?;
+            let temp_ids: Vec<String> = config
+                .account_order
+                .iter()
+                .filter(|id| {
+                    config
+                        .account_temporary
+                        .get(*id)
+                        .is_some_and(|t| t.enabled())
+                })
+                .cloned()
+                .collect();
+            for id in temp_ids {
+                if let Some(usage) = self.quota.latest_unexpired_usage(&id)
+                    && let Some(temp) = config
+                        .account_temporary
+                        .get(&id)
+                        .filter(|t| t.enabled())
+                        .cloned()
+                    && let quota::ReserveStatus::Reserved(reason) =
+                        self.evaluate_temporary_usage(&id, &usage, &temp)
+                {
+                    let _ = self.retire_temporary_unlocked(&mut config, &id, reason);
+                }
+            }
+            let quota_states = self.quota_states(&config);
+            (config, quota_states)
+        };
         let states: Vec<_> = self
             .state
             .lock()
@@ -125,11 +158,14 @@ impl SubscriptionApi {
             .map(|id| json!({"recordId":id,"blocked":true,"reason":"凭据失效，请重新导入或登录"}))
             .collect();
         Ok(
-            json!({"status":"ok", "quotaStates":self.quota_states(&config), "config":config, "accounts":accounts,"accountStates":states,"blockedAccounts":blocked}),
+            json!({"status":"ok", "quotaStates":quota_states, "config":config, "accounts":accounts,"accountStates":states,"blockedAccounts":blocked}),
         )
     }
 
-    pub fn save(&self, config: SubscriptionConfig) -> anyhow::Result<Value> {
+    pub fn save(&self, mut config: SubscriptionConfig) -> anyhow::Result<Value> {
+        config
+            .account_temporary
+            .retain(|id, _| config.account_order.contains(id));
         if config.enabled {
             let templates = crate::native_gateway::known_templates(&self.paths);
             let unknown: Vec<&str> = config
@@ -146,7 +182,12 @@ impl SubscriptionApi {
                 );
             }
         }
-        config.save(&self.paths)?;
+        {
+            let _guard = self.config_lock.lock().unwrap();
+            let previous = SubscriptionConfig::load(&self.paths).unwrap_or_default();
+            config.save(&self.paths)?;
+            self.sync_temporary_on_save(&previous, &config)?;
+        }
         self.foreground.notify_waiters();
         self.quota.clear();
         self.view()
@@ -449,10 +490,11 @@ impl SubscriptionApi {
                 continue;
             }
             let reserve = config.account_reserves.get(id).filter(|r| r.enabled());
-            if let Some(reserve) = reserve {
+            let temporary = config.account_temporary.get(id).filter(|t| t.enabled());
+            if reserve.is_some() || temporary.is_some() {
                 let started = tokio::time::Instant::now();
                 let status = self
-                    .check_reserve(id, reserve, &client, started + quota_budget)
+                    .check_policies(id, reserve, temporary, &client, started + quota_budget)
                     .await;
                 quota_budget = quota_budget.saturating_sub(started.elapsed());
                 match status {
@@ -484,8 +526,9 @@ impl SubscriptionApi {
                 }
             };
             let status = response.status();
-            if reserve.is_some() {
-                self.quota.observe_headers(id, response.headers());
+            let track_quota = reserve.is_some() || temporary.is_some();
+            if track_quota {
+                self.observe_headers_and_temporary(id, response.headers());
             }
             let retry_after = response
                 .headers()
@@ -534,8 +577,8 @@ impl SubscriptionApi {
                     mut tail,
                     mut guard,
                 }) => {
-                    if reserve.is_some() {
-                        self.quota.observe_event(id, guard.quota_update.take());
+                    if track_quota {
+                        self.observe_event_and_temporary(id, guard.quota_update.take());
                     }
                     if let Some(value) = &guard.failure
                         && let Some((reason, until)) = recoverable(value, retry_after)
@@ -545,7 +588,6 @@ impl SubscriptionApi {
                     let router = self.clone();
                     let record_id = id.clone();
                     let model = model.clone();
-                    let track_quota = reserve.is_some();
                     let stream = async_stream::stream! {
                         let _activity = activity;
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(prefix));
@@ -553,7 +595,7 @@ impl SubscriptionApi {
                             match tokio::time::timeout(IDLE_TIMEOUT, tail.next()).await {
                                 Ok(Some(Ok(bytes))) => {
                                     guard.push(&bytes);
-                                    if track_quota { router.quota.observe_event(&record_id, guard.quota_update.take()); }
+                                    if track_quota { router.observe_event_and_temporary(&record_id, guard.quota_update.take()); }
                                     if let Some(value) = &guard.failure {
                                         if let Some((reason, until)) = recoverable(value, retry_after) { router.cool(&record_id,&model,reason,until); }
                                     }
@@ -598,7 +640,7 @@ impl SubscriptionApi {
             return error(
                 StatusCode::TOO_MANY_REQUESTS,
                 "subscription_reserve_reached",
-                "参与账户已达到保留额度或暂不可用；请等待额度重置、调整保留百分比或选择其他账户",
+                "参与账户已达到保留或临时使用额度，暂不可用；请等待额度重置、调整设置或选择其他账户",
             );
         }
         let message = if tried == 0 {
