@@ -1,7 +1,7 @@
 //! Account-local reserve and temporary quota checks. Unknown quota never authorizes reserved usage.
 use super::*;
 use crate::accounts::{RateLimit, Usage, UsageWindow};
-use config::{AccountReserve, AccountTemporary};
+use config::{AccountReserve, AccountTemporary, TemporaryResetTarget};
 use std::time::Instant;
 
 const CACHE_TTL: Duration = Duration::from_secs(15);
@@ -10,6 +10,18 @@ const NEAR_LIMIT_TTL: Duration = Duration::from_secs(3);
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TemporaryProgress {
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub duration_minutes: Option<u32>,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub until_reset: Option<TemporaryResetTarget>,
+    #[serde(default)]
+    pub target_reset_at: Option<i64>,
+    #[serde(default)]
+    pub target_baseline_used: Option<f64>,
     #[serde(default)]
     pub short_baseline_used: Option<f64>,
     #[serde(default)]
@@ -149,13 +161,77 @@ fn update_temporary_window(
     }
 }
 
+pub(super) fn sync_temporary_time_fields(
+    progress: &mut TemporaryProgress,
+    temp: &AccountTemporary,
+    now: i64,
+) {
+    if let Some(mins) = temp.duration_minutes {
+        if progress.duration_minutes != Some(mins) || progress.expires_at.is_none() {
+            progress.started_at = Some(now);
+            progress.duration_minutes = Some(mins);
+            progress.expires_at = Some(now + i64::from(mins) * 60);
+        }
+    } else {
+        progress.started_at = None;
+        progress.duration_minutes = None;
+        progress.expires_at = None;
+    }
+    if progress.until_reset != temp.until_reset {
+        progress.until_reset = temp.until_reset;
+        progress.target_reset_at = None;
+        progress.target_baseline_used = None;
+    }
+    if temp.short_term_percent.is_none() {
+        progress.short_baseline_used = None;
+        progress.short_last_used = None;
+        progress.short_reset_at = None;
+    }
+    if temp.long_term_percent.is_none() {
+        progress.long_baseline_used = None;
+        progress.long_last_used = None;
+        progress.long_reset_at = None;
+    }
+}
+
+pub(super) fn evaluate_temporary_time(
+    progress: &TemporaryProgress,
+    temp: &AccountTemporary,
+    now: i64,
+) -> Option<String> {
+    if let Some(mins) = temp.duration_minutes
+        && progress.expires_at.is_some_and(|exp| now >= exp)
+    {
+        return Some(format!(
+            "临时使用时间已到：设定 {mins} 分钟已到期，已自动移出额度池"
+        ));
+    }
+    if let Some(target) = temp.until_reset
+        && progress
+            .target_reset_at
+            .is_some_and(|reset_at| now >= reset_at)
+    {
+        return Some(format!(
+            "临时使用已到期：已达下一次{}刷新时间，已自动移出额度池",
+            target.label()
+        ));
+    }
+    None
+}
+
 pub(super) fn evaluate_temporary_progress(
     progress: &mut TemporaryProgress,
     usage: &Usage,
     temp: &AccountTemporary,
 ) -> ReserveStatus {
+    let now = unix_now() as i64;
+    sync_temporary_time_fields(progress, temp, now);
+    if let Some(reason) = evaluate_temporary_time(progress, temp, now) {
+        return ReserveStatus::Reserved(reason);
+    }
     let mut short_seen = false;
     let mut long_seen = false;
+    let mut until_reset_seen = false;
     let mut unknown = false;
     for window in windows(usage) {
         let Some(seconds) = window.limit_window_seconds else {
@@ -165,6 +241,43 @@ pub(super) fn evaluate_temporary_progress(
         if seconds == 0 {
             unknown = true;
             continue;
+        }
+        let used = window
+            .used_percent
+            .filter(|u| u.is_finite() && (0.0..=100.0).contains(u));
+        if let Some(target) = temp.until_reset {
+            let matches = match target {
+                TemporaryResetTarget::Short => seconds <= 86400,
+                TemporaryResetTarget::Long => seconds > 86400,
+            };
+            if matches {
+                until_reset_seen = true;
+                match (progress.target_reset_at, window.reset_at) {
+                    (None, Some(reset_at)) if reset_at > now => {
+                        progress.target_reset_at = Some(reset_at);
+                        progress.target_baseline_used = used;
+                    }
+                    (Some(target_r), Some(new_r)) => {
+                        let reset_triggered = new_r <= now
+                            || new_r > target_r + 60
+                            || (new_r > target_r
+                                && used
+                                    .zip(progress.target_baseline_used)
+                                    .is_some_and(|(u, base)| u + 1e-6 < base));
+                        if reset_triggered {
+                            return ReserveStatus::Reserved(format!(
+                                "临时使用已到期：已达下一次{}刷新时间，已自动移出额度池",
+                                target.label()
+                            ));
+                        }
+                        if let Some(u) = used {
+                            progress.target_baseline_used =
+                                Some(progress.target_baseline_used.map_or(u, |b| b.max(u)));
+                        }
+                    }
+                    _ => unknown = true,
+                }
+            }
         }
         if seconds <= 86400 {
             if let Some(limit) = temp.short_term_percent {
@@ -204,6 +317,7 @@ pub(super) fn evaluate_temporary_progress(
     }
     if (temp.short_term_percent.is_some() && !short_seen)
         || (temp.long_term_percent.is_some() && !long_seen)
+        || (temp.until_reset.is_some() && !until_reset_seen)
         || unknown
     {
         ReserveStatus::Unknown
@@ -454,6 +568,7 @@ impl SubscriptionApi {
         previous: &SubscriptionConfig,
         current: &SubscriptionConfig,
     ) -> anyhow::Result<()> {
+        let now = unix_now() as i64;
         let mut ledger = self.quota.temporary.lock().unwrap();
         let mut updated = HashMap::new();
         for (id, temp) in &current.account_temporary {
@@ -472,7 +587,10 @@ impl SubscriptionApi {
                 _ => TemporaryProgress::default(),
             };
             progress.completed_reason = None;
-            if let Some(usage) = self.quota.latest_unexpired_usage(id) {
+            sync_temporary_time_fields(&mut progress, temp, now);
+            if temp.needs_usage()
+                && let Some(usage) = self.quota.latest_unexpired_usage(id)
+            {
                 let _ = evaluate_temporary_progress(&mut progress, &usage, temp);
             }
             updated.insert(id.clone(), progress);
@@ -487,6 +605,27 @@ impl SubscriptionApi {
         }
         *ledger = updated;
         self.save_temporary_ledger(&ledger)
+    }
+
+    pub(super) fn check_temporary_time_only(
+        &self,
+        id: &str,
+        temp: &AccountTemporary,
+    ) -> Option<String> {
+        let now = unix_now() as i64;
+        let mut ledger = self.quota.temporary.lock().unwrap();
+        let entry = ledger.entry(id.to_string()).or_default();
+        if entry.completed_reason.is_some() {
+            *entry = TemporaryProgress::default();
+        }
+        let before = entry.clone();
+        sync_temporary_time_fields(entry, temp, now);
+        let changed = *entry != before;
+        let reason = evaluate_temporary_time(entry, temp, now);
+        if changed {
+            let _ = self.save_temporary_ledger(&ledger);
+        }
+        reason
     }
 
     pub(super) fn evaluate_temporary_usage(
@@ -564,7 +703,13 @@ impl SubscriptionApi {
         if !config.account_order.iter().any(|entry| entry == id) {
             return;
         }
-        if let ReserveStatus::Reserved(reason) = self.evaluate_temporary_usage(id, usage, &temp) {
+        if let Some(reason) = self.check_temporary_time_only(id, &temp) {
+            let _ = self.retire_temporary_unlocked(&mut config, id, reason);
+            return;
+        }
+        if temp.needs_usage()
+            && let ReserveStatus::Reserved(reason) = self.evaluate_temporary_usage(id, usage, &temp)
+        {
             let _ = self.retire_temporary_unlocked(&mut config, id, reason);
         }
     }
@@ -661,6 +806,15 @@ impl SubscriptionApi {
         client: &reqwest::Client,
         deadline: tokio::time::Instant,
     ) -> ReserveStatus {
+        if let Some(temp) = temporary
+            && let Some(reason) = self.check_temporary_time_only(id, temp)
+        {
+            let _ = self.retire_temporary_account(id, reason.clone());
+            return ReserveStatus::Reserved(reason);
+        }
+        if reserve.is_none() && temporary.is_none_or(|t| !t.needs_usage()) {
+            return ReserveStatus::Ready;
+        }
         if let Some(cached) = self.quota.cached_entry(id, reserve, temporary) {
             return cached.map_or(ReserveStatus::Unknown, |usage| {
                 self.evaluate_policies(id, &usage, reserve, temporary)
@@ -734,6 +888,7 @@ impl SubscriptionApi {
                 items.push(json!({"recordId":id, "status":status, "reason":reason}));
             }
             if let Some(temp) = config.account_temporary.get(id).filter(|t| t.enabled()) {
+                let now = unix_now() as i64;
                 let progress = ledger.get(id);
                 let mut parts = Vec::new();
                 if let Some(limit) = temp.short_term_percent {
@@ -772,11 +927,42 @@ impl SubscriptionApi {
                         parts.push(format!("周额度目标 {limit}%（待首次用量确认）"));
                     }
                 }
+                if let Some(mins) = temp.duration_minutes {
+                    if let Some(exp) = progress.and_then(|p| p.expires_at) {
+                        let rem_secs = exp.saturating_sub(now);
+                        let rem_mins = if rem_secs > 0 {
+                            (rem_secs + 59) / 60
+                        } else {
+                            0
+                        };
+                        parts.push(format!("限时 {mins} 分钟（剩余约 {rem_mins} 分钟）"));
+                    } else {
+                        parts.push(format!("限时 {mins} 分钟"));
+                    }
+                }
+                if let Some(target) = temp.until_reset {
+                    if let Some(reset_at) = progress.and_then(|p| p.target_reset_at) {
+                        let rem_secs = reset_at.saturating_sub(now);
+                        let rem_mins = if rem_secs > 0 {
+                            (rem_secs + 59) / 60
+                        } else {
+                            0
+                        };
+                        parts.push(format!(
+                            "直到下次{}刷新（剩余约 {rem_mins} 分钟）",
+                            target.label()
+                        ));
+                    } else {
+                        parts.push(format!("直到下次{}刷新（待首次用量确认）", target.label()));
+                    }
+                }
                 items.push(json!({
                     "recordId": id,
                     "status": "temporary",
                     "reason": format!("临时使用中：{}", parts.join("，")),
-                    "temporary": true
+                    "temporary": true,
+                    "expiresAt": progress.and_then(|p| p.expires_at),
+                    "targetResetAt": progress.and_then(|p| p.target_reset_at),
                 }));
             }
         }
