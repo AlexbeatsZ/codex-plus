@@ -157,19 +157,55 @@ test("API overview and subscription config display account quota in UTC+8 and su
     dom.window.document.querySelector('[data-sub-temp-toggle="b"]').click();
     assert.equal(dom.window.document.querySelector('[data-sub-account="b"]').checked, true);
 
-    // Saving without setting either 5h or weekly limit is blocked
+    // Saving without setting either quota % or time limit is blocked
     dom.window.document.querySelector("[data-sub-save]").click(); await flush();
     assert.equal(saves.length, 0);
-    assert.match(dom.window.document.querySelector("[data-api-body]").textContent, /请至少设置一项 5h 或周使用额度/);
+    assert.match(dom.window.document.querySelector("[data-api-body]").textContent, /请至少设置一项 5h 或周使用额度，或设置临时使用时间/);
 
-    // Fill in 5h temporary quota and verify live predicted stop %
+    // Click preset "直到下一次 5h 额度刷新为止", then switch to custom duration, then toggle weekly reset preset
+    const presetShort = () => dom.window.document.querySelector('[data-sub-temp-preset="short"][data-sub-temp-account="b"]');
+    const presetLong = () => dom.window.document.querySelector('[data-sub-temp-preset="long"][data-sub-temp-account="b"]');
+    const durationInput = () => dom.window.document.querySelector('[data-sub-temp-account="b"][data-sub-temp="durationMinutes"]');
+    const hint = () => dom.window.document.querySelector('[data-sub-temp-hint="b"]').textContent;
+
+    presetShort().click();
+    assert.equal(presetShort().dataset.active, "true");
+    assert.equal(presetShort().getAttribute("aria-pressed"), "true");
+    assert.match(hint(), /直到下次 5h 额度刷新（11月19日 18:31）自动退出/);
+
+    // Typing custom minutes clears preset selection
+    durationInput().value = "45";
+    durationInput().dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    assert.equal(presetShort().dataset.active, "false");
+    assert.match(hint(), /限时 45 min 自动退出/);
+
+    // Clicking weekly preset clears custom minutes and toggles back off if clicked again
+    presetLong().click();
+    assert.equal(presetLong().dataset.active, "true");
+    assert.equal(durationInput().value, "");
+    assert.match(hint(), /直到下次周额度刷新（11月20日 18:31）自动退出/);
+    presetLong().click();
+    assert.equal(presetLong().dataset.active, "false");
+    presetLong().click();
+    assert.equal(presetLong().dataset.active, "true");
+
+    // Combine with 5h temporary quota and verify live predicted stop % + time exit hint
     const tempShort = dom.window.document.querySelector('[data-sub-temp-account="b"][data-sub-temp="shortTermPercent"]');
     tempShort.value = "30";
     tempShort.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-    assert.match(dom.window.document.querySelector('[data-sub-temp-hint="b"]').textContent, /5h 剩余 ≤ 50% 自动退出/);
+    assert.match(hint(), /5h 剩余 ≤ 50% 自动退出 · 直到下次周额度刷新（11月20日 18:31）自动退出/);
+
+    // Also switch account a to time-only temporary mode (custom durationMinutes)
+    dom.window.document.querySelector('[data-sub-temp-toggle="a"]').click();
+    const aDuration = dom.window.document.querySelector('[data-sub-temp-account="a"][data-sub-temp="durationMinutes"]');
+    aDuration.value = "25";
+    aDuration.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 
     dom.window.document.querySelector("[data-sub-save]").click(); await flush();
     assert.deepEqual(saves[0].accountOrder, ["a", "b"]);
-    assert.deepEqual(saves[0].accountTemporary, { b: { shortTermPercent: 30, longTermPercent: null } });
+    assert.deepEqual(saves[0].accountTemporary, {
+      a: { shortTermPercent: null, longTermPercent: null, durationMinutes: 25, untilReset: null },
+      b: { shortTermPercent: 30, longTermPercent: null, durationMinutes: null, untilReset: "long" },
+    });
   } finally { dom.window.close(); }
 });

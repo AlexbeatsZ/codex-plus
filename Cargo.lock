@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus"
-version = "0.3.18-omen"
+version = "0.3.19-omen"
 dependencies = [
  "anyhow",
  "async-stream",

@@ -655,6 +655,7 @@ async fn temporary_account_tracks_baseline_and_retires_when_usage_limit_reached(
         AccountTemporary {
             short_term_percent: Some(30),
             long_term_percent: None,
+            ..Default::default()
         },
     );
     let view = f.router.save(f.config.clone()).unwrap();
@@ -734,6 +735,7 @@ async fn temporary_account_tracks_baseline_and_retires_when_usage_limit_reached(
         AccountTemporary {
             short_term_percent: Some(15),
             long_term_percent: None,
+            ..Default::default()
         },
     );
     f.router.quota.record(&f.ids[0], Some(usage(50.0, 10.0)));
@@ -753,6 +755,7 @@ fn temporary_account_accumulates_usage_across_window_reset() {
     let temp = AccountTemporary {
         short_term_percent: Some(30),
         long_term_percent: None,
+        ..Default::default()
     };
     let now = unix_now() as i64;
     let w1 = serde_json::from_value::<Usage>(json!({"rate_limit": {
@@ -799,6 +802,7 @@ async fn temporary_account_validation_rejects_invalid_and_empty_limits() {
         AccountTemporary {
             short_term_percent: Some(0),
             long_term_percent: None,
+            ..Default::default()
         },
     );
     assert!(f.config.save(&f.router.paths).is_err());
@@ -808,6 +812,7 @@ async fn temporary_account_validation_rejects_invalid_and_empty_limits() {
         AccountTemporary {
             short_term_percent: None,
             long_term_percent: Some(101),
+            ..Default::default()
         },
     );
     assert!(f.config.save(&f.router.paths).is_err());
@@ -815,11 +820,46 @@ async fn temporary_account_validation_rejects_invalid_and_empty_limits() {
     f.config.account_temporary.insert(
         f.ids[0].clone(),
         AccountTemporary {
-            short_term_percent: None,
-            long_term_percent: None,
+            duration_minutes: Some(0),
+            ..Default::default()
         },
     );
     assert!(f.config.save(&f.router.paths).is_err());
+
+    f.config.account_temporary.insert(
+        f.ids[0].clone(),
+        AccountTemporary {
+            duration_minutes: Some(43_201),
+            ..Default::default()
+        },
+    );
+    assert!(f.config.save(&f.router.paths).is_err());
+
+    f.config.account_temporary.insert(
+        f.ids[0].clone(),
+        AccountTemporary {
+            ..Default::default()
+        },
+    );
+    assert!(f.config.save(&f.router.paths).is_err());
+
+    f.config.account_temporary.insert(
+        f.ids[0].clone(),
+        AccountTemporary {
+            duration_minutes: Some(30),
+            ..Default::default()
+        },
+    );
+    assert!(f.config.save(&f.router.paths).is_ok());
+
+    f.config.account_temporary.insert(
+        f.ids[0].clone(),
+        AccountTemporary {
+            until_reset: Some(config::TemporaryResetTarget::Short),
+            ..Default::default()
+        },
+    );
+    assert!(f.config.save(&f.router.paths).is_ok());
 }
 
 #[tokio::test]
@@ -832,6 +872,7 @@ async fn temporary_account_retired_before_send_if_usage_already_reached_limit() 
         AccountTemporary {
             short_term_percent: None,
             long_term_percent: Some(25),
+            ..Default::default()
         },
     );
     f.router.save(f.config.clone()).unwrap();
@@ -844,4 +885,205 @@ async fn temporary_account_retired_before_send_if_usage_already_reached_limit() 
     let after = SubscriptionConfig::load(&f.router.paths).unwrap();
     assert_eq!(after.account_order, vec![f.ids[1].clone()]);
     assert!(!after.account_temporary.contains_key(&f.ids[0]));
+}
+
+#[tokio::test]
+async fn temporary_account_retires_when_duration_minutes_expires() {
+    let mut f = fixture().await;
+    f.config.account_reserves.clear();
+    f.config.account_temporary.insert(
+        f.ids[0].clone(),
+        AccountTemporary {
+            duration_minutes: Some(15),
+            ..Default::default()
+        },
+    );
+    let view = f.router.save(f.config.clone()).unwrap();
+    assert_eq!(view["quotaStates"][0]["status"], "temporary");
+    assert!(
+        view["quotaStates"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("限时 15 分钟")
+    );
+    assert!(view["quotaStates"][0]["expiresAt"].as_i64().is_some());
+
+    // Time-only temporary mode sends without querying /usage.
+    mount_response(&f, "a", success()).await;
+    let r1 = send(&f).await;
+    assert_eq!(r1.0, StatusCode::OK);
+    assert_eq!(r1.1, f.ids[0]);
+    assert_eq!(
+        f.server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "GET")
+            .count(),
+        0
+    );
+
+    // Expire via view().
+    f.router
+        .quota
+        .temporary
+        .lock()
+        .unwrap()
+        .get_mut(&f.ids[0])
+        .unwrap()
+        .expires_at = Some(unix_now() as i64 - 1);
+    let view_expired = f.router.view().unwrap();
+    assert_eq!(view_expired["config"]["accountOrder"], json!([f.ids[1]]));
+    assert!(
+        !view_expired["config"]["accountTemporary"]
+            .as_object()
+            .unwrap()
+            .contains_key(&f.ids[0])
+    );
+    assert_eq!(
+        view_expired["quotaStates"][0]["status"],
+        "temporary_completed"
+    );
+    assert!(
+        view_expired["quotaStates"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("15 分钟已到期")
+    );
+
+    // Re-add and verify expiry also triggers right before send().
+    let mut next_cfg = SubscriptionConfig::load(&f.router.paths).unwrap();
+    next_cfg.account_order.insert(0, f.ids[0].clone());
+    next_cfg.account_temporary.insert(
+        f.ids[0].clone(),
+        AccountTemporary {
+            duration_minutes: Some(5),
+            ..Default::default()
+        },
+    );
+    f.router.save(next_cfg).unwrap();
+    f.router
+        .quota
+        .temporary
+        .lock()
+        .unwrap()
+        .get_mut(&f.ids[0])
+        .unwrap()
+        .expires_at = Some(unix_now() as i64 - 1);
+    mount_response(&f, "b", success()).await;
+    let r2 = send(&f).await;
+    assert_eq!(r2.0, StatusCode::OK);
+    assert_eq!(r2.1, f.ids[1]);
+    let after = SubscriptionConfig::load(&f.router.paths).unwrap();
+    assert_eq!(after.account_order, vec![f.ids[1].clone()]);
+    assert!(!after.account_temporary.contains_key(&f.ids[0]));
+}
+
+#[tokio::test]
+async fn temporary_account_retires_on_short_and_long_window_reset() {
+    let mut f = fixture().await;
+    f.config.account_reserves.clear();
+    let now = unix_now() as i64;
+    let short_reset = now + 3600;
+    let initial = serde_json::from_value::<Usage>(json!({"rate_limit": {
+        "primary_window":{"used_percent":25.0,"limit_window_seconds":18000,"reset_at":short_reset},
+        "secondary_window":{"used_percent":10.0,"limit_window_seconds":604800,"reset_at":now+86400}
+    }}))
+    .unwrap();
+    f.router.quota.record(&f.ids[0], Some(initial.clone()));
+    f.config.account_temporary.insert(
+        f.ids[0].clone(),
+        AccountTemporary {
+            until_reset: Some(config::TemporaryResetTarget::Short),
+            ..Default::default()
+        },
+    );
+    let view = f.router.save(f.config.clone()).unwrap();
+    assert_eq!(view["quotaStates"][0]["status"], "temporary");
+    assert!(
+        view["quotaStates"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("直到下次5h 额度刷新")
+    );
+    assert_eq!(view["quotaStates"][0]["targetResetAt"], short_reset);
+
+    // Before reset: allowed to send.
+    mount_usage(&f, 200, serde_json::to_value(&initial).unwrap()).await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .and(header("chatgpt-account-id", "a"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(success()))
+        .up_to_n_times(1)
+        .mount(&f.server)
+        .await;
+    let r1 = send(&f).await;
+    assert_eq!(r1.0, StatusCode::OK);
+    assert_eq!(r1.1, f.ids[0]);
+    assert!(
+        SubscriptionConfig::load(&f.router.paths)
+            .unwrap()
+            .account_order
+            .contains(&f.ids[0])
+    );
+
+    // Upstream stream reports rolled-over primary reset_at: stream completes, then account retires.
+    let reset_event = json!({
+        "type":"codex.rate_limits",
+        "rate_limits":{"primary":{"used_percent":0,"window_minutes":300,"reset_at":short_reset + 18000}}
+    });
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .and(header("chatgpt-account-id", "a"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"OK_RESET\"}}\n\ndata: {reset_event}\n\ndata: {{\"type\":\"response.completed\"}}\n\n"
+        )))
+        .up_to_n_times(1)
+        .mount(&f.server)
+        .await;
+    let r2 = send(&f).await;
+    assert_eq!(r2.0, StatusCode::OK);
+    assert_eq!(r2.1, f.ids[0]);
+    assert!(r2.2.contains("OK_RESET"));
+
+    let after = SubscriptionConfig::load(&f.router.paths).unwrap();
+    assert_eq!(after.account_order, vec![f.ids[1].clone()]);
+    assert!(!after.account_temporary.contains_key(&f.ids[0]));
+    let view_after = f.router.view().unwrap();
+    assert_eq!(
+        view_after["quotaStates"][0]["status"],
+        "temporary_completed"
+    );
+    assert!(
+        view_after["quotaStates"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("下一次5h 额度刷新时间")
+    );
+
+    // Unit check for weekly until_reset.
+    let mut progress = TemporaryProgress::default();
+    let long_temp = AccountTemporary {
+        until_reset: Some(config::TemporaryResetTarget::Long),
+        ..Default::default()
+    };
+    let w1 = serde_json::from_value::<Usage>(json!({"rate_limit": {
+        "primary_window":{"used_percent":10.0,"limit_window_seconds":18000,"reset_at":now+3600},
+        "secondary_window":{"used_percent":20.0,"limit_window_seconds":604800,"reset_at":now+86400}
+    }}))
+    .unwrap();
+    assert_eq!(
+        evaluate_temporary_progress(&mut progress, &w1, &long_temp),
+        ReserveStatus::Ready
+    );
+    assert_eq!(progress.target_reset_at, Some(now + 86400));
+
+    let w2 = serde_json::from_value::<Usage>(json!({"rate_limit": {
+        "primary_window":{"used_percent":10.0,"limit_window_seconds":18000,"reset_at":now+3600},
+        "secondary_window":{"used_percent":0.0,"limit_window_seconds":604800,"reset_at":now+86400+604800}
+    }}))
+    .unwrap();
+    let status = evaluate_temporary_progress(&mut progress, &w2, &long_temp);
+    assert!(matches!(status, ReserveStatus::Reserved(ref msg) if msg.contains("周额度")));
 }

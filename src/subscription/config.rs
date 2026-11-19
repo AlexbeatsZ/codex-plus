@@ -34,6 +34,22 @@ impl AccountReserve {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TemporaryResetTarget {
+    Short,
+    Long,
+}
+
+impl TemporaryResetTarget {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Short => "5h 额度",
+            Self::Long => "周额度",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountTemporary {
@@ -41,11 +57,24 @@ pub struct AccountTemporary {
     pub short_term_percent: Option<u8>,
     #[serde(default)]
     pub long_term_percent: Option<u8>,
+    #[serde(default)]
+    pub duration_minutes: Option<u32>,
+    #[serde(default)]
+    pub until_reset: Option<TemporaryResetTarget>,
 }
 
 impl AccountTemporary {
     pub fn enabled(&self) -> bool {
-        self.short_term_percent.is_some() || self.long_term_percent.is_some()
+        self.short_term_percent.is_some()
+            || self.long_term_percent.is_some()
+            || self.duration_minutes.is_some()
+            || self.until_reset.is_some()
+    }
+
+    pub fn needs_usage(&self) -> bool {
+        self.short_term_percent.is_some()
+            || self.long_term_percent.is_some()
+            || self.until_reset.is_some()
     }
 }
 
@@ -90,8 +119,11 @@ impl SubscriptionConfig {
             {
                 bail!("临时使用额度必须属于已有账户，百分比须为 1 至 100 的整数");
             }
+            if temp.duration_minutes.is_some_and(|m| m == 0 || m > 43_200) {
+                bail!("临时使用时间须为 1 至 43200 分钟的整数");
+            }
             if self.account_order.contains(id) && !temp.enabled() {
-                bail!("临时加入的账户请至少设置一项 5h 或周使用额度（1 至 100 的整数）");
+                bail!("临时加入的账户请至少设置一项 5h 或周使用额度，或设置临时使用时间");
             }
         }
         let mut seen = HashSet::new();

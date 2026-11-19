@@ -8,8 +8,10 @@
 
 ## 版本与部署
 
-- 公共源码 `main` 为 0.3.18（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 公共源码 `main` 为 0.3.19（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 0.3.19（2026-11-19）：订阅 API「临时加入」新增按时间维度控制退出——支持自定义有效时间 `durationMinutes`（1–43200 分钟，到期即 `now >= started_at + duration_minutes * 60`）及两个互斥预设按钮「直到下一次 5h 额度刷新为止」（`untilReset: "short"`）与「直到下一次周额度刷新为止」（`untilReset: "long"`）；支持仅设时间、仅设 5h/周用量百分比或组合使用（任一条件先到即移出）；仅设 `durationMinutes` 且无保留/百分比/刷新预设时请求前只校验本地时钟，不阻塞 `/usage`。前端 [api-providers.js](assets/api-providers.js) 升至 v17。
 - 0.3.18（2026-11-19）：订阅 API 新增“临时加入”功能（设定 5h / 周本次允许使用的百分比，持久化 `.codex-plus/subscription-temporary.json`，支持跨重置累计；在检查/响应头/SSE/刷新时检测到累计消耗达标后自动移出 `accountOrder` 与 `accountTemporary`，当前流继续完成且不重放，后台 5h 自动激活跳过临时账户）；“API 接入”首页与订阅配置页直接展示账户 5h/周用量额度并支持刷/重试；移除前端 HTTP 代理输入框与冗长说明文字（后端保留 `proxyUrl` 兼容）；`assets/core.js` 按电脑时区偏移静默换算所有前端时间到 `UTC+8` 显示。
+- 0.3.18 已三端文件部署并上传 Release（2026-11-19）：Mac 0.3.18（`006d33b`，`v0.3.18`）；ROG 0.3.18-rog（`68ed17d`，`v0.3.18-rog`，`15996416` 字节，SHA256 `FD7E06F5D672F34E78BF0E6C57EA35D3F97885A06514D91597D9D7EE7B9AF9C1`）、OMEN 0.3.18-omen（`e516c59`，`v0.3.18-omen`，`15996416` 字节，SHA256 `06864CC0EF064589DF09D99E58161BED12BE60629331CBD1AB0F54D86CF9E0E0`）均在 ROG 构建，三端包均已上传 GitHub Releases。三端运行中进程均未重启（Mac `codex-plus` 561 / `tunnel-client` 45315 / `ChatGPT` 80166；ROG `codex-plus` 14356 / `tunnel-client` 33032；OMEN `codex-plus` 7112 / `tunnel-client` 10472；Windows 旧运行映像分别移至 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0318\running-previous-codex-plus.exe` 与 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0318-omen\running-previous-codex-plus.exe`），OMEN 仓库原有 15 项源码修改原样保留；文件替换需用户下次显式启动新版 `codex-plus` 后生效。
 - 0.3.17 已三端文件部署并上传 Release（2026-11-19）：Mac 0.3.17（91de64b，经一次性 gui/501 LaunchAgent 签名，身份不变）；ROG 0.3.17-rog（5e5e0c9）、OMEN 0.3.17-omen（4499257）均在 ROG 构建。三端 launcher 未重启（ROG 14356、OMEN 20380 仍为旧映像，旧映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0317*\running-previous-codex-plus.exe`）；但三端 tunnel runtime 已按新逻辑手动重建（无 Codex 桥；ROG 须在 Session 1 用一次性 Interactive 计划任务 connect，经 SSH 拉起的 runtime 会随会话结束），OMEN `models_cache.json` 随即恢复为桌面 0.169.1 写入、`cp-pool` 6.2 为 500000 窗口与 `code_mode_only`。
 - 0.3.17（2026-11-19）从源头关闭 tunnel-client 内置 Codex 桥：`runtimes connect` 环境带 `TUNNEL_CLIENT_CODEX_APP_SERVER_CMD=codex-plus-disabled-codex-bridge`，已 ready 但仍挂着 `codex app-server` 的 runtime 会被停止重建。根因：桥拉起的 PATH 旧版 CLI（OMEN Scoop 0.149.0、ROG Scoop 0.144.5、Mac Homebrew 0.162.1）以自身版本覆写共享 `~/.codex/models_cache.json`，桌面 app-server 判定版本不符丢弃缓存，6.x 与 `cp-pool-*` 走未知模型回退（258400 窗口、工具全部内联，首轮约 18 万 token）。0.3.16 的网关版本快照不能覆盖这一路径。
 - 0.3.16 已三端文件部署并上传 Release（2026-11-18）：Mac 0.3.16（ca5d22d，签名身份不变）；ROG 0.3.16-rog（57455f7）、OMEN 0.3.16-omen（9e53c17）均在 ROG 构建，OMEN 只替换 EXE（local-tools 自 0.3.14 无改动）。三端运行中的 launcher 未重启，需用户显式启动新版生效；Windows 旧映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0316\running-previous-codex-plus.exe`。三端都存在多版本客户端：Mac Homebrew 0.162.1、ROG Scoop 0.144.5 与 0.167.0、OMEN 0.149.0，与桌面 0.169.0 交替刷新。
@@ -34,7 +36,7 @@
 
 # Active Work
 
-- 0.3.18 待验收：用户显式启动新版后验证临时加入达量自动退出、API 接入页额度展示及精简界面与 UTC+8 时间显示。
+- 0.3.19 待验收：用户显式启动新版后验证临时加入（5h/周额度百分比、自定义分钟数、直到下一次 5h/周额度刷新预设）自动退出、API 接入页额度展示及精简界面与 UTC+8 时间显示。
 
 - 0.3.14 发布后各端需显式启动新版 codex-plus；从旧版升级时运行中的 Codex 会在重启后读到新的 broker 令牌。待自然观察：日志不再出现 `injection.models.pending` 误翻转与成串 `injection.target.waiting`。
 - 0.3.13 实机验收待用户显式启动新版：登录额度耗尽时选择有额度的外接 API 或订阅池模型，发送一条真实消息，切回官方模型确认限制恢复。

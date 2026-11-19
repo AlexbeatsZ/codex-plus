@@ -203,11 +203,13 @@ release.json 记录源 commit `323b56a`、分支 `codex/account-pool`，base 版
 
 ## 临时加入与达量自动退出
 
-对于平时不希望常驻额度池的账户，用户在“ChatGPT 订阅 API”配置页可通过“临时加入”将其纳入 `accountOrder` 与 `accountTemporary[recordId]`，并设定本次允许消耗的 5h 额度百分比（`shortTermPercent`，1–100）和/或周额度百分比（`longTermPercent`，1–100）。
+对于平时不希望常驻额度池的账户，用户在“ChatGPT 订阅 API”配置页可通过“临时加入”将其纳入 `accountOrder` 与 `accountTemporary[recordId]`，并可按使用额度或时间设定退出条件（可单选或组合使用，任一条件先满足即自动移出）：
 
-- 基准与账本：进度持久化在 `.codex-plus/subscription-temporary.json`，记录加入时的 `short_baseline_used` / `long_baseline_used`、`last_used`、对应 `reset_at` 与 `completed_reason`。若窗口在临时使用期间发生跨周期重置（`reset_at` 前进），将上一周期已用增量折算为新周期负基线 `-prior_consumed`，实现跨重置的连续累计。
-- 自动退出条件：在每次请求分配前（`check_policies`）、响应头（`observe_headers_and_temporary`）、流式 `codex.rate_limits` 事件（`observe_event_and_temporary`）、额度查询（`fetch_usage`）及面板读取（`view`）时，一旦任一已配置窗口满足 `(effective_used - baseline_used).max(0.0) >= 设定百分比`，立即从 `subscription.json` 的 `account_order` 与 `account_temporary` 移除该账户（取消勾选），并将完成说明写入 `subscription-temporary.json` 及 `subscription.temporary.completed` 日志。
-- 输出不重放与后台隔离：若在当前流输出阶段达到设定使用量，已开始的推理与工具流继续完成，仅后续新请求不再调度该账户，直到用户下一次手动加入；后台 5h 自动激活（`activation.rs`）跳过 `account_temporary` 中的账户。
+- 使用额度限制：设定本次允许消耗的 5h 额度百分比（`shortTermPercent`，1–100）和/或周额度百分比（`longTermPercent`，1–100）。
+- 时间限制：可输入自定义有效时间（`durationMinutes`，1–43200 分钟，到期即 `now >= started_at + duration_minutes * 60`），或选择两个预设时间之一——“直到下一次 5h 额度刷新为止”（`untilReset: "short"`）或“直到下一次周额度刷新为止”（`untilReset: "long"`）。若仅设置 `durationMinutes`（无百分比、无 `untilReset` 且无保留阈值），发送前仅做本地时钟检查，不阻塞查询 `/usage`。
+- 基准与账本：进度持久化在 `.codex-plus/subscription-temporary.json`，记录加入时的 `short_baseline_used` / `long_baseline_used`、`last_used`、对应 `reset_at`、`started_at` / `expires_at`、`until_reset` / `target_reset_at` 与 `completed_reason`。若额度百分比窗口在临时使用期间发生跨周期重置（`reset_at` 前进），将上一周期已用增量折算为新周期负基线 `-prior_consumed`，实现跨重置的连续累计；若配置了 `untilReset`，在首次拿到窗口 `reset_at` 时锁定目标刷新点 `target_reset_at`，当系统时间达到 `target_reset_at` 或观测到该窗口刷新（`reset_at` 推进到下一周期或到期）时触发退出。
+- 自动退出条件：在每次请求分配前（`check_policies`）、响应头（`observe_headers_and_temporary`）、流式 `codex.rate_limits` 事件（`observe_event_and_temporary`）、额度查询（`fetch_usage`）及面板读取（`view`）时，一旦任一已配置窗口用量或时间/刷新条件满足，立即从 `subscription.json` 的 `account_order` 与 `account_temporary` 移除该账户（取消勾选），并将完成说明写入 `subscription-temporary.json` 及 `subscription.temporary.completed` 日志。
+- 输出不重放与后台隔离：若在当前流输出阶段达到设定使用量或触发刷新退出，已开始的推理与工具流继续完成，仅后续新请求不再调度该账户，直到用户下一次手动加入；后台 5h 自动激活（`activation.rs`）跳过 `account_temporary` 中的账户。
 
 ## API 接入页额度展示与 UTC+8 时区换算
 

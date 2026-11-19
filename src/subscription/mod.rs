@@ -127,12 +127,20 @@ impl SubscriptionApi {
                 .cloned()
                 .collect();
             for id in temp_ids {
-                if let Some(usage) = self.quota.latest_unexpired_usage(&id)
-                    && let Some(temp) = config
-                        .account_temporary
-                        .get(&id)
-                        .filter(|t| t.enabled())
-                        .cloned()
+                let Some(temp) = config
+                    .account_temporary
+                    .get(&id)
+                    .filter(|t| t.enabled())
+                    .cloned()
+                else {
+                    continue;
+                };
+                if let Some(reason) = self.check_temporary_time_only(&id, &temp) {
+                    let _ = self.retire_temporary_unlocked(&mut config, &id, reason);
+                    continue;
+                }
+                if temp.needs_usage()
+                    && let Some(usage) = self.quota.latest_unexpired_usage(&id)
                     && let quota::ReserveStatus::Reserved(reason) =
                         self.evaluate_temporary_usage(&id, &usage, &temp)
                 {
