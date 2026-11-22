@@ -8,7 +8,8 @@
 
 ## 版本与部署
 
-- 公共源码 `main` 为 0.3.19（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 公共源码 `main` 为 0.3.20（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 0.3.20（2026-11-22）：原生网关在本机拒绝“客户端按未知模型兜底”的请求。判据是目录条目为 `code_mode_only`，请求却带工具而没有 `exec`；这类请求的窗口固定为 258k、工具全部内联，每次 15～20 万 token。上游 `/models` 刷新改为 `Accept-Encoding: br, gzip` 并自行解码，修复 OMEN 自 11-20 起没有一次成功的问题（原因是 invalid JSON 和 8 秒的明文目录超时）。详见 `docs/design/mobile-remote-providers.md` 的 0.3.20 节。
 - 0.3.19（2026-11-19）：订阅 API「临时加入」新增按时间维度控制退出——支持自定义有效时间 `durationMinutes`（1–43200 分钟，到期即 `now >= started_at + duration_minutes * 60`）及两个互斥预设按钮「直到下一次 5h 额度刷新为止」（`untilReset: "short"`）与「直到下一次周额度刷新为止」（`untilReset: "long"`）；支持仅设时间、仅设 5h/周用量百分比或组合使用（任一条件先到即移出）；仅设 `durationMinutes` 且无保留/百分比/刷新预设时请求前只校验本地时钟，不阻塞 `/usage`。前端 [api-providers.js](assets/api-providers.js) 升至 v17。
 - 0.3.19 已三端文件部署并上传 Release（2026-11-19）：Mac 0.3.19（`bf740dd`，`v0.3.19`，`6925265` 字节 tar.gz）；ROG 0.3.19-rog（`c9b87b5`，`v0.3.19-rog`，`16040960` 字节，SHA256 `96828404CD38E80528CB706D549ECA2606004CDECD79D1FA87E86B04816DF8DB`）、OMEN 0.3.19-omen（`f2a4af7`，`v0.3.19-omen`，`16040448` 字节，SHA256 `76D13A3A0FF03B0DF152DD6FEB80CB32FFBFA4750F60784D1DA44B50F9C61020`）均在 ROG 构建，三端包均已上传 GitHub Releases。三端运行中进程均未重启（Mac `codex-plus` 561 / `tunnel-client` 45315 / `ChatGPT` 80166；ROG `codex-plus` 14356 / `tunnel-client` 33032；OMEN `codex-plus` 43884 / `tunnel-client` 10472；OMEN 旧运行映像移至 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0319-omen\running-previous-codex-plus.exe`，ROG 未被占用的旧映像已直接删除），OMEN 仓库原有 15 项源码修改原样保留；文件替换需用户下次显式启动新版 `codex-plus` 后生效。
 - 0.3.18（2026-11-19）：订阅 API 新增“临时加入”功能（设定 5h / 周本次允许使用的百分比，持久化 `.codex-plus/subscription-temporary.json`，支持跨重置累计；在检查/响应头/SSE/刷新时检测到累计消耗达标后自动移出 `accountOrder` 与 `accountTemporary`，当前流继续完成且不重放，后台 5h 自动激活跳过临时账户）；“API 接入”首页与订阅配置页直接展示账户 5h/周用量额度并支持刷/重试；移除前端 HTTP 代理输入框与冗长说明文字（后端保留 `proxyUrl` 兼容）；`assets/core.js` 按电脑时区偏移静默换算所有前端时间到 `UTC+8` 显示。
@@ -37,6 +38,7 @@
 
 # Active Work
 
+- 0.3.20 待验收：显式启动新版后，`.codex-plus/official-models.json` 的修改时间应随刷新更新，日志不再出现成串 `native.models.refresh_failed`；在兜底任务（如 2026-11-22 的 Shale 任务）中发送，应看到“请求未发送…请新建任务”的提示，且没有上游消耗。
 - 0.3.19 待验收：用户显式启动新版后验证临时加入（5h/周额度百分比、自定义分钟数、直到下一次 5h/周额度刷新预设）自动退出、API 接入页额度展示及精简界面与 UTC+8 时间显示。
 
 - 0.3.14 发布后各端需显式启动新版 codex-plus；从旧版升级时运行中的 Codex 会在重启后读到新的 broker 令牌。待自然观察：日志不再出现 `injection.models.pending` 误翻转与成串 `injection.target.waiting`。
@@ -92,6 +94,7 @@ Windows 登录自启：`target\release\codex-plus.exe --login-startup`。该模�
 # Durable Lessons
 
 - 原生目录给 cp-* 合成的模型条目决定官方客户端如何组装请求：`tool_mode=direct` / `supports_search_tool=false` 会把全部 MCP/插件工具内联进每次请求（本机约 14 万 token），窗口小于该基线时压缩永远无效、每次工具调用都压缩。排查“新任务也压缩”先看 rollout 的 `token_count.model_context_window` 与首个请求 `input_tokens`，再对照 `~/.codex/models_cache.json` 中该 slug 的条目，不要先怀疑会话串话。官方 `/models` 会在不同列表间切换，能力模板不能只依赖最后一次刷新。
+- 刚在订阅/API 接入中加入模型就立即用它新建任务，app-server 目录可能还没刷新到，renderer 选择器却已显示，任务会按兜底元数据创建且终身不变；0.3.20 起网关会拒绝这种请求。向上游转发时，reqwest `RequestBuilder::header` 是追加不是替换，覆盖客户端头必须先改 `HeaderMap`（`insert`）；本项目 reqwest 未开解压功能，任何需要解析的上游响应都要显式声明并自行解码编码。
 - Windows 发布构建必须在固定项目源码根目录执行，可另设 Cargo target-dir；不要把临时 worktree 构建的二进制部署后再删除 worktree。`desktop_codex_task` 等运行路径仍使用编译期 `CARGO_MANIFEST_DIR`，仅账户状态发现能从正式 target 路径反推仓库根；它不能保证所有模块都不依赖编译目录。
 - macOS 不能直接在登录任务的固定入口上编译后再补签：这会给登录/手动启动留下 adhoc 身份窗口，签名失败时还会丢失旧入口。先在隔离 target 构建，再签名并同文件系统原子替换；Cargo 的实际 artifact 路径必须作为签名输入，避免 `--target` 构建后误签旧产物。详见 `docs/design/macos-release.md`。
 - CDP 心跳必须要求回包：macOS 睡眠唤醒后旧 WebSocket 可以长期保持 `ESTABLISHED` 却不再处理消息（发送队列与对端接收队列持续增长）。单向写入式 `Runtime.evaluate` 心跳永远拿不到失效信号，watchdog 也就永不重连，UI 会永久卡在加载态。心跳要记录命令 id 并等待同 id 回包，超时即丢弃连接重新发现 target；socket 写入同样要有上限，否则对端停止读取写满缓冲后连失活检测都运行不到。页面侧请求还需要自己的兜底超时，并在脚本重新注入时让上一轮挂起的请求立即失败。
