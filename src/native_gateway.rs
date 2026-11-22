@@ -411,6 +411,35 @@ fn check_fixed_prompt_at_limit(body: &Value, window: u64, limit: u64) -> anyhow:
     Ok(())
 }
 
+/// Code mode's single top-level tool (`codex_code_mode::PUBLIC_TOOL_NAME`).
+const CODE_MODE_TOOL: &str = "exec";
+
+// A task created before the client's catalog held this route runs on Codex's
+// unknown-model fallback (`model_info_from_slug`: 272000 window, tool_mode
+// unset, so Direct) for its whole life. Its window is invisible here, but the
+// tools are not: a code_mode_only entry always sends the `exec` tool, the
+// fallback instead inlines every MCP/plugin tool (~150-200k tokens a request).
+// Requests without tools (compaction, titles) carry no such cost and pass.
+fn check_client_metadata(
+    entry: &crate::providers::CatalogModel,
+    model: &Value,
+    body: &Value,
+) -> anyhow::Result<()> {
+    if model["tool_mode"].as_str() != Some("code_mode_only") {
+        return Ok(());
+    }
+    let Some(tools) = body["tools"].as_array().filter(|tools| !tools.is_empty()) else {
+        return Ok(());
+    };
+    if tools.iter().any(|tool| tool["name"] == CODE_MODE_TOOL) {
+        return Ok(());
+    }
+    bail!(
+        "模型 {} 的能力信息在本任务创建时尚未加载到 Codex，客户端按未知模型处理（窗口 258k、全部工具内联，每次请求约 15～20 万 token），请求未发送。模型目录现已更新：请新建任务，或从此任务分支后再发送。",
+        entry.display_name
+    )
+}
+
 pub fn request_preflight(apis: &ApiIntegrations, route: &str, body: &Value) -> anyhow::Result<()> {
     let paths = apis.paths();
     let settings = Settings::load(paths)?.unwrap_or_default();
@@ -444,6 +473,7 @@ pub fn request_preflight(apis: &ApiIntegrations, route: &str, body: &Value) -> a
             entry.model_id
         );
     };
+    check_client_metadata(entry, model, body)?;
     let Some(window) = model["context_window"].as_u64() else {
         return Ok(()); // the official template leaves sizing to the native client
     };
@@ -541,8 +571,16 @@ async fn fetch_official(
     headers: &HeaderMap,
     query: Option<&str>,
 ) -> anyhow::Result<(Vec<Value>, Bytes)> {
-    let upstream_headers =
+    let mut upstream_headers =
         official_headers(paths, settings, headers).unwrap_or_else(|_| forward_headers(headers));
+    // The official list is ~850 KB as identity: through a desktop proxy that
+    // takes 5-8 s and never fits the deadline. Ask for the encodings decoded
+    // here, replacing the client's own Accept-Encoding: `header()` appends, and
+    // the client's zstd/br then arrived undecoded as "invalid JSON".
+    upstream_headers.insert(
+        header::ACCEPT_ENCODING,
+        header::HeaderValue::from_static(MODELS_ACCEPT_ENCODING),
+    );
     let mut url = format!(
         "{}/models",
         settings.upstream(&upstream_headers).trim_end_matches('/')
@@ -554,21 +592,53 @@ async fn fetch_official(
     let response = client
         .get(url)
         .headers(upstream_headers)
-        .header(header::ACCEPT_ENCODING, "identity")
-        .timeout(Duration::from_secs(3))
+        .timeout(MODELS_UPSTREAM_TIMEOUT)
         .send()
         .await
         .map_err(|error| anyhow::anyhow!("request failed: {}", error.without_url()))?;
     let status = response.status();
     anyhow::ensure!(status.is_success(), "HTTP {}", status.as_u16());
-    let bytes = response
+    let encoding = response
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let raw = response
         .bytes()
         .await
         .map_err(|error| anyhow::anyhow!("body failed: {}", error.without_url()))?;
+    let bytes = decode_models_body(&encoding, raw)?;
     let doc = serde_json::from_slice::<Value>(&bytes).context("invalid JSON")?;
     let models = official_entries(&doc);
     anyhow::ensure!(!models.is_empty(), "empty model list");
     Ok((models, bytes))
+}
+
+/// Encodings the official endpoint actually serves (it ignores zstd), smallest first.
+const MODELS_ACCEPT_ENCODING: &str = "br, gzip";
+/// The client waits on this response; a slow upstream falls back to the stored list.
+/// Compressed fetches measured 1.2-2.7 s through a desktop proxy (2026-11-22).
+const MODELS_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Decodes the catalog body; the stored snapshots and served catalog stay plain JSON.
+fn decode_models_body(encoding: &str, raw: Bytes) -> anyhow::Result<Bytes> {
+    let mut out = Vec::new();
+    match encoding {
+        "" | "identity" => return Ok(raw),
+        "br" => brotli_decompressor::Decompressor::new(raw.as_ref(), 8192)
+            .take(LIMIT as u64 + 1)
+            .read_to_end(&mut out)
+            .context("brotli decode failed")?,
+        "gzip" | "x-gzip" => flate2::read::GzDecoder::new(raw.as_ref())
+            .take(LIMIT as u64 + 1)
+            .read_to_end(&mut out)
+            .context("gzip decode failed")?,
+        other => bail!("unsupported content-encoding {other}"),
+    };
+    anyhow::ensure!(out.len() <= LIMIT, "model list too large");
+    Ok(Bytes::from(out))
 }
 
 /// The last successful official list per client version; the version string

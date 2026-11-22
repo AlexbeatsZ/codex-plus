@@ -205,3 +205,32 @@ zstd 请求有解压上限（0.3.15 起与压缩前同为 128 MiB，`http::BODY_
 - 预算保护直接读取目录条目的窗口和压缩点，不再有 32768 兜底。
 
 升级影响：此前依赖 32K 猜测的外接模型和未声明工具策略的外接 Responses 模型会从模型列表消失，需在 API 接入中补填后保存。
+
+## 0.3.20 上游目录压缩与兜底元数据拦截
+
+用户要求：客户端没有拿到某个路由的工具策略和窗口时，禁止发送，不能先烧掉一次 15～20 万 token 的请求再让人发现。
+
+### 任务按兜底元数据创建
+
+官方客户端在任务创建时从 app-server 内存目录取模型条目，查不到就用 `model_info_from_slug`（`codex-rs/models-manager/src/model_info.rs`）：窗口 272000（×95% = 258400），`tool_mode` 为空（未开 CodeMode 功能时即 Direct），`supports_search_tool=false`，于是所有 MCP/插件工具都内联进每次请求。整个任务都按这份元数据运行，修好目录也不会改变；只能新建或分支。
+
+已观察到的入口（2026-11-22 OMEN）：在订阅 API 中刚加入 `gpt-6.1-sol` 后 20 秒就用它新建任务，renderer 注入的选择器已显示该路由，但 app-server 目录还没刷新到。此外 Codex 在目录 identity 与当前身份不符、或 `/models` 返回 401/403 清空目录时，也会退回不含 `cp-*` 的内置目录。
+
+### 拦截
+
+`request_preflight` 在找到本次目录中的条目后调用 `check_client_metadata`：条目为 `code_mode_only`，请求带非空 `tools` 却没有名为 `exec` 的工具（代码模式唯一的顶层工具，`codex_code_mode::PUBLIC_TOOL_NAME`），就在本机返回 400，提示新建任务或分支，所有入口（原生网关、`/subscription/v1`、旧 provider）都不发上游。
+
+- 依据的是请求实际形态而不是窗口：网关看不到客户端认定的窗口，但能看到工具，兜底的成本也正来自工具。
+- 不带工具的请求（压缩、标题等）直接放行；条目为 direct 的路由本就内联工具，不检查。
+- 若用户全局开启了 CodeModeOnly 功能，兜底任务也会带 `exec`，此时只剩窗口偏小，不拦截。
+
+### 上游目录刷新
+
+`fetch_official` 曾有两处缺陷，使 OMEN 从 2026-11-20 起没有一次刷新成功、每次 `/models` 都等满超时再回退：
+
+1. 先转发客户端自己的 `Accept-Encoding`（`gzip, deflate, br, zstd`），再用 `RequestBuilder::header` 追加 `identity`。reqwest 的 `header` 是追加，官方于是返回 br，而本项目的 reqwest 未开解压功能，结果报 `invalid JSON`。
+2. 只要 identity 时官方目录约 850 KB，经桌面代理实测 5～8 秒，超过 3 秒期限，报 `body failed` 或 `request failed`。
+
+现在用 `insert` 替换为 `br, gzip`（官方忽略 zstd；实测 br 约 51 KB、1.2～2.2 秒，gzip 约 180 KB、2.4～2.7 秒），由 `decode_models_body` 用 `brotli-decompressor` / `flate2` 解码，解码后大小同样受 `BODY_LIMIT` 限制，期限 4 秒。不打开 reqwest 的全局自动解压：其他官方路径原样透传响应体和 `Content-Encoding`。存档与提供给客户端的目录仍是明文 JSON。
+
+排查：`.codex-plus/official-models.json` 的修改时间就是最后一次成功刷新；失败事件 `native.models.refresh_failed` 只在原因变化时记录，不能靠日志条数判断。

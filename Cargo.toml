@@ -1,6 +1,6 @@
 [package]
 name = "codex-plus"
-version = "0.3.19-omen"
+version = "0.3.20-omen"
 edition = "2024"
 license = "MIT"
 description = "A Windows launcher for OpenAI Codex with account, provider, and local MCP tools"
@@ -30,8 +30,11 @@ toml = "0.8"
 toml_edit = "0.22"
 uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
+brotli-decompressor = "5"
+flate2 = "1"
 
 [dev-dependencies]
+brotli = "8"
 tempfile = "3"
 wiremock = "0.6"
 
