@@ -1,7 +1,7 @@
 {
   "channel": "rog",
   "branch": "codex/rog",
-  "version": "0.3.19-rog",
+  "version": "0.3.20-rog",
   "components": [
     "local-tools"
   ]

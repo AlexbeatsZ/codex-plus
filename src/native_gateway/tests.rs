@@ -692,3 +692,176 @@ async fn failed_refresh_serves_the_same_versions_last_list_not_another_clients()
     assert!(log.contains("version_snapshot"));
     broker.shutdown().await;
 }
+
+fn catalog_model(tool_mode: Option<ToolMode>) -> crate::providers::CatalogModel {
+    crate::providers::CatalogModel {
+        route_id: "cp-pool-x".into(),
+        model_id: "gpt-x".into(),
+        display_name: "gpt-x".into(),
+        provider_id: crate::integrations::SUBSCRIPTION_ID.into(),
+        provider_name: "ChatGPT".into(),
+        native_provider_id: "openai".into(),
+        context_window: None,
+        tool_mode,
+        protocol: None,
+    }
+}
+
+#[test]
+fn fallback_metadata_requests_are_refused_before_inlining_every_tool() {
+    let entry = catalog_model(None);
+    let code_mode = json!({"slug":"cp-pool-x","tool_mode":"code_mode_only"});
+    let exec = json!({"type":"custom","name":"exec","format":{"type":"grammar"}});
+    let inlined = json!({"type":"function","name":"mcp__docs__read","parameters":{}});
+    // The fallback client sends direct tools without exec: refused locally.
+    let error = check_client_metadata(&entry, &code_mode, &json!({"tools":[inlined.clone()]}))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("请求未发送") && error.contains("新建任务"));
+    // A real code-mode turn always carries exec, possibly beside other tools.
+    assert!(
+        check_client_metadata(
+            &entry,
+            &code_mode,
+            &json!({"tools":[exec, inlined.clone()]})
+        )
+        .is_ok()
+    );
+    // Tool-less requests (compaction, titles) cost nothing extra.
+    assert!(check_client_metadata(&entry, &code_mode, &json!({"tools":[]})).is_ok());
+    assert!(check_client_metadata(&entry, &code_mode, &json!({"input":[]})).is_ok());
+    // Direct routes legitimately inline tools.
+    let direct = json!({"slug":"cp-pool-x","tool_mode":"direct"});
+    assert!(check_client_metadata(&entry, &direct, &json!({"tools":[inlined]})).is_ok());
+}
+
+#[test]
+fn compressed_model_lists_decode_and_unknown_encodings_fail() {
+    use std::io::Write as _;
+    let raw = br#"{"models":[{"slug":"gpt-x"}]}"#;
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gzip.write_all(raw).unwrap();
+    let gzip = gzip.finish().unwrap();
+    let mut br = Vec::new();
+    brotli::BrotliCompress(&mut &raw[..], &mut br, &Default::default()).unwrap();
+    for (encoding, body) in [
+        ("", raw.to_vec()),
+        ("identity", raw.to_vec()),
+        ("gzip", gzip),
+        ("br", br),
+    ] {
+        let decoded = decode_models_body(encoding, Bytes::from(body)).unwrap();
+        assert_eq!(decoded.as_ref(), raw, "{encoding}");
+    }
+    assert!(decode_models_body("zstd", Bytes::from_static(b"x")).is_err());
+    assert!(decode_models_body("br", Bytes::from_static(b"not brotli")).is_err());
+}
+
+#[tokio::test]
+async fn model_refresh_replaces_client_encoding_and_decodes_compressed_lists() {
+    use std::io::Write as _;
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    let official = MockServer::start().await;
+    fs::create_dir_all(&paths.codex_home).unwrap();
+    fs::write(
+        paths.codex_config(),
+        format!("openai_base_url='{}'\n", official.uri()),
+    )
+    .unwrap();
+    let mut broker = crate::broker::start_on_port(paths.clone(), 0)
+        .await
+        .unwrap();
+    crate::config::reconcile_codex_config(&paths, broker.port()).unwrap();
+    let settings = Settings::load(&paths).unwrap().unwrap();
+    let base = format!(
+        "http://127.0.0.1:{}/native/{}/backend-api/codex",
+        broker.port(),
+        settings.capability
+    );
+    let list = json!({"models":[{"slug":"gpt-compressed","context_window":500000}]});
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gzip.write_all(&serde_json::to_vec(&list).unwrap()).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .insert_header("content-encoding", "gzip")
+                .set_body_bytes(gzip.finish().unwrap()),
+        )
+        .mount(&official)
+        .await;
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // The official client advertises encodings this gateway cannot decode. A
+    // low version keeps the process-wide newest version other tests assert.
+    let response = client
+        .get(format!("{base}/models?client_version=0.0.1"))
+        .bearer_auth("official-secret")
+        .header(header::ACCEPT_ENCODING, "gzip, deflate, br, zstd")
+        .send()
+        .await
+        .unwrap();
+    assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+    let doc: Value = response.json().await.unwrap();
+    assert!(
+        doc["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["slug"] == "gpt-compressed")
+    );
+    let requests = official.received_requests().await.unwrap();
+    let sent: Vec<_> = requests[0]
+        .headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(sent, vec![MODELS_ACCEPT_ENCODING.to_string()]);
+    // The stored snapshot is plain JSON for later fallbacks.
+    let stored = fs::read(paths.state_dir.join("official-models.json")).unwrap();
+    assert!(serde_json::from_slice::<Value>(&stored).is_ok());
+    let log = fs::read_to_string(paths.log_path()).unwrap_or_default();
+    assert!(!log.contains("native.models.refresh_failed"));
+    broker.shutdown().await;
+}
+
+#[tokio::test]
+async fn fallback_shaped_pool_requests_never_leave_the_broker() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    let upstream = MockServer::start().await;
+    let mut broker = crate::broker::start_on_port(paths.clone(), 0)
+        .await
+        .unwrap();
+    let mut config = DocumentMut::new();
+    Settings::reconcile(&paths, &mut config, broker.port()).unwrap();
+    let settings = Settings::load(&paths).unwrap().unwrap();
+    fs::create_dir_all(&paths.codex_home).unwrap();
+    fs::write(
+        paths.codex_home.join("models_cache.json"),
+        json!({"models":[{"slug":"gpt-x","context_window":500000,"tool_mode":"code_mode_only","supports_search_tool":true}]}).to_string(),
+    )
+    .unwrap();
+    fs::write(paths.state_dir.join("subscription.json"), json!({"enabled":true,"accountOrder":["fake"],"models":[{"modelId":"gpt-x","visible":true}]}).to_string()).unwrap();
+    let pool = crate::subscription::route_id("gpt-x");
+    let native = format!("/native/{}/backend-api/codex", settings.capability);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for (endpoint, model) in [
+        (format!("{native}/responses"), pool),
+        ("/subscription/v1/responses".into(), "gpt-x".into()),
+    ] {
+        let response = client
+            .post(format!("http://127.0.0.1:{}{endpoint}", broker.port()))
+            .bearer_auth(broker.token())
+            .json(&json!({"model":model,"input":[],"tools":[{"type":"function","name":"mcp__docs__read","parameters":{}}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{endpoint}");
+        assert!(response.text().await.unwrap().contains("新建任务"));
+    }
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+    broker.shutdown().await;
+}

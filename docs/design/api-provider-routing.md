@@ -98,3 +98,5 @@ v21 将跨 provider 迁移提升到原生 manager 的 `executeTurnStart` 事务�
 0.3.11：未匹配官方模型的窗口、外接 Responses 的工具策略必须由用户填写，未配置完整的模型不进入目录、保存时报出缺项；见 mobile-remote-providers.md 的 0.3.11 节。
 
 0.3.13：登录账户额度/Reserve 只按当前 composer 的实际模型隔离；原生 managed 父任务 reviewer 复用已启用订阅池，详见 [quota-routing.md](quota-routing.md)。
+
+0.3.20：客户端按未知模型兜底（工具全部内联）的请求在本机拒绝；上游目录刷新改用 br/gzip 并自行解码，见 mobile-remote-providers.md 的 0.3.20 节。
