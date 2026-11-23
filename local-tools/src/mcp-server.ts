@@ -35,7 +35,7 @@ export function createMcpServer(registry: WorkspaceRegistry, codexContext: Codex
     codexContext.initializationInstructions(),
   ].filter((instruction): instruction is string => Boolean(instruction)).join("\n\n");
   const server = new McpServer(
-    { name: "codex-chat-local-tools", version: "0.3.1" },
+    { name: "codex-chat-local-tools", version: "0.3.2" },
     {
       instructions: initializationInstructions,
     },
