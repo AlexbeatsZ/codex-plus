@@ -6,6 +6,8 @@
 
 # Current State
 
+- 2026-11-23 ROG gateway path maintenance: Mac routing now targets `/Users/meta/Developer/codex-plus`; source/compiled local-tools and the reloaded ROG runtime were verified via connector workspace/command calls. ROG Windows source remains at the old path pending coordinated launcher shutdown; Codex/launcher were not restarted.
+
 ## 版本与部署
 
 - 公共源码 `main` 为 0.3.20（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
