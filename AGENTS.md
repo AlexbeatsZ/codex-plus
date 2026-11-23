@@ -8,7 +8,8 @@
 
 ## 版本与部署
 
-- 公共源码 `main` 为 0.3.20（内嵌 local-tools 0.3.0）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 公共源码 `main` 为 0.3.20（内嵌 local-tools 0.3.1）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 2026-11-23 Mac 源码已迁到 `/Users/meta/Developer/codex-plus`；local-tools 0.3.1 的跨机 Mac 默认根已同步更新，Mac runtime 已在新物理目录重建并通过真实工具调用。仅重载 MCP，不中断当前 Codex/launcher；旧项目兼容链接待所有客户端正常退出并完成工作区配置收尾后再退役。Windows 源码路径仍由各机迁移任务分别处理。
 - 0.3.20（2026-11-22）：原生网关在本机拒绝“客户端按未知模型兜底”的请求。判据是目录条目为 `code_mode_only`，请求却带工具而没有 `exec`；这类请求的窗口固定为 258k、工具全部内联，每次 15～20 万 token。上游 `/models` 刷新改为 `Accept-Encoding: br, gzip` 并自行解码，修复 OMEN 自 11-20 起没有一次成功的问题（原因是 invalid JSON 和 8 秒的明文目录超时）。详见 `docs/design/mobile-remote-providers.md` 的 0.3.20 节。
 - 0.3.20 已三端文件部署并上传 Release（2026-11-22）：Mac 0.3.20（`421ea33`，`v0.3.20`，固定证书签名）；ROG 0.3.20-rog（`6cbe931`，`v0.3.20-rog`，16,096,256 字节）与 OMEN 0.3.20-omen（`9a30b97`，`v0.3.20-omen`，16,097,792 字节）均在 ROG 构建。三端进程均未重启；两台 Windows 的旧运行映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0320\running-previous-codex-plus.exe`。
 - 0.3.19（2026-11-19）：订阅 API「临时加入」新增按时间维度控制退出——支持自定义有效时间 `durationMinutes`（1–43200 分钟，到期即 `now >= started_at + duration_minutes * 60`）及两个互斥预设按钮「直到下一次 5h 额度刷新为止」（`untilReset: "short"`）与「直到下一次周额度刷新为止」（`untilReset: "long"`）；支持仅设时间、仅设 5h/周用量百分比或组合使用（任一条件先到即移出）；仅设 `durationMinutes` 且无保留/百分比/刷新预设时请求前只校验本地时钟，不阻塞 `/usage`。前端 [api-providers.js](assets/api-providers.js) 升至 v17。

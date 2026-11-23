@@ -34,7 +34,7 @@ const DEFAULT_MACHINES: Record<MachineId, MachineDefinition> = {
     platform: "darwin",
     sshTarget: "meta@192.168.31.174",
     sshFallbackTarget: "meta@100.64.2.94",
-    workspaceRoot: "/Users/meta/Project/Workspaces/codex-plus",
+    workspaceRoot: "/Users/meta/Developer/codex-plus",
   },
   rog: {
     id: "rog",

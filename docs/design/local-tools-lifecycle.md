@@ -15,6 +15,7 @@ OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求
 - 若工具目标就是当前 runtime 所在主机，直接复用 `LocalOperations`；若目标是另一台主机，则通过 OpenSSH `BatchMode=yes` 把 JSON 请求从 stdin 转发到对端 `dist/host-rpc.js`。对端仍复用相同的 `WorkspaceRegistry` 与 `LocalOperations`，所以路径边界、patch 检查、命令超时和输出限制不因 SSH 转发而改变。
 - `machine_info` 仅用于目标不清楚时查看两台主机及当前 runtime。旧的无前缀工具继续保留兼容性，但它们只作用于实际接到请求的 runtime；只要机器身份会影响结果，就必须使用 `windows_*` / `mac_*`。
 - 默认 SSH 地址与工作区根可分别用 `CODEX_PLUS_WINDOWS_SSH_TARGET`、`CODEX_PLUS_WINDOWS_WORKSPACE_ROOT`、`CODEX_PLUS_MAC_SSH_TARGET`、`CODEX_PLUS_MAC_WORKSPACE_ROOT` 覆盖，不需要重新编译。
+- local-tools 0.3.1 起 Mac 默认根为 `/Users/meta/Developer/codex-plus`。迁移必须先停止对应 MCP runtime，再更新入口/profile 与跨机路由，重建后用真实 `mac_workspace_info` / `mac_run_command` 验证物理目录；当前 Codex/launcher 的正常退出与重启另行协调。
 
 这一层使两个独立连接器都成为对称 gateway：显式目标工具始终路由到正确主机；即使某台机器暂时离线，另一台在线主机仍可通过 SSH 代为执行。
 
