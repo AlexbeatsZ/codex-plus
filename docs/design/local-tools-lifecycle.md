@@ -18,6 +18,8 @@ OpenAI `tunnel-client` 作为本机 sidecar，把 OpenAI 托管 Tunnel 的请求
 - local-tools 0.3.1 起 Mac 默认根为 `/Users/meta/Developer/codex-plus`。迁移必须先停止对应 MCP runtime，再更新入口/profile 与跨机路由，重建后用真实 `mac_workspace_info` / `mac_run_command` 验证物理目录；当前 Codex/launcher 的正常退出与重启另行协调。
 - local-tools 0.3.2 起 OMEN 默认根为 `C:/Users/Meta/source/repos/codex-plus`，对应 history MCP 为 `source/repos/agent-bridge`。ROG 保持其当前物理根，须等 ROG 自己完成迁移后单独切换；不能因一台 Windows 迁移而批量改两台。
 
+- local-tools 0.3.3 起 ROG 默认根也为 `C:/Users/Meta/source/repos/codex-plus`。ROG 迁移在用户授权关闭后实施；物理迁移、登录启动入口与实际 runtime 必须一起切换，旧根不保留兼容链接。
+
 这一层使两个独立连接器都成为对称 gateway：显式目标工具始终路由到正确主机；即使某台机器暂时离线，另一台在线主机仍可通过 SSH 代为执行。
 
 ## 桌面交互桥
