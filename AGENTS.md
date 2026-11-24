@@ -6,7 +6,7 @@
 
 # Current State
 
-- 2026-11-23 ROG gateway path maintenance: Mac routing now targets `/Users/meta/Developer/codex-plus`; source/compiled local-tools and the reloaded ROG runtime were verified via connector workspace/command calls. ROG Windows source remains at the old path pending coordinated launcher shutdown; Codex/launcher were not restarted.
+- 2026-11-24 ROG directory migration COMPLETE: physical root C:/Users/Meta/source/repos/codex-plus, no old-root link. User authorized closure. Rebuilt at this permanent source root, restored Interactive Session1 launcher36904/Codex24292/Tunnel21080. All three gateway connectors return this root and real ROG commands succeed. HKCU Run and managed MCP profile use the new root; private account/provider state retained. Local-tools0.3.3 passes all14 Windows tests and release boundary. A native upstream model refresh returned request failed at launch; renderer and helper are ready, no real model request was sent as a migration test.
 
 ## 版本与部署
 
