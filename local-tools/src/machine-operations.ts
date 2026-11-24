@@ -26,7 +26,7 @@ const DEFAULT_MACHINES: Record<MachineId, MachineDefinition> = {
     platform: "win32",
     sshTarget: "meta@192.168.31.214",
     sshFallbackTarget: "meta@100.113.70.121",
-    workspaceRoot: "C:/Users/Meta/Project/Workspaces/codex-plus",
+    workspaceRoot: "C:/Users/Meta/source/repos/codex-plus",
   },
   mac: {
     id: "mac",
@@ -42,7 +42,7 @@ const DEFAULT_MACHINES: Record<MachineId, MachineDefinition> = {
     platform: "win32",
     sshTarget: "meta@192.168.31.32",
     sshFallbackTarget: "meta@100.106.169.46",
-    workspaceRoot: "C:/Users/Meta/Project/Workspaces/codex-plus",
+    workspaceRoot: "C:/Users/Meta/source/repos/codex-plus",
   },
 };
 
