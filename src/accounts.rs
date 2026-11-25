@@ -132,6 +132,9 @@ pub struct Usage {
     pub rate_limit: Option<RateLimit>,
     #[serde(default)]
     pub credits: Option<Credits>,
+    /// 官方 usage 响应附带的额度重置卡计数（`available_count` 等），原样透传给页面。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_reset_credits: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1007,6 +1010,57 @@ mod tests {
                 .as_deref(),
             Some("plus")
         );
+    }
+
+    #[tokio::test]
+    async fn reset_credits_use_the_saved_account_credential_without_switching() {
+        let server = MockServer::start().await;
+        let (_temp, mut vault) = fixture();
+        vault.paths.usage_endpoint = format!("{}/backend-api/wham/usage", server.uri());
+        let account = vault
+            .import_auth(&auth("a", "secret", "a@example.test"))
+            .unwrap();
+        Mock::given(method("GET"))
+            .and(path("/backend-api/wham/rate-limit-reset-credits"))
+            .and(wiremock::matchers::header("authorization", "Bearer secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "available_count": 1,
+                "credits": [{"id": "c1", "status": "available", "title": "Full reset"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let credits = vault.fetch_reset_credits(&account.record_id).await.unwrap();
+        assert_eq!(credits["available_count"], 1);
+        assert!(
+            !vault.paths.live_auth().exists(),
+            "读取重置卡不得写入当前登录凭据"
+        );
+    }
+
+    #[tokio::test]
+    async fn consume_reset_credit_posts_once_with_the_request_id() {
+        let server = MockServer::start().await;
+        let (_temp, mut vault) = fixture();
+        vault.paths.usage_endpoint = format!("{}/backend-api/wham/usage", server.uri());
+        let account = vault
+            .import_auth(&auth("a", "secret", "a@example.test"))
+            .unwrap();
+        Mock::given(method("POST"))
+            .and(path("/backend-api/wham/rate-limit-reset-credits/consume"))
+            .and(wiremock::matchers::body_json(json!({
+                "credit_id": "c1",
+                "redeem_request_id": "rid-1"
+            })))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = vault
+            .consume_reset_credit(&account.record_id, Some("c1"), "rid-1")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("使用重置卡"), "{error}");
     }
 
     #[tokio::test]

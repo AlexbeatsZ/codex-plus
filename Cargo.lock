@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus"
-version = "0.3.20-rog"
+version = "0.3.21-rog"
 dependencies = [
  "anyhow",
  "async-stream",

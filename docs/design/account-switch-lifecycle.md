@@ -108,6 +108,8 @@ UI 显示的历史不直接读 rollout，而是读 `$CODEX_HOME/thread_history_1
 - 单次 HTTP 请求限时 8 秒，连接/超时/响应中断以及 HTTP 408/5xx 最多退避重试一次；包括凭据续期的整体查询限时 25 秒，小于 bridge 30 秒兜底。403、429 等保留真实状态，不以续期或连续重试掩盖。错误信息区分网络/代理、登录失效及官方接口拒绝，不向页面暴露 token 或原始上游错误体。
 - 页面侧 bridge（`assets/bridge.js`）对每次请求都有兜底超时，默认 30 秒，并可在调用时用 `timeoutMs` 覆盖；launcher 重新连接、脚本重新注入时，上一轮连接里挂起的请求必须立刻以“桥已重新连接”失败。launcher 侧的心跳失活检测最长约 45 秒，UI 不能依赖它来解锁，任何情况下账户弹窗都要在有限时间内给出错误并允许重试。
 - usage 超时或单账户失败仅改变该行状态。
+- 0.3.21（renderer v17）起每行在额度下显示 credits 余额与“重置卡 N 张”，数据来自同一 usage 响应的 `credits` 与 `rate_limit_reset_credits`，不另发请求。点开重置卡后才调用 `/accounts/reset-credits`（官方 `/backend-api/wham/rate-limit-reset-credits`，GET），列出 `status=available` 的卡及到期时间；“使用”须再点一次“确认使用”才调用 `/accounts/reset-credits/consume`（官方 `.../consume`，POST `{credit_id, redeem_request_id}`）。两者都用该账户自己的 vault 凭据（与 usage 同一续期规则），**不切换账户、不写实时 `auth.json`**。
+- 使用重置卡不可撤回。`redeem_request_id` 是页面为“这张卡的这次尝试”生成的 UUID，传输失败或后端报错后重试必须沿用，服务端据此去重；后端 consume 不做传输层自动重试（只在 401 续期后重发一次，这时服务端尚未处理）。返回 `code=reset`，或之前有过不确定失败后返回 `already_redeemed`，都视为成功；`no_credit`、`nothing_to_reset` 等按原因提示。官方应用的同一逻辑见其 `rateLimitResetCredit` 模块，`applicable_available_count` 为当前能用的张数（额度未接近上限时通常为 0，此时服务端会回 `nothing_to_reset`）。
 - 文件选择接受任意文本扩展名，只填入 textarea；“导入”负责最终解析和保存。失败保留原文，成功清空并返回账户页。
 
 2026-10-23 隔离原生登录页审查：正式 0.3.3 与运行中 renderer v9 均已含未登录入口，但新页面 h1 为“登录 ChatGPT”、按钮为“继续登录”，旧规则匹配不到。v11 已在同一隔离官方页面显示唯一入口，并监听 React 原地更新的文字与 aria-label；无关聊天文字变化不触发菜单扫描。新源码未注入当前生产实例。订阅账户轮换见 [account-pool.md](account-pool.md)，不通过手动切换事务完成。
