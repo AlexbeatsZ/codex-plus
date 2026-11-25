@@ -30,6 +30,8 @@ impl BridgeService {
         let result = match path {
             "/accounts/list" => self.list().await,
             "/accounts/usage" => self.usage(payload).await,
+            "/accounts/reset-credits" => self.reset_credits(payload).await,
+            "/accounts/reset-credits/consume" => self.consume_reset_credit(payload).await,
             "/accounts/import" => self.import(payload).await,
             "/accounts/delete" => self.delete(payload).await,
             "/accounts/switch" => self.switch(payload).await,
@@ -83,6 +85,46 @@ impl BridgeService {
         let record_id = required_record_id(&payload)?;
         let usage = self.apis.subscription.fetch_usage(&record_id).await?;
         Ok(json!({"status": "ok", "recordId": record_id, "usage": usage}))
+    }
+
+    async fn reset_credits(&self, payload: Value) -> anyhow::Result<Value> {
+        let record_id = required_record_id(&payload)?;
+        let credits = AccountVault::new(self.paths.as_ref().clone())
+            .fetch_reset_credits(&record_id)
+            .await?;
+        Ok(json!({"status": "ok", "recordId": record_id, "resetCredits": credits}))
+    }
+
+    async fn consume_reset_credit(&self, payload: Value) -> anyhow::Result<Value> {
+        let record_id = required_record_id(&payload)?;
+        let credit_id = payload
+            .get("creditId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if credit_id.is_some_and(|id| id.len() > 200 || id.chars().any(char::is_control)) {
+            anyhow::bail!("重置卡 ID 无效");
+        }
+        let redeem_request_id = payload
+            .get("redeemRequestId")
+            .and_then(Value::as_str)
+            .and_then(|value| uuid::Uuid::parse_str(value.trim()).ok())
+            .ok_or_else(|| anyhow::anyhow!("缺少有效的重置请求 ID"))?
+            .to_string();
+        let outcome = AccountVault::new(self.paths.as_ref().clone())
+            .consume_reset_credit(&record_id, credit_id, &redeem_request_id)
+            .await?;
+        crate::runtime::append_log(
+            self.paths(),
+            "accounts.reset_credit.consumed",
+            json!({
+                "recordId": record_id,
+                "creditId": credit_id,
+                "redeemRequestId": redeem_request_id,
+                "code": outcome.get("code"),
+            }),
+        );
+        Ok(json!({"status": "ok", "recordId": record_id, "outcome": outcome}))
     }
 
     async fn import(&self, payload: Value) -> anyhow::Result<Value> {

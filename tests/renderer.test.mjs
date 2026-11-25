@@ -247,7 +247,7 @@ test("discovers models, edits aliases, and saves without receiving a key", async
   tool.value = "direct";
   dom.window.document.querySelector("[data-api-form]").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
   await flush();
-  const save = calls.find((call) => call.path === "/api-providers/save");
+  const save = calls.filter((call) => call.path === "/api-providers/save").at(-1);
   assert.equal(save.payload.models[0].displayName, "我的模型");
   assert.equal(save.payload.models[0].contextWindow, 128000);
   assert.equal(save.payload.models[0].toolMode, "direct");
@@ -872,12 +872,12 @@ test("fixed subscription API configures account order and model visibility witho
   dom.window.document.querySelector('[data-sub-up="'+b+'"]').click();
   assert.equal(dom.window.document.querySelector('[data-model-name="0"]').value,"Custom name");
   const enabled=dom.window.document.querySelector('[data-sub-enabled]');enabled.checked=true;enabled.dispatchEvent(new dom.window.Event("change"));
-  dom.window.document.querySelector('[data-sub-save]').click();await flush();
-  const saved=calls.find(c=>c.path==="/api-providers/subscription/save").payload;
+  await dom.window.__codexPlusApi.flushSaves();await flush();
+  const saved=calls.filter(c=>c.path==="/api-providers/subscription/save").at(-1).payload;
   assert.deepEqual(saved.accountOrder,[b,a]);assert.equal(saved.enabled,true);assert.equal(saved.models[0].displayName,"Custom name");
   assert.equal(calls.some(c=>c.path==="/accounts/switch"),false);
   assert.ok(dom.window.document.querySelector('[data-codex-plus-account-item]'));
-  assert.match(dom.window.document.body.textContent,/订阅 API 已保存/);
+  assert.match(dom.window.document.body.textContent,/已自动保存/);
   dom.window.close();
 });
 
@@ -897,7 +897,7 @@ test("subscription account opt-out and failed saves preserve the complete API dr
   assert.equal(dom.window.document.querySelector('[data-sub-proxy]'),null);
   const input=dom.window.document.querySelector('[data-sub-account="'+a+'"]');input.checked=false;input.dispatchEvent(new dom.window.Event("change"));
   dom.window.document.querySelector('[data-sub-discover]').click();await flush();
-  dom.window.document.querySelector('[data-sub-save]').click();await flush();
+  await dom.window.__codexPlusApi.flushSaves();await flush();
   assert.match(dom.window.document.body.textContent,/账户不存在/);assert.match(dom.window.document.body.textContent,/gpt-test/);
   assert.equal(savedPayload?.proxyUrl,"http://127.0.0.1:7897");
   dom.window.close();
@@ -933,8 +933,8 @@ test("subscription controls survive the native input reset and labels enable dis
   assert.equal(document.querySelector('[data-sub-discover]').disabled, false);
   document.querySelector('[data-sub-discover]').click(); await flush();
   assert.equal(dom.window.getComputedStyle(document.querySelector('[data-model-visible]')).appearance, "auto");
-  document.querySelector('[data-sub-save]').click(); await flush();
-  const saved = calls.find(c => c.path === '/api-providers/subscription/save').payload;
+  await dom.window.__codexPlusApi.flushSaves(); await flush();
+  const saved = calls.filter(c => c.path === '/api-providers/subscription/save').at(-1).payload;
   assert.equal(saved.enabled, true);
   assert.deepEqual(saved.accountOrder, [id]);
   assert.equal(saved.models[0].visible, true);

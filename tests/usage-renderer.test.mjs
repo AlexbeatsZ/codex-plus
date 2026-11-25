@@ -248,3 +248,46 @@ test("account modal and inline summary convert reset timestamps to UTC+8", async
     assert.doesNotMatch(modalText, /UTC\+8/);
   } finally { dom.window.close(); }
 });
+
+test("reset cards and balance of a non-current account are shown and usable without switching", async () => {
+  const other = { recordId: "b".repeat(64), name: "Other", active: false };
+  const calls = [];
+  let consumeAttempts = 0;
+  const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", { runScripts: "dangerously", url: "app://-/index.html" });
+  dom.window.codexPlusInvoke = async (path, payload) => {
+    calls.push({ path, payload });
+    if (path === "/accounts/list") return { accounts: [account, other] };
+    if (path === "/accounts/usage") return { usage: { ...quota(98), credits: { balance: "12.5" }, rate_limit_reset_credits: { available_count: payload.recordId === other.recordId ? 1 : 0 } } };
+    if (path === "/accounts/reset-credits") return { resetCredits: { available_count: 1, credits: [{ id: "c1", status: "available", title: "Full reset (Weekly + 5 hr)", expires_at: "2026-12-01T21:00:24Z" }] } };
+    if (path === "/accounts/reset-credits/consume") {
+      if (++consumeAttempts === 1) return { status: "failed", message: "使用重置卡网络请求失败" };
+      return { outcome: { code: "already_redeemed" } };
+    }
+    return {};
+  };
+  dom.window.eval(coreScript);
+  dom.window.eval(script);
+  try {
+    dom.window.__codexPlusAccounts.open(); await flush();
+    const doc = dom.window.document;
+    assert.match(doc.querySelector(".cp-account-dialog").textContent, /余额 12.5 credits/);
+    const toggle = doc.querySelector(`[data-cp-reset-toggle="${other.recordId}"]`);
+    assert.ok(toggle, "non-current account exposes its reset cards");
+    assert.equal(doc.querySelector(`[data-cp-reset-toggle="${account.recordId}"]`), null, "zero cards are text only");
+    toggle.click(); await flush();
+    assert.match(doc.querySelector(".cp-account-dialog").textContent, /Full reset \(Weekly \+ 5 hr\)/);
+    assert.match(doc.querySelector(".cp-account-dialog").textContent, /到期 12月2日 05:00/);
+    doc.querySelector(`[data-cp-reset-use="${other.recordId}"]`).click(); await flush();
+    assert.equal(calls.filter((c) => c.path === "/accounts/reset-credits/consume").length, 0, "first click only asks for confirmation");
+    doc.querySelector(`[data-cp-reset-confirm="${other.recordId}"]`).click(); await flush();
+    assert.match(doc.querySelector(".cp-account-dialog").textContent, /不会重复扣卡/);
+    doc.querySelector(`[data-cp-reset-confirm="${other.recordId}"]`).click(); await flush();
+    const consumes = calls.filter((c) => c.path === "/accounts/reset-credits/consume");
+    assert.equal(consumes.length, 2);
+    assert.equal(consumes[0].payload.recordId, other.recordId);
+    assert.equal(consumes[0].payload.creditId, "c1");
+    assert.equal(consumes[1].payload.redeemRequestId, consumes[0].payload.redeemRequestId, "a retry reuses the request id");
+    assert.match(doc.querySelector(".cp-account-dialog").textContent, /已使用重置卡/);
+    assert.equal(calls.some((c) => c.path === "/accounts/switch"), false);
+  } finally { dom.window.close(); }
+});

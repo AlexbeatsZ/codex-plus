@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
   const core = window.__codexPlusCore;
-  const VERSION = 17;
+  const VERSION = 18;
   const OBSERVER_KEY = "api";
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
@@ -24,6 +24,9 @@
     subscriptionBusy: false,
     accountUsage: new Map(),
     usageGeneration: 0,
+    // 最近一次成功保存到后端的订阅配置；临时加入但尚未设置条件的账户沿用这里的状态。
+    subscriptionSaved: null,
+    saveState: { kind: "idle", text: "" },
   };
 
   if (window.__codexPlusApi?.version === VERSION) { window.__codexPlusApi.install(); return; }
@@ -123,6 +126,11 @@
       .cp-api-model { display:grid; grid-template-columns:auto minmax(110px,1fr) minmax(110px,1fr) minmax(100px,.7fr) minmax(120px,.8fr); align-items:center; gap:8px; border:0; border-bottom:1px solid var(--cp-divider); padding:8px 10px; }
       .cp-api-model:last-child { border-bottom:0; }
       .cp-api-model-id { overflow:hidden; text-overflow:ellipsis; color:var(--cp-muted); font:11px ui-monospace,monospace; }
+      .cp-api-save-state { display:inline-flex; align-items:center; gap:6px; margin-top:4px; color:var(--cp-muted); font-size:12px; line-height:18px; }
+      .cp-api-save-state:empty { display:none; }
+      .cp-api-save-state[data-kind="saved"]::before { content:"✓"; color:#4ade80; }
+      .cp-api-save-state[data-kind="error"] { color:#fca5a5; }
+      html.light .cp-api-save-state[data-kind="error"],html[data-theme="light"] .cp-api-save-state[data-kind="error"] { color:#b91c1c; }
       .cp-api-status { margin-bottom:10px; border:1px solid rgba(51,156,255,.36); border-radius:8px; padding:8px 10px; color:#8cc9ff; background:var(--cp-surface); font-size:12px; }
       .cp-api-status[data-error="true"] { border-color:rgba(248,113,113,.4); color:#fca5a5; }
       .cp-api-empty { margin-top:12px; padding:60px 10px; border:1px solid var(--cp-border); border-radius:12px; color:var(--cp-muted); background:var(--cp-surface); text-align:center; font-size:13px; }
@@ -172,6 +180,41 @@
       state.scanQueued = false;
       scan();
     });
+  }
+
+  // 自动保存：每次改动后排队保存，输入框防抖，保存串行执行且保存中的新改动会在完成后再存一次。
+  function createAutosave(run) {
+    let timer = null, running = null, again = false;
+    function execute() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (running) { again = true; return running; }
+      running = (async () => {
+        try { do { again = false; await run(); } while (again); }
+        finally { running = null; }
+      })();
+      return running;
+    }
+    return {
+      schedule(delay = 0) {
+        if (timer) clearTimeout(timer);
+        setSaveState("pending", "有改动，即将自动保存…");
+        timer = setTimeout(() => void execute(), delay);
+      },
+      flush() { return timer ? execute() : running || Promise.resolve(); },
+      cancel() { if (timer) clearTimeout(timer); timer = null; },
+    };
+  }
+
+  const TYPING_DELAY = 700;
+  const clone = (value) => JSON.parse(JSON.stringify(value ?? null));
+  const subscriptionAutosave = createAutosave(saveSubscriptionNow);
+  const providerAutosave = createAutosave(saveProviderNow);
+
+  function setSaveState(kind, textValue = "") {
+    const labels = { saving: "正在保存…", saved: "已自动保存" };
+    state.saveState = { kind, text: textValue || labels[kind] || "" };
+    const node = document.querySelector(`#${ROOT_ID} [data-api-save-state]`);
+    if (node) { node.dataset.kind = kind; node.textContent = state.saveState.text; }
   }
 
   function status() { return state.message ? `<div class="cp-api-status" data-error="${state.error}">${esc(state.message)}</div>` : ""; }
@@ -278,7 +321,18 @@
     } else if (!windows.length) {
       footer = `<div class="cp-sub-usage-status"><span>${entry ? "额度信息暂不可用" : "额度待读取"}</span><button type="button" class="cp-api-button" data-sub-usage-retry="${esc(recordId)}">读取</button></div>`;
     }
-    return `${bars}${footer}`;
+    return `${bars}${footer}${accountExtrasMarkup(entry?.usage)}`;
+  }
+
+  function accountExtrasMarkup(usage) {
+    if (!usage) return "";
+    const parts = [];
+    const credits = usage.credits;
+    if (credits?.unlimited === true) parts.push("余额 不限");
+    else if (credits && Number.isFinite(Number(credits.balance))) parts.push(`余额 ${Number(credits.balance).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} credits`);
+    const resets = Number(usage.rate_limit_reset_credits?.available_count);
+    if (Number.isFinite(resets)) parts.push(`重置卡 ${resets} 张`);
+    return parts.length ? `<div class="cp-sub-usage-status" data-sub-usage-extras><span>${esc(parts.join(" · "))}</span></div>` : "";
   }
 
   function temporaryHintText(id, temp) {
@@ -441,6 +495,7 @@
   function renderList() {
     const root = body(); if (!root) return;
     state.view = "list";
+    setSaveState("idle");
     root.innerHTML = `${status()}<div class="cp-api-toolbar"><span>${state.loading ? "正在读取…" : `已配置 ${state.providers.length} 个 API`}</span><button class="cp-api-button" data-api-new data-primary="true">添加 API</button></div>${state.providers.length ? `<div class="cp-api-list">${state.providers.map((p) => `<div class="cp-api-row"><div><div class="cp-api-name">${esc(p.name)}${p.enabled ? "" : " · 已停用"}</div><div class="cp-api-meta">${p.kind === "subscription" ? "ChatGPT 订阅额度池" : `${esc(p.baseUrl)} · ${esc(p.protocol)}`} · ${p.models.filter((m) => m.visible).length} 个模型</div></div><div><button class="cp-api-button" data-api-edit="${esc(p.id)}">${p.kind === "subscription" ? "配置" : "编辑"}</button>${p.kind === "subscription" ? "" : ` <button class="cp-api-button" data-danger="true" data-api-delete="${esc(p.id)}">删除</button>`}</div></div>${p.kind === "subscription" ? renderSubOverviewMarkup() : ""}`).join("")}</div>` : '<div class="cp-api-empty">尚未接入 API。</div>'}`;
     root.querySelector("[data-api-new]")?.addEventListener("click", () => edit(null));
     root.insertAdjacentHTML("beforeend", '<div class="cp-api-actions" style="margin-top:14px"><span></span><button class="cp-api-button" data-api-mobile>迁移旧任务</button></div>');
@@ -476,7 +531,7 @@
     if (provider?.kind === "subscription") { void openSubscription(); return; }
     state.view = "form";
     state.editing = provider || { id: null, name: "", baseUrl: "", protocol: "chatCompletions", enabled: true, hasApiKey: false, models: [] };
-    state.models = (provider?.models || []).map((m) => ({ ...m })); state.message = ""; renderForm();
+    state.models = (provider?.models || []).map((m) => ({ ...m })); state.message = ""; setSaveState("idle", provider ? "" : "填写名称、API URL 和 API Key 后自动保存"); renderForm();
   }
 
   function modelEditor(external = false) { return `<div class="cp-api-models">${state.models.map((m, i) => `<div class="cp-api-model"><input type="checkbox" data-model-visible="${i}" ${m.visible ? "checked" : ""}><span class="cp-api-model-id" title="${esc(m.modelId)}">${esc(m.modelId)}</span><input class="cp-api-input" data-model-name="${i}" value="${esc(m.displayName || m.modelId)}" aria-label="模型显示名称">${!external ? "" : `<input class="cp-api-input" type="number" min="1024" max="10000000" step="1" data-model-window="${i}" value="${m.contextWindow ?? ""}" placeholder="${m.matched ? "自动（官方模型）" : "必填：窗口 token"}" aria-label="上下文窗口 token"><select class="cp-api-select" data-model-tool="${i}" aria-label="工具策略"><option value="" ${m.toolMode ? "" : "selected"}>工具策略（必选）</option><option value="deferred" ${m.toolMode === "deferred" ? "selected" : ""}>延迟加载</option><option value="direct" ${m.toolMode === "direct" ? "selected" : ""}>全部内联</option></select>`}</div>`).join("")}</div>`; }
@@ -485,15 +540,25 @@
     const root = body(), saved = state.editing; if (!root || !saved) return;
     state.view = "form";
     const p = draft ? { ...saved, ...draft } : saved;
-    root.innerHTML = `${status()}<form class="cp-api-form" data-api-form><div class="cp-api-grid"><label class="cp-api-field">名称<input class="cp-api-input" name="name" value="${esc(p.name)}" required></label><label class="cp-api-field">协议<select class="cp-api-select" name="protocol"><option value="responses" ${p.protocol === "responses" ? "selected" : ""}>Responses</option><option value="chatCompletions" ${p.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option></select></label></div><label class="cp-api-field">API URL<input class="cp-api-input" name="baseUrl" value="${esc(p.baseUrl)}" placeholder="https://example.com/v1" required></label><label class="cp-api-field">API Key<input class="cp-api-input" name="apiKey" type="password" autocomplete="off" value="${esc(draft?.apiKey || "")}" placeholder="${p.hasApiKey ? "已保存；留空则保持不变" : "sk-…"}"></label><label class="cp-api-field"><span><input name="enabled" type="checkbox" ${p.enabled ? "checked" : ""}> 启用此 API</span></label><div class="cp-api-actions"><button type="button" class="cp-api-button" data-api-back>返回</button><button type="button" class="cp-api-button" data-api-discover>读取模型</button></div>${modelEditor(true)}<div class="cp-api-actions"><span></span><button class="cp-api-button" data-primary="true" type="submit">保存</button></div></form>`;
+    root.innerHTML = `${status()}<form class="cp-api-form" data-api-form><div class="cp-api-grid"><label class="cp-api-field">名称<input class="cp-api-input" name="name" value="${esc(p.name)}" required></label><label class="cp-api-field">协议<select class="cp-api-select" name="protocol"><option value="responses" ${p.protocol === "responses" ? "selected" : ""}>Responses</option><option value="chatCompletions" ${p.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option></select></label></div><label class="cp-api-field">API URL<input class="cp-api-input" name="baseUrl" value="${esc(p.baseUrl)}" placeholder="https://example.com/v1" required></label><label class="cp-api-field">API Key<input class="cp-api-input" name="apiKey" type="password" autocomplete="off" value="${esc(draft?.apiKey || "")}" placeholder="${p.hasApiKey ? "已保存；留空则保持不变" : "sk-…"}"></label><label class="cp-api-field"><span><input name="enabled" type="checkbox" ${p.enabled ? "checked" : ""}> 启用此 API</span></label><div class="cp-api-actions"><button type="button" class="cp-api-button" data-api-back>返回</button><button type="button" class="cp-api-button" data-api-discover>读取模型</button></div>${modelEditor(true)}<p class="cp-sub-note">改动会自动保存。</p></form>`;
     const form = root.querySelector("[data-api-form]");
-    root.querySelector("[data-api-back]").addEventListener("click", () => { state.editing = null; state.message = ""; renderList(); });
+    root.querySelector("[data-api-back]").addEventListener("click", () => void leaveForm());
     root.querySelector("[data-api-discover]").addEventListener("click", () => void discover(form));
-    form.addEventListener("submit", (event) => { event.preventDefault(); void save(form); });
+    form.addEventListener("submit", (event) => { event.preventDefault(); providerAutosave.schedule(0); void providerAutosave.flush(); });
+    const onEdit = (event) => {
+      const target = event.target;
+      if (!(target instanceof window.HTMLElement) || target.closest("[data-api-back],[data-api-discover]")) return;
+      const typing = event.type === "input" && target.tagName === "INPUT" && target.type !== "checkbox";
+      providerAutosave.schedule(typing ? TYPING_DELAY : 0);
+    };
+    form.addEventListener("input", onEdit);
+    form.addEventListener("change", onEdit);
   }
 
   async function openSubscription() {
     state.view = "subscription";
+    setSaveState("idle");
+    state.subscriptionLoaded = false;
     state.subscriptionBusy = true;
     state.message = "";
     state.subscription = { enabled: false, autoActivate: false, accountOrder: [], models: [], proxyUrl: "", accountReserves: {}, accountTemporary: {} };
@@ -505,6 +570,7 @@
       if (state.view !== "subscription" || !document.getElementById(ROOT_ID)) return;
       state.subscriptionAccounts = result.accounts || [];
       state.subscription = normalizeSubscriptionConfig(result.config, state.subscriptionAccounts);
+      state.subscriptionSaved = clone(state.subscription);
       state.models = (result.config?.models || []).map(m => ({ ...m }));
       state.subscriptionStates = subscriptionStates(result);
       state.subscriptionLoaded = true;
@@ -557,14 +623,19 @@
       const tempButtonLabel = tempActive ? "取消临时" : index >= 0 ? "转为临时" : "临时加入";
       return `<div class="cp-sub-row" data-temp="${tempActive}"><label><div class="cp-sub-row-head"><input type="checkbox" data-sub-account="${esc(id)}" ${index >= 0 ? "checked" : ""} ${busy ? "disabled" : ""}><span>${index >= 0 ? `${index + 1}. ` : ""}${esc(account?.email || account?.name || "账户已删除，请移出")}${account?.plan ? ` · ${esc(account.plan)}` : ""}</span>${badge}</div>${healthHtml}</label><div class="cp-sub-row-actions">${account ? `<button type="button" class="cp-api-button" data-sub-temp-toggle="${esc(id)}" ${busy ? "disabled" : ""}>${tempButtonLabel}</button>` : ""}<button type="button" class="cp-api-button" data-sub-up="${esc(id)}" aria-label="上移账户" ${busy || index <= 0 ? "disabled" : ""}>↑</button><button type="button" class="cp-api-button" data-sub-down="${esc(id)}" aria-label="下移账户" ${busy || index < 0 || index === order.length - 1 ? "disabled" : ""}>↓</button></div>${account ? `<div class="cp-sub-usage" data-sub-usage-account="${esc(id)}">${accountUsageMarkup(id)}</div>` : ""}${account && tempActive ? temporaryEditor(id, config.accountTemporary?.[id], busy) : ""}${account ? reserveEditor(id, config.accountReserves?.[id], busy || index < 0) : ""}</div>`;
     }).join("");
-    root.innerHTML = `${status()}<div class="cp-api-form"><div class="cp-api-actions"><strong>ChatGPT 订阅 API</strong><label><input type="checkbox" data-sub-enabled ${config.enabled ? "checked" : ""} ${busy ? "disabled" : ""}> 启用</label></div><div class="cp-api-actions"><label class="cp-sub-note"><input type="checkbox" data-sub-auto-activate ${config.autoActivate ? "checked" : ""} ${busy ? "disabled" : ""}> 自动激活其他账户的 5h 计时</label><button type="button" class="cp-api-button" data-sub-refresh-usage ${busy || usageLoading || !state.subscriptionAccounts.length ? "disabled" : ""}>${usageLoading ? "刷新中…" : "刷新额度"}</button></div><div class="cp-api-list">${rows || '<div class="cp-api-row">暂无导入账户，请先添加账户。</div>'}</div><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-accounts ${busy ? "disabled" : ""}>管理导入账户</button><span></span></div><div class="cp-api-actions"><span>模型与显示名称</span><button type="button" class="cp-api-button" data-sub-discover ${busy || !order.length ? "disabled" : ""}>${busy ? "处理中…" : "读取模型"}</button></div>${modelEditor()}<div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-back ${busy ? "disabled" : ""}>返回</button><button type="button" class="cp-api-button" data-primary="true" data-sub-save ${busy ? "disabled" : ""}>保存订阅 API</button></div></div>`;
-    root.querySelector("[data-sub-auto-activate]").addEventListener("change", e => { config.autoActivate = e.target.checked; });
-    root.querySelector("[data-sub-enabled]").addEventListener("change", e => { config.enabled = e.target.checked; });
+    root.innerHTML = `${status()}<div class="cp-api-form"><div class="cp-api-actions"><strong>ChatGPT 订阅 API</strong><label><input type="checkbox" data-sub-enabled ${config.enabled ? "checked" : ""} ${busy ? "disabled" : ""}> 启用</label></div><div class="cp-api-actions"><label class="cp-sub-note"><input type="checkbox" data-sub-auto-activate ${config.autoActivate ? "checked" : ""} ${busy ? "disabled" : ""}> 自动激活其他账户的 5h 计时</label><button type="button" class="cp-api-button" data-sub-refresh-usage ${busy || usageLoading || !state.subscriptionAccounts.length ? "disabled" : ""}>${usageLoading ? "刷新中…" : "刷新额度"}</button></div><div class="cp-api-list">${rows || '<div class="cp-api-row">暂无导入账户，请先添加账户。</div>'}</div><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-accounts ${busy ? "disabled" : ""}>管理导入账户</button><span></span></div><div class="cp-api-actions"><span>模型与显示名称</span><button type="button" class="cp-api-button" data-sub-discover ${busy || !order.length ? "disabled" : ""}>${busy ? "处理中…" : "读取模型"}</button></div>${modelEditor()}<div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-back ${busy ? "disabled" : ""}>返回</button><span class="cp-sub-note">改动会自动保存。</span></div></div>`;
+    const saveSoon = (delay = 0) => subscriptionAutosave.schedule(delay);
+    root.querySelector("[data-sub-auto-activate]").addEventListener("change", e => { config.autoActivate = e.target.checked; saveSoon(); });
+    root.querySelector("[data-sub-enabled]").addEventListener("change", e => { config.enabled = e.target.checked; saveSoon(); });
     root.querySelectorAll("[data-sub-reserve]").forEach(input => input.addEventListener("input", () => {
       const reserve = (config.accountReserves[input.dataset.subReserveAccount] ||= {});
       const value = input.value.trim();
       reserve[input.dataset.subReserve] = value === "" ? null : Number(value);
+      saveSoon(TYPING_DELAY);
     }));
+    root.querySelectorAll("[data-model-visible], [data-model-name]").forEach(input => {
+      input.addEventListener("input", () => { syncModels(root); saveSoon(input.type === "checkbox" ? 0 : TYPING_DELAY); });
+    });
     const syncTemporaryControls = (id) => {
       const temp = config.accountTemporary[id];
       root.querySelectorAll(`[data-sub-temp-preset][data-sub-temp-account="${id}"]`).forEach((btn) => {
@@ -583,6 +654,7 @@
       temp[key] = value === "" ? null : Number(value);
       if (key === "durationMinutes" && value !== "") temp.untilReset = null;
       syncTemporaryControls(id);
+      saveSoon(TYPING_DELAY);
     }));
     root.querySelectorAll("[data-sub-temp-preset]").forEach(button => button.addEventListener("click", () => {
       const id = button.dataset.subTempAccount;
@@ -597,6 +669,7 @@
         if (durationInput) durationInput.value = "";
       }
       syncTemporaryControls(id);
+      saveSoon();
     }));
     root.querySelectorAll("[data-sub-account]").forEach(input => input.addEventListener("change", () => {
       syncModels(root);
@@ -605,6 +678,7 @@
       if (input.checked) config.accountOrder.push(id);
       else delete config.accountTemporary[id];
       renderSubscription();
+      saveSoon();
     }));
     root.querySelectorAll("[data-sub-temp-toggle]").forEach(button => button.addEventListener("click", () => {
       syncModels(root);
@@ -613,11 +687,13 @@
         config.accountOrder = order.filter(item => item !== id);
         delete config.accountTemporary[id];
         renderSubscription();
+        saveSoon();
         return;
       }
       if (!order.includes(id)) config.accountOrder.push(id);
       config.accountTemporary[id] ||= { shortTermPercent: null, longTermPercent: null, durationMinutes: null, untilReset: null };
       renderSubscription();
+      saveSoon();
       root.querySelector(`[data-sub-temp="shortTermPercent"][data-sub-temp-account="${id}"]`)?.focus();
     }));
     const move = (id, delta) => {
@@ -626,70 +702,133 @@
       if (index < 0 || index + delta < 0 || index + delta >= order.length) return;
       [order[index], order[index + delta]] = [order[index + delta], order[index]];
       renderSubscription();
+      saveSoon();
       root.querySelector(`[${delta < 0 ? "data-sub-up" : "data-sub-down"}="${id}"]`)?.focus();
     };
     root.querySelectorAll("[data-sub-up]").forEach(b => b.addEventListener("click", () => move(b.dataset.subUp, -1)));
     root.querySelectorAll("[data-sub-down]").forEach(b => b.addEventListener("click", () => move(b.dataset.subDown, 1)));
-    root.querySelector("[data-sub-back]").addEventListener("click", () => {
+    root.querySelector("[data-sub-back]").addEventListener("click", async () => {
+      await subscriptionAutosave.flush();
+      if (state.view !== "subscription") return;
+      if (state.saveState.kind === "error" && !confirm(`${state.saveState.text}\n\n仍要返回吗？未保存的改动会丢失。`)) return;
       state.subscription = null;
       state.message = "";
       renderList();
       void loadSubscriptionSnapshot();
     });
     root.querySelector("[data-sub-accounts]").addEventListener("click", () => { close(); window.__codexPlusAccounts?.open?.(); });
-    root.querySelector("[data-sub-discover]").addEventListener("click", () => void subscriptionAction(false));
-    root.querySelector("[data-sub-save]").addEventListener("click", () => void subscriptionAction(true));
+    root.querySelector("[data-sub-discover]").addEventListener("click", () => void discoverSubscriptionModels());
     bindUsageActions(root);
   }
 
-  async function subscriptionAction(saveConfig) {
+  async function discoverSubscriptionModels() {
     if (state.subscriptionBusy) return;
-    for (const input of body().querySelectorAll("[data-sub-reserve], [data-sub-temp]")) {
-      if (!input.checkValidity()) { input.reportValidity(); return; }
-    }
     syncModels(body());
     const config = state.subscription;
-    if (saveConfig) {
-      for (const id of config.accountOrder) {
-        if (Object.prototype.hasOwnProperty.call(config.accountTemporary || {}, id)) {
-          const temp = config.accountTemporary[id];
-          if (!hasTemporaryCondition(temp)) {
-            state.message = "临时加入的账户请至少设置一项 5h 或周使用额度，或设置临时使用时间";
-            state.error = true;
-            renderSubscription();
-            return;
-          }
-        }
-      }
-    }
-    config.accountTemporary = Object.fromEntries(
-      Object.entries(config.accountTemporary || {}).filter(([id, temp]) =>
-        config.accountOrder.includes(id) && hasTemporaryCondition(temp)
-      )
-    );
-    config.models = state.models.map(m => ({ modelId: m.modelId, displayName: m.displayName, visible: m.visible }));
     state.subscriptionBusy = true; state.message = ""; renderSubscription();
     try {
-      const result = await invoke(`/api-providers/subscription/${saveConfig ? "save" : "discover"}`, config);
-      if (saveConfig) {
-        state.subscription = normalizeSubscriptionConfig(result.config, state.subscriptionAccounts);
-        state.subscriptionStates = subscriptionStates(result);
-        state.message = state.subscription.enabled ? "订阅 API 已保存，在模型列表选择“订阅”模型即可使用。" : "订阅 API 已停用。";
-        state.providers = (await invoke("/api-providers/list")).providers || [];
-        await window.__codexPlusModelRouting?.loadCatalog?.(true);
-      } else {
-        state.models = result.models || [];
-        state.message = `读取到 ${state.models.length} 个模型，保存后生效。`;
-      }
+      const result = await invoke("/api-providers/subscription/discover", { ...config, models: state.models.map(m => ({ modelId: m.modelId, displayName: m.displayName, visible: m.visible })) });
+      state.models = result.models || [];
+      state.message = `读取到 ${state.models.length} 个模型。`;
       state.error = false;
+      subscriptionAutosave.schedule(0);
     } catch (error) { state.message = error.message; state.error = true; }
     finally { state.subscriptionBusy = false; if (state.view === "subscription") renderSubscription(); }
   }
 
+  // 生成要保存的配置：临时加入但还没设置任何退出条件的账户先保持上次保存时的状态，
+  // 避免一点“临时加入”就以常驻身份进入账户池。
+  function subscriptionPayload(config) {
+    const saved = state.subscriptionSaved || { accountOrder: [], accountTemporary: {} };
+    const savedOrder = new Set(saved.accountOrder || []);
+    const pending = new Set(config.accountOrder.filter((id) =>
+      Object.prototype.hasOwnProperty.call(config.accountTemporary || {}, id)
+      && !hasTemporaryCondition(config.accountTemporary[id])));
+    const accountOrder = config.accountOrder.filter((id) => !pending.has(id) || savedOrder.has(id));
+    const accountTemporary = {};
+    for (const id of accountOrder) {
+      const temp = pending.has(id) ? saved.accountTemporary?.[id] : config.accountTemporary?.[id];
+      if (temp && hasTemporaryCondition(temp)) accountTemporary[id] = { ...temp };
+    }
+    return {
+      payload: {
+        ...config,
+        accountOrder,
+        accountTemporary,
+        accountReserves: clone(config.accountReserves || {}),
+        models: state.models.map(m => ({ modelId: m.modelId, displayName: m.displayName, visible: m.visible })),
+      },
+      pending: pending.size,
+    };
+  }
+
+  async function saveSubscriptionNow() {
+    const config = state.subscription;
+    if (!config || !state.subscriptionLoaded) return;
+    const root = body();
+    if (root && state.view === "subscription") {
+      for (const input of root.querySelectorAll("[data-sub-reserve], [data-sub-temp]")) {
+        if (!input.checkValidity()) { setSaveState("error", `未保存：${input.getAttribute("aria-label") || "数值"}须为有效的整数范围`); return; }
+      }
+    }
+    const { payload, pending } = subscriptionPayload(config);
+    setSaveState("saving");
+    try {
+      const result = await invoke("/api-providers/subscription/save", payload);
+      state.subscriptionSaved = clone(payload);
+      const previousStates = JSON.stringify(state.subscriptionStates);
+      state.subscriptionStates = subscriptionStates(result);
+      setSaveState("saved", pending ? "已自动保存；临时加入的账户设置退出条件后才会生效" : "");
+      void refreshProvidersAfterSave();
+      const active = document.activeElement;
+      const editing = active && body()?.contains(active) && active.matches("input:not([type=checkbox]), select");
+      if (state.view === "subscription" && previousStates !== JSON.stringify(state.subscriptionStates) && !editing) renderSubscription();
+    } catch (error) { setSaveState("error", `未保存：${error.message}`); }
+  }
+
+  async function refreshProvidersAfterSave() {
+    try {
+      state.providers = (await invoke("/api-providers/list")).providers || state.providers;
+      await window.__codexPlusModelRouting?.loadCatalog?.(true);
+    } catch {}
+  }
+
   function syncModels(root) { state.models.forEach((model, i) => { model.visible = !!root.querySelector(`[data-model-visible="${i}"]`)?.checked; const windowInput = root.querySelector(`[data-model-window="${i}"]`); if (windowInput) model.contextWindow = windowInput.value ? Number(windowInput.value) : null; const toolInput = root.querySelector(`[data-model-tool="${i}"]`); if (toolInput) model.toolMode = toolInput.value || null; model.displayName = root.querySelector(`[data-model-name="${i}"]`)?.value || model.modelId; }); }
   function values(form) { const data = new FormData(form); return { id: state.editing?.id, name: String(data.get("name") || ""), baseUrl: String(data.get("baseUrl") || ""), apiKey: String(data.get("apiKey") || ""), protocol: String(data.get("protocol") || "chatCompletions"), enabled: data.get("enabled") === "on" }; }
-  async function discover(form) { syncModels(form); const draft = values(form); const prior = new Map(state.models.map(m => [m.modelId, m])); try { const result = await invoke("/api-providers/discover", { providerId: draft.id, baseUrl: draft.baseUrl, apiKey: draft.apiKey }); state.models = (result.models || []).map(m => { const p = prior.get(m.modelId); return p ? { ...m, contextWindow: p.contextWindow ?? m.contextWindow, toolMode: p.toolMode ?? m.toolMode } : m; }); state.message = `读取到 ${state.models.length} 个模型。`; state.error = false; } catch (e) { state.message = e.message; state.error = true; } renderForm(draft); }
-  async function save(form) { syncModels(form); const draft = values(form); try { const result = await invoke("/api-providers/save", { ...draft, models: state.models }); state.providers = result.providers || []; state.editing = null; state.message = "API 配置已保存。"; state.error = false; await window.__codexPlusModelRouting?.loadCatalog?.(true); renderList(); } catch (e) { state.message = e.message; state.error = true; renderForm(draft); } }
+  async function discover(form) { syncModels(form); const draft = values(form); const prior = new Map(state.models.map(m => [m.modelId, m])); try { const result = await invoke("/api-providers/discover", { providerId: draft.id, baseUrl: draft.baseUrl, apiKey: draft.apiKey }); state.models = (result.models || []).map(m => { const p = prior.get(m.modelId); return p ? { ...m, contextWindow: p.contextWindow ?? m.contextWindow, toolMode: p.toolMode ?? m.toolMode } : m; }); state.message = `读取到 ${state.models.length} 个模型。`; state.error = false; renderForm(draft); providerAutosave.schedule(0); return; } catch (e) { state.message = e.message; state.error = true; } renderForm(draft); }
+  async function saveProviderNow() {
+    const form = document.querySelector(`#${ROOT_ID} [data-api-form]`);
+    if (!form || state.view !== "form" || !state.editing) return;
+    syncModels(form);
+    const draft = values(form);
+    if (!draft.id && (!draft.name.trim() || !draft.baseUrl.trim() || !draft.apiKey.trim())) {
+      setSaveState("idle", "填写名称、API URL 和 API Key 后自动保存");
+      return;
+    }
+    if (!draft.name.trim() || !draft.baseUrl.trim()) { setSaveState("error", "未保存：名称和 API URL 不能为空"); return; }
+    const editing = state.editing;
+    const before = new Set(state.providers.map((p) => p.id));
+    setSaveState("saving");
+    try {
+      const result = await invoke("/api-providers/save", { ...draft, models: state.models.map((m) => ({ ...m })) });
+      state.providers = result.providers || [];
+      if (!editing.id) {
+        const created = state.providers.find((p) => !before.has(p.id) && p.kind !== "subscription");
+        if (created) editing.id = created.id;
+      }
+      const saved = state.providers.find((p) => p.id === editing.id);
+      if (saved) Object.assign(editing, { name: saved.name, baseUrl: saved.baseUrl, protocol: saved.protocol, enabled: saved.enabled, hasApiKey: saved.hasApiKey });
+      setSaveState("saved");
+      void window.__codexPlusModelRouting?.loadCatalog?.(true);
+    } catch (e) { setSaveState("error", `未保存：${e.message}`); }
+  }
+
+  async function leaveForm() {
+    await providerAutosave.flush();
+    if (state.view !== "form") return;
+    if (state.saveState.kind === "error" && !confirm(`${state.saveState.text}\n\n仍要返回吗？未保存的改动会丢失。`)) return;
+    state.editing = null; state.message = ""; renderList();
+  }
   async function removeProvider(id) { if (!confirm("删除这个 API 配置？")) return; try { const result = await invoke("/api-providers/delete", { providerId: id }); state.providers = result.providers || []; state.message = "API 配置已删除。"; state.error = false; window.__codexPlusModelRouting?.loadCatalog?.(true); } catch (e) { state.message = e.message; state.error = true; } renderList(); }
   async function loadSubscriptionSnapshot() {
     try {
@@ -718,14 +857,21 @@
     }
   }
 
-  function close() { state.usageGeneration += 1; document.getElementById(ROOT_ID)?.remove(); }
+  function close() {
+    // 关闭前把排队中的改动立刻保存；保存函数在首个 await 之前就读完页面状态。
+    void subscriptionAutosave.flush();
+    void providerAutosave.flush();
+    state.usageGeneration += 1;
+    document.getElementById(ROOT_ID)?.remove();
+  }
   function openModal() {
     close(); installStyle(); state.view = "list"; state.editing = null; state.message = ""; state.error = false;
-    const overlay = document.createElement("div"); overlay.id = ROOT_ID; overlay.className = "cp-api-overlay"; overlay.innerHTML = `<section class="cp-api-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-api-title"><header class="cp-api-header"><div><h2 class="cp-api-title" id="cp-api-title">API 接入</h2></div><button class="cp-api-close" aria-label="关闭">${closeIcon()}</button></header><div class="cp-api-body" data-api-body></div></section>`;
+    const overlay = document.createElement("div"); overlay.id = ROOT_ID; overlay.className = "cp-api-overlay"; overlay.innerHTML = `<section class="cp-api-dialog" role="dialog" aria-modal="true" aria-labelledby="cp-api-title"><header class="cp-api-header"><div><h2 class="cp-api-title" id="cp-api-title">API 接入</h2><div class="cp-api-save-state" data-api-save-state role="status" aria-live="polite"></div></div><button class="cp-api-close" aria-label="关闭">${closeIcon()}</button></header><div class="cp-api-body" data-api-body></div></section>`;
     overlay.addEventListener("click", (event) => { if (event.target === overlay || event.target.closest(".cp-api-close")) close(); }); document.body.appendChild(overlay); void load();
   }
   function install() { installStyle(); queueScan(); if (!core.observing(OBSERVER_KEY)) state.unsubscribe = core.subscribe(OBSERVER_KEY, queueScan); }
   function destroy() { state.unsubscribe?.(); state.unsubscribe = null; state.scanQueued = false; document.querySelectorAll(`[${ITEM_ATTR}]`).forEach((node) => node.remove()); close(); document.getElementById(STYLE_ID)?.remove(); }
-  window.__codexPlusApi = { version: VERSION, install, destroy, open: openModal, state };
+  async function flushSaves() { await subscriptionAutosave.flush(); await providerAutosave.flush(); }
+  window.__codexPlusApi = { version: VERSION, install, destroy, open: openModal, state, flushSaves };
   install();
 })();
