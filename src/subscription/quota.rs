@@ -481,6 +481,7 @@ impl QuotaTracker {
             Some(Usage {
                 plan_type: None,
                 credits: None,
+                rate_limit_reset_credits: None,
                 rate_limit: Some(RateLimit {
                     allowed: None,
                     limit_reached: None,
@@ -1018,6 +1019,7 @@ pub(super) fn usage_event(value: &Value) -> Option<Usage> {
     Some(Usage {
         plan_type: None,
         credits: None,
+        rate_limit_reset_credits: None,
         rate_limit: Some(RateLimit {
             allowed: None,
             limit_reached: None,

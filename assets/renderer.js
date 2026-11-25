@@ -3,7 +3,7 @@
   const String = window.String;
 
   const core = window.__codexPlusCore;
-  const VERSION = 16;
+  const VERSION = 17;
   const OBSERVER_KEY = "accounts";
   const ROOT_ID = "codex-plus-account-modal";
   const STYLE_ID = "codex-plus-account-style";
@@ -28,6 +28,8 @@
     view: "accounts",
     accounts: [],
     usage: new Map(),
+    // recordId → { open, status, data, message, confirming, busy, attempt }
+    resets: new Map(),
     summaryEnabled: false,
     summaryMissing: 0,
     summary: null,
@@ -108,6 +110,18 @@
       .cp-usage-fill { display:block; height:100%; border-radius:inherit; background:var(--cp-accent); }
       .cp-usage-reset { color:var(--cp-muted); white-space:nowrap; }
       .cp-usage-loading { color:var(--cp-muted); font-size:12px; }
+      .cp-account-extras { display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; color:var(--cp-muted); font-size:11px; font-variant-numeric:tabular-nums; }
+      .cp-account-extras strong { color:var(--cp-text); font-weight:600; }
+      .cp-reset-toggle { border:0; padding:0; background:transparent; color:#8cc9ff; font:inherit; cursor:pointer; }
+      .cp-reset-toggle:hover:not(:disabled) { text-decoration:underline; }
+      .cp-reset-toggle:disabled { color:var(--cp-muted); cursor:default; }
+      .cp-reset-panel { display:grid; gap:6px; margin-top:2px; padding:8px 10px; border:1px solid var(--cp-divider); border-radius:9px; background:var(--cp-bg); }
+      .cp-reset-item { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; font-size:12px; }
+      .cp-reset-item small { display:block; color:var(--cp-muted); font-size:11px; margin-top:1px; }
+      .cp-reset-actions { display:flex; gap:6px; }
+      .cp-reset-note { color:var(--cp-muted); font-size:11px; line-height:1.5; }
+      .cp-reset-note[data-type="error"] { color:#fca5a5; }
+      .cp-reset-note[data-type="success"] { color:#8cc9ff; }
       .cp-account-button { min-width:64px; height:30px; border:1px solid var(--cp-border); border-radius:8px; padding:0 12px; color:var(--cp-text); background:var(--cp-button); cursor:pointer; font-size:12px; font-weight:500; }
       .cp-account-button:hover:not(:disabled) { background:var(--cp-surface-hover); }
       .cp-account-button[data-primary="true"] { border-color:var(--cp-accent); color:#fff; background:var(--cp-accent); }
@@ -445,6 +459,7 @@
     body.querySelectorAll("[data-cp-usage-retry]").forEach((button) => {
       button.addEventListener("click", () => void loadUsage(button.dataset.cpUsageRetry));
     });
+    bindResetActions(body);
     body.querySelector("[data-cp-add]")?.addEventListener("click", () => switchView("import"));
     body.querySelector("[data-cp-web-login]")?.addEventListener("click", () => void startWebLogin());
   }
@@ -459,7 +474,7 @@
       <div class="cp-account-main">
         <div class="cp-account-name-line"><span class="cp-account-name">${escapeHtml(displayName)}</span>${active ? '<span class="cp-account-badge">当前</span>' : ""}</div>
         <div class="cp-account-meta">${secondary ? `<span>${escapeHtml(secondary)}</span>` : ""}${account?.plan ? `<span>${escapeHtml(account.plan)}</span>` : ""}</div>
-        <div class="cp-account-usage">${usageMarkup(usageState, id)}</div>
+        <div class="cp-account-usage">${usageMarkup(usageState, id)}${extrasMarkup(usageState, id)}</div>
       </div>
       <div class="cp-account-row-actions"><button type="button" class="cp-account-button" data-primary="${!active}" data-cp-switch="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""}>${state.switching === id ? "切换中…" : active ? "当前账户" : "切换"}</button><button type="button" class="cp-account-button" data-danger="true" data-cp-delete="${escapeHtml(id)}" ${active || state.switching || state.deleting || state.webLoginStarting ? "disabled" : ""} title="${active ? "请先切换到其他账户再删除" : "删除已保存账户"}">${state.deleting === id ? "删除中…" : "删除"}</button></div>
     </div>`;
@@ -485,6 +500,171 @@
     }).join("") + status;
   }
 
+  // 余额与额度重置卡：用该账户自己保存的凭据读取，不切换当前账户。
+  function creditsText(credits) {
+    if (!credits || typeof credits !== "object") return "";
+    if (credits.unlimited === true) return "不限";
+    const balance = Number(credits.balance);
+    if (!Number.isFinite(balance)) return credits.has_credits ? "有" : "";
+    return balance.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+  }
+
+  function resetCount(usage) {
+    const value = usage?.rate_limit_reset_credits;
+    const count = Number(value?.available_count);
+    if (!Number.isFinite(count)) return null;
+    const applicable = Number(value?.applicable_available_count);
+    return { count, applicable: Number.isFinite(applicable) ? applicable : null };
+  }
+
+  function extrasMarkup(entry, recordId) {
+    if (!entry?.usage) return "";
+    const parts = [];
+    const balance = creditsText(entry.usage.credits);
+    if (balance) parts.push(`<span>余额 <strong>${escapeHtml(balance)}</strong> credits</span>`);
+    const resets = resetCount(entry.usage);
+    const panel = state.resets.get(recordId);
+    if (resets) {
+      const label = `重置卡 ${resets.count} 张`;
+      parts.push(resets.count > 0 || panel?.open
+        ? `<button type="button" class="cp-reset-toggle" data-cp-reset-toggle="${escapeHtml(recordId)}" aria-expanded="${panel?.open === true}">${escapeHtml(label)}${panel?.open ? " ▾" : " ▸"}</button>`
+        : `<span>${escapeHtml(label)}</span>`);
+    }
+    if (!parts.length && !panel?.open) return "";
+    return `<div class="cp-account-extras">${parts.join("")}</div>${panel?.open ? resetPanelMarkup(recordId, panel) : ""}`;
+  }
+
+  function resetPanelMarkup(recordId, panel) {
+    const note = panel.message ? `<div class="cp-reset-note" data-type="${escapeHtml(panel.messageType || "")}" role="status">${escapeHtml(panel.message)}</div>` : "";
+    if (panel.status === "loading" && !panel.data) return `<div class="cp-reset-panel"><div class="cp-reset-note">正在读取重置卡…</div></div>`;
+    if (panel.status === "error" && !panel.data) {
+      return `<div class="cp-reset-panel">${note}<div><button type="button" class="cp-account-button" data-cp-reset-reload="${escapeHtml(recordId)}">重试</button></div></div>`;
+    }
+    const credits = Array.isArray(panel.data?.credits) ? panel.data.credits.filter((credit) => credit?.status === "available") : [];
+    const busy = !!panel.busy;
+    const items = credits.map((credit) => {
+      const id = String(credit.id || "");
+      const expires = credit.expires_at ? core.formatUtc8DateTime(credit.expires_at) : "";
+      const unsupported = credit.is_supported_by_plan === false;
+      const confirming = panel.confirming === id;
+      const actions = confirming
+        ? `<button type="button" class="cp-account-button" data-primary="true" data-cp-reset-confirm="${escapeHtml(recordId)}" data-credit-id="${escapeHtml(id)}" ${busy ? "disabled" : ""}>${panel.busy === id ? "重置中…" : "确认使用"}</button><button type="button" class="cp-account-button" data-cp-reset-cancel="${escapeHtml(recordId)}" ${busy ? "disabled" : ""}>取消</button>`
+        : `<button type="button" class="cp-account-button" data-cp-reset-use="${escapeHtml(recordId)}" data-credit-id="${escapeHtml(id)}" ${busy || unsupported ? "disabled" : ""} title="${unsupported ? "当前套餐不支持这张重置卡" : "立即重置该账户的 5 小时与周额度"}">使用</button>`;
+      return `<div class="cp-reset-item"><div>${escapeHtml(credit.title || "额度重置卡")}<small>${expires ? `到期 ${escapeHtml(expires)}` : "长期有效"}${unsupported ? " · 当前套餐不支持" : ""}</small></div><div class="cp-reset-actions">${actions}</div></div>`;
+    }).join("");
+    const empty = credits.length ? "" : '<div class="cp-reset-note">没有可用的重置卡。</div>';
+    const hint = credits.length ? '<div class="cp-reset-note">使用后立即重置该账户的 5 小时与周额度，无需切换账户；重置卡用掉后不能撤回。</div>' : "";
+    return `<div class="cp-reset-panel">${note}${items}${empty}${hint}</div>`;
+  }
+
+  function bindResetActions(body) {
+    body.querySelectorAll("[data-cp-reset-toggle]").forEach((button) => {
+      button.addEventListener("click", () => toggleResets(button.dataset.cpResetToggle));
+    });
+    body.querySelectorAll("[data-cp-reset-reload]").forEach((button) => {
+      button.addEventListener("click", () => void loadResets(button.dataset.cpResetReload));
+    });
+    body.querySelectorAll("[data-cp-reset-use]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const panel = state.resets.get(button.dataset.cpResetUse);
+        if (!panel || panel.busy) return;
+        panel.confirming = button.dataset.creditId;
+        panel.message = "";
+        renderBody();
+      });
+    });
+    body.querySelectorAll("[data-cp-reset-cancel]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const panel = state.resets.get(button.dataset.cpResetCancel);
+        if (!panel || panel.busy) return;
+        panel.confirming = "";
+        renderBody();
+      });
+    });
+    body.querySelectorAll("[data-cp-reset-confirm]").forEach((button) => {
+      button.addEventListener("click", () => void useReset(button.dataset.cpResetConfirm, button.dataset.creditId));
+    });
+  }
+
+  function toggleResets(recordId) {
+    const panel = state.resets.get(recordId) || { open: false, status: "idle" };
+    panel.open = !panel.open;
+    if (!panel.open) panel.confirming = "";
+    state.resets.set(recordId, panel);
+    renderBody();
+    if (panel.open && (!panel.data || panel.status === "error")) void loadResets(recordId);
+  }
+
+  async function loadResets(recordId) {
+    const panel = state.resets.get(recordId) || { open: true };
+    const request = {};
+    Object.assign(panel, { status: "loading", request });
+    state.resets.set(recordId, panel);
+    renderBody();
+    try {
+      const result = await core.invoke("/accounts/reset-credits", { recordId });
+      if (panel.request !== request) return;
+      Object.assign(panel, { status: "ok", data: result?.resetCredits || {} });
+      if (panel.messageType === "error" && !panel.attempt) panel.message = "";
+    } catch (error) {
+      if (panel.request !== request) return;
+      Object.assign(panel, { status: "error", message: error?.message || "重置卡读取失败", messageType: "error" });
+    }
+    renderBody();
+  }
+
+  function requestId() {
+    if (typeof window.crypto?.randomUUID === "function") return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    if (typeof window.crypto?.getRandomValues === "function") window.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < 16; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  function resetRejection(code) {
+    if (code === "already_redeemed") return "这张重置卡已经用过了";
+    if (code === "no_credit") return "没有可用的重置卡";
+    if (code === "nothing_to_reset") return "该账户当前额度无需重置（通常要接近或达到额度上限后才能使用）";
+    return `重置未完成（${code || "未知结果"}）`;
+  }
+
+  async function useReset(recordId, creditId) {
+    const panel = state.resets.get(recordId);
+    if (!panel || panel.busy) return;
+    // 同一张卡的重试沿用同一个 redeemRequestId，服务端据此去重，不会重复扣卡。
+    if (!panel.attempt || panel.attempt.creditId !== creditId) {
+      panel.attempt = { creditId, redeemRequestId: requestId(), uncertain: false };
+    }
+    const attempt = panel.attempt;
+    panel.busy = creditId;
+    panel.message = "";
+    renderBody();
+    try {
+      const result = await core.invoke("/accounts/reset-credits/consume", { recordId, creditId, redeemRequestId: attempt.redeemRequestId });
+      const code = result?.outcome?.code;
+      panel.attempt = null;
+      panel.confirming = "";
+      if (code === "reset" || (code === "already_redeemed" && attempt.uncertain)) {
+        panel.message = "已使用重置卡，该账户额度已重置。";
+        panel.messageType = "success";
+      } else {
+        panel.message = resetRejection(code);
+        panel.messageType = "error";
+      }
+    } catch (error) {
+      attempt.uncertain = true;
+      panel.message = `${error?.message || "使用重置卡失败"}。可再次点击“确认使用”重试，不会重复扣卡。`;
+      panel.messageType = "error";
+    } finally {
+      panel.busy = "";
+    }
+    renderBody();
+    void loadResets(recordId);
+    void loadUsage(recordId);
+  }
+
   function viewIsCurrent(generation) {
     return generation === state.generation && (state.view !== "usage" || state.summary?.body.isConnected);
   }
@@ -507,6 +687,7 @@
       }
       const ids = new Set(state.accounts.map((account) => String(account?.recordId || "")));
       for (const id of state.usage.keys()) if (!ids.has(id)) state.usage.delete(id);
+      for (const id of state.resets.keys()) if (!ids.has(id)) state.resets.delete(id);
       for (const account of state.accounts) {
         const id = String(account?.recordId || "");
         if (id) state.usage.set(id, { ...state.usage.get(id), status: "loading" });
