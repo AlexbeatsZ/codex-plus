@@ -249,10 +249,20 @@ async fn native_request(
                 .any(|item| item["type"] == "compaction_trigger")
         });
     let reviewer = model == AUTO_REVIEW_MODEL;
+    let identity = gateway::routing_headers(&headers, &value);
+    let spawned = gateway::is_spawned_child(&identity);
     let route = {
-        let (paths, headers, model) = (paths.clone(), headers.clone(), model.clone());
+        let (paths, model) = (paths.clone(), model.clone());
+        let routes: std::collections::HashSet<String> = state
+            .apis
+            .catalog()
+            .into_iter()
+            .map(|entry| entry.route_id)
+            .collect();
         tokio::task::spawn_blocking(move || {
-            gateway::remember_route(&paths, &headers, &model, compact)
+            gateway::remember_route_with(&paths, &identity, &model, compact, &|route| {
+                routes.contains(route)
+            })
         })
         .await
     };
@@ -265,11 +275,9 @@ async fn native_request(
         return official(headers, method, body).await;
     }
     if route != model
-        && !state
-            .apis
-            .catalog()
-            .iter()
-            .any(|entry| entry.route_id == route && (reviewer || entry.model_id == model))
+        && !state.apis.catalog().iter().any(|entry| {
+            entry.route_id == route && (reviewer || spawned || entry.model_id == model)
+        })
     {
         return failure(
             StatusCode::CONFLICT,

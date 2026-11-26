@@ -893,13 +893,54 @@ impl ThreadRoute {
     }
 }
 
-// Compaction and the exact internal reviewer may recover a managed parent route.
-// The reviewer keeps its own model; ordinary bare models stay official.
+const PARENT_THREAD: &str = "x-codex-parent-thread-id";
+const SUBAGENT: &str = "x-openai-subagent";
+/// `SubAgentSource::ThreadSpawn` in codex-rs (`spawn_agent` children).
+const SPAWNED_CHILD: &str = "collab_spawn";
+
+/// Request identity used for routing. The native client also mirrors the
+/// subagent headers into `client_metadata`; that copy fills missing headers.
+pub fn routing_headers(headers: &HeaderMap, body: &Value) -> HeaderMap {
+    let mut result = headers.clone();
+    for key in [PARENT_THREAD, SUBAGENT] {
+        if result.contains_key(key) {
+            continue;
+        }
+        if let Some(value) = body["client_metadata"][key]
+            .as_str()
+            .and_then(|v| v.parse().ok())
+        {
+            result.insert(key, value);
+        }
+    }
+    result
+}
+
+pub fn is_spawned_child(headers: &HeaderMap) -> bool {
+    headers.get(SUBAGENT).and_then(|v| v.to_str().ok()) == Some(SPAWNED_CHILD)
+}
+
 pub fn remember_route(
     paths: &AccountPaths,
     headers: &HeaderMap,
     model: &str,
     compact: bool,
+) -> anyhow::Result<String> {
+    remember_route_with(paths, headers, model, compact, &|_| true)
+}
+
+// Compaction and the exact internal reviewer may recover a managed parent route.
+// The reviewer keeps its own model; ordinary bare models stay official.
+// `spawn_agent` children follow their parent's managed channel: the parent
+// model names official slugs because that is all it can see, and that choice
+// must not silently move the child to the logged-in account. Inside the pool
+// the child keeps its requested model when `routable` offers it.
+pub fn remember_route_with(
+    paths: &AccountPaths,
+    headers: &HeaderMap,
+    model: &str,
+    compact: bool,
+    routable: &dyn Fn(&str) -> bool,
 ) -> anyhow::Result<String> {
     let identity = |key| {
         headers
@@ -943,6 +984,40 @@ pub fn remember_route(
             }
         }
         return Ok(model.into());
+    }
+    if is_spawned_child(headers) && !is_managed_route(model) {
+        // The parent's current channel wins; a child whose parent record has
+        // expired keeps the managed channel it was given before.
+        let inherited = identity(PARENT_THREAD)
+            .and_then(|parent| routes.get(parent))
+            .or_else(|| routes.get(thread))
+            .map(|entry| entry.route().to_string())
+            .filter(|route| is_managed_route(route));
+        if let Some(parent_route) = inherited {
+            let same_model = crate::subscription::route_id(model);
+            let route =
+                if crate::subscription::is_pool_route(&parent_route) && routable(&same_model) {
+                    same_model
+                } else {
+                    parent_route
+                };
+            let now = crate::accounts::unix_now();
+            let unchanged = routes
+                .get(thread)
+                .is_some_and(|e| e.route() == route && e.at() + 24 * 60 * 60 > now);
+            if !compact && !unchanged {
+                routes.insert(
+                    thread.into(),
+                    ThreadRoute::Timed {
+                        route: route.clone(),
+                        at: now,
+                    },
+                );
+                prune_thread_routes(&mut routes, now);
+                atomic_write(&file, &serde_json::to_vec(&routes)?)?;
+            }
+            return Ok(route);
+        }
     }
     if compact {
         if !is_managed_route(model)
