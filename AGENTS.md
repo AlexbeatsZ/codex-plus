@@ -8,9 +8,10 @@
 
 ## 版本与部署
 
-- 公共源码 `main` 为 0.3.21（内嵌 local-tools 0.3.3）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 公共源码 `main` 为 0.3.22（内嵌 local-tools 0.3.3）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
 - 2026-11-23 Mac 源码已迁到 `/Users/meta/Developer/codex-plus`；local-tools 0.3.2 的跨机 Mac 默认根已同步更新，Mac runtime 已在新物理目录重建并通过真实工具调用。仅重载 MCP，不中断当前 Codex/launcher；旧项目兼容链接已按用户授权退役；当前官方 GUI 的活动路径缓存需正常退出后另行收尾。OMEN 已迁 `C:/Users/Meta/source/repos/codex-plus`，跨机 OMEN 默认根同步切换；ROG 默认路由已随授权迁移切到 source/repos/codex-plus；设备实际切换与重启验收由 ROG 目录迁移任务记录。
-- 0.3.21（2026-11-25，Mac base）：账户弹窗不切换账户即可查看每个账户的 credits 余额与额度重置卡，并可两步确认直接使用（官方 `wham/rate-limit-reset-credits` 与 `/consume`，用该账户自己的 vault 凭据）；订阅 API 与外部 API 配置改为自动保存，去掉保存按钮。详见 `docs/design/account-switch-lifecycle.md`、`docs/design/account-pool.md`“自动保存”。已部署 Mac 固定入口并上传 Release `v0.3.21`（`022bca5`，固定证书签名）；运行中进程未重启；Windows 渠道尚未同步。
+- 0.3.22（2026-11-26，Mac base）：`spawn_agent` 子代理（`x-openai-subagent: collab_spawn`）跟随父任务的 cp-* 渠道；订阅池父任务优先用池内同一模型，否则用父渠道。此前父模型显式传官方 slug，子代理全部落到登录账户。已部署 Mac 固定入口并上传 Release `v0.3.22`（固定证书签名），进程未重启；Windows 渠道未同步。详见 `docs/design/quota-routing.md`“spawn_agent 子代理”。
+- 0.3.21（2026-11-25，Mac base）：账户弹窗不切换账户即可查看每个账户的 credits 余额与额度重置卡，并可两步确认直接使用（官方 `wham/rate-limit-reset-credits` 与 `/consume`，用该账户自己的 vault 凭据）；订阅 API 与外部 API 配置改为自动保存，去掉保存按钮。详见 `docs/design/account-switch-lifecycle.md`、`docs/design/account-pool.md`“自动保存”。已部署 Mac 固定入口并上传 Release `v0.3.21`（`022bca5`，固定证书签名）。Windows 渠道同日在 ROG 构建并文件部署：ROG 0.3.21-rog（`03499f0`，`v0.3.21-rog`，16,221,184 字节）、OMEN 0.3.21-omen（`668ba7c`，`v0.3.21-omen`，16,222,208 字节）。三端进程均未重启；OMEN 旧运行映像在 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0321\previous\`。
 - 0.3.20（2026-11-22）：原生网关在本机拒绝“客户端按未知模型兜底”的请求。判据是目录条目为 `code_mode_only`，请求却带工具而没有 `exec`；这类请求的窗口固定为 258k、工具全部内联，每次 15～20 万 token。上游 `/models` 刷新改为 `Accept-Encoding: br, gzip` 并自行解码，修复 OMEN 自 11-20 起没有一次成功的问题（原因是 invalid JSON 和 8 秒的明文目录超时）。详见 `docs/design/mobile-remote-providers.md` 的 0.3.20 节。
 - 0.3.20 已三端文件部署并上传 Release（2026-11-22）：Mac 0.3.20（`421ea33`，`v0.3.20`，固定证书签名）；ROG 0.3.20-rog（`6cbe931`，`v0.3.20-rog`，16,096,256 字节）与 OMEN 0.3.20-omen（`9a30b97`，`v0.3.20-omen`，16,097,792 字节）均在 ROG 构建。三端进程均未重启；两台 Windows 的旧运行映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0320\running-previous-codex-plus.exe`。
 - 0.3.19（2026-11-19）：订阅 API「临时加入」新增按时间维度控制退出——支持自定义有效时间 `durationMinutes`（1–43200 分钟，到期即 `now >= started_at + duration_minutes * 60`）及两个互斥预设按钮「直到下一次 5h 额度刷新为止」（`untilReset: "short"`）与「直到下一次周额度刷新为止」（`untilReset: "long"`）；支持仅设时间、仅设 5h/周用量百分比或组合使用（任一条件先到即移出）；仅设 `durationMinutes` 且无保留/百分比/刷新预设时请求前只校验本地时钟，不阻塞 `/usage`。前端 [api-providers.js](assets/api-providers.js) 升至 v17。
@@ -41,7 +42,8 @@
 
 # Active Work
 
-- 0.3.21 待验收：显式启动新版后，账户弹窗每行显示余额与“重置卡 N 张”，非当前账户也能展开并使用重置卡（不触发切换）；API 接入里改动订阅账户/模型后标题下显示“已自动保存”，关闭弹窗不丢改动。omen/rog 渠道待合入与构建。
+- 0.3.22 待验收：显式启动新版后，在订阅池任务中让模型 spawn 子代理，`.codex-plus/native-thread-routes.json` 里子线程应记为 `cp-pool-*`，登录账户额度不再随子代理下降。
+- 0.3.21 待验收：显式启动新版后，账户弹窗每行显示余额与“重置卡 N 张”，非当前账户也能展开并使用重置卡（不触发切换）；API 接入里改动订阅账户/模型后标题下显示“已自动保存”，关闭弹窗不丢改动。三端均需用户显式启动新版后生效。
 - 0.3.20 待验收：显式启动新版后，`.codex-plus/official-models.json` 的修改时间应随刷新更新，日志不再出现成串 `native.models.refresh_failed`；在兜底任务（如 2026-11-22 的 Shale 任务）中发送，应看到“请求未发送…请新建任务”的提示，且没有上游消耗。
 - 0.3.19 待验收：用户显式启动新版后验证临时加入（5h/周额度百分比、自定义分钟数、直到下一次 5h/周额度刷新预设）自动退出、API 接入页额度展示及精简界面与 UTC+8 时间显示。
 
@@ -50,7 +52,7 @@
 - 订阅 API 勾选框显示修复、普通 PDF/LaTeX 预览、未登录页按钮的目视验收仍待用户在新版界面确认。
 - 待决策：原生网关缺少“停用/还原 `openai_base_url`”入口（launcher 不运行时其他官方客户端不可用）。
 - OMEN 源码工作树仍在 3725a65，包含原有 13 处修改和本次同步的两个桌面客户端文件。后续整合完整源码时须一起处理这 15 处差异，当前发布 EXE 的来源为 efed103。
-- `subscription::quota` 有偶发失败的测试（2026-11-22 omen 又出现 `temporary_account_tracks_baseline_and_retires_when_usage_limit_reached`，6 次复现 1 次）：2026-11-19 在 ROG 整套 `cargo test` 中两次各挂一个不同用例（`quota_events_stop_future_requests_without_replaying_delivered_output`、`reset_requeries_and_saved_threshold_changes_take_effect_without_cooldown`），单独连跑 5 次与随后整套重跑均通过，疑为并发共享状态或计时；待查。
+- `subscription::quota` 有偶发失败的测试（2026-11-22 omen 又出现 `temporary_account_tracks_baseline_and_retires_when_usage_limit_reached`，6 次复现 1 次）：2026-11-19 在 ROG 整套 `cargo test` 中两次各挂一个不同用例（`quota_events_stop_future_requests_without_replaying_delivered_output`、`reset_requeries_and_saved_threshold_changes_take_effect_without_cooldown`），单独连跑 5 次与随后整套重跑均通过，疑为并发共享状态或计时；待查。2026-11-26 Mac 又见 `discovery_renews_once_after_401_and_preserves_model_settings` 偶发失败一次。
 - 0.3.17 待验收：各端 launcher 启动新版后 `local_tools.runtime.ready` 首次应记 `codexBridgeStopped: true`，之后 tunnel-client 名下不再有 `codex app-server`，`~/.codex/models_cache.json` 的 `client_version` 只出现桌面端版本，app-server 日志不再有 `Unknown model … fallback model metadata`。
 - 本次 OMEN/ROG 的旧映像均位于各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0314\running-previous-codex-plus.exe`，由当前 launcher 持有，待进程自然退出后清理。ROG 更早的占用映像仍见 `...\.agents\codex-plus-upgrade-20261001\`。
 

@@ -45,6 +45,18 @@ ComposerScope 与 descriptor 能力共同校验；不能匹配时保持原生行
 普通官方父渠道、缺少可确认关联的 reviewer 保留当前官方账户归属；不猜测父任务。
 池停用或无参与账户仍明确报错，不自动启用或降低审批要求。reviewer 不覆盖会话上次生成渠道。
 
+## spawn_agent 子代理（0.3.22）
+
+父模型调用 `spawn_agent` 时常显式传官方 slug（实测 `gpt-6.2-sol`），因为它只看得到官方名；
+子线程的请求因此是裸官方模型，旧逻辑把它们全部记到登录账户，即使父任务在订阅池。
+
+判据只认原生 `x-openai-subagent: collab_spawn` 加 `x-codex-parent-thread-id`（缺头时取 body
+`client_metadata` 的同名字段）。父线程已记录 cp-* 渠道时子代理跟随父渠道：
+1. 父为订阅池且池目录有子代理所选模型的 `cp-pool-<base64>` → 用池内同一模型；
+2. 否则用父任务的渠道与模型。
+子线程记录继承后的渠道，孙代理与子线程压缩沿用；父记录过期时用子线程自己的已记录渠道。
+父为官方模型、父未知，以及 review/compact/memory_consolidation 等其他 subagent 类型保持原归属。
+
 ## 验证
 
 - `npm test`：真实 Jotai store 上验证两会话隔离、模型切换订阅、独立草稿、待应用选择、目录撤销、

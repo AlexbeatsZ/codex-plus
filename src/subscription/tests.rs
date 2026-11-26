@@ -264,6 +264,70 @@ async fn native_managed_parent_review_uses_pool_without_changing_reviewer_policy
 }
 
 #[tokio::test]
+async fn spawned_child_of_pool_parent_uses_pool_not_the_login_account() {
+    let f = fixture().await;
+    mount(&f, "a", 200, success()).await;
+    let mut broker = crate::broker::start(
+        0,
+        crate::integrations::ApiIntegrations::with_subscription(
+            f.router.paths.clone(),
+            f.router.clone(),
+        ),
+    )
+    .await
+    .unwrap();
+    let mut config = toml_edit::DocumentMut::new();
+    crate::native_gateway::Settings::reconcile(&f.router.paths, &mut config, broker.port())
+        .unwrap();
+    let settings = crate::native_gateway::Settings::load(&f.router.paths)
+        .unwrap()
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("thread-id", "pool-parent-fixture".parse().unwrap());
+    crate::native_gateway::remember_route(&f.router.paths, &headers, &route_id("gpt-test"), false)
+        .unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // The first child names the pool's model; the second names one the pool
+    // lacks and therefore runs on the parent's pool model.
+    for (thread, model) in [("child-same", "gpt-test"), ("child-other", "gpt-absent")] {
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/native/{}/backend-api/codex/responses",
+                broker.port(),
+                settings.capability
+            ))
+            .bearer_auth("exhausted-login-must-not-be-used")
+            .header("thread-id", thread)
+            .header("x-codex-parent-thread-id", "pool-parent-fixture")
+            .header("x-openai-subagent", "collab_spawn")
+            .json(&json!({"model":model,"stream":true,"input":[{"role":"user","content":"child"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{thread}");
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("response.completed")
+        );
+    }
+    broker.shutdown().await;
+    let requests = f.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        let upstream: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(upstream["model"], "gpt-test");
+        assert_eq!(request.headers["chatgpt-account-id"], "a");
+        assert_ne!(
+            request.headers["authorization"],
+            "Bearer exhausted-login-must-not-be-used"
+        );
+    }
+}
+
+#[tokio::test]
 async fn auto_review_uses_the_enabled_pool_from_both_broker_endpoints() {
     let f = fixture().await;
     mount(&f, "a", 200, success()).await;
