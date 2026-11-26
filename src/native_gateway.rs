@@ -920,6 +920,7 @@ pub fn is_spawned_child(headers: &HeaderMap) -> bool {
     headers.get(SUBAGENT).and_then(|v| v.to_str().ok()) == Some(SPAWNED_CHILD)
 }
 
+#[cfg(test)]
 pub fn remember_route(
     paths: &AccountPaths,
     headers: &HeaderMap,
