@@ -394,6 +394,95 @@ fn compaction_route_is_per_thread_persistent_and_reviewer_does_not_replace_it() 
     assert_eq!(remember_route(&paths, &a, "real", true).unwrap(), "real");
 }
 
+#[test]
+fn spawned_children_follow_the_parent_managed_channel() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(&temp);
+    let pool_parent = crate::subscription::route_id("gpt-parent");
+    let pool_child = crate::subscription::route_id("gpt-child");
+    let headers = |thread: &str, parent: Option<&str>| {
+        let mut h = HeaderMap::new();
+        h.insert("thread-id", thread.parse().unwrap());
+        if let Some(parent) = parent {
+            h.insert("x-codex-parent-thread-id", parent.parse().unwrap());
+            h.insert("x-openai-subagent", "collab_spawn".parse().unwrap());
+        }
+        h
+    };
+    let only_child = |r: &str| r == pool_child;
+    remember_route(&paths, &headers("pool", None), &pool_parent, false).unwrap();
+    remember_route(&paths, &headers("api", None), "cp-api", false).unwrap();
+    remember_route(&paths, &headers("official", None), "gpt-child", false).unwrap();
+    // A pool parent keeps the child's chosen model inside the pool.
+    assert_eq!(
+        remember_route_with(
+            &paths,
+            &headers("c1", Some("pool")),
+            "gpt-child",
+            false,
+            &only_child
+        )
+        .unwrap(),
+        pool_child
+    );
+    // The pool does not offer the chosen model: use the parent's pool model.
+    assert_eq!(
+        remember_route_with(
+            &paths,
+            &headers("c2", Some("pool")),
+            "gpt-other",
+            false,
+            &only_child
+        )
+        .unwrap(),
+        pool_parent
+    );
+    assert_eq!(
+        remember_route(&paths, &headers("c3", Some("api")), "gpt-child", false).unwrap(),
+        "cp-api"
+    );
+    // Official parents and unknown parents keep official ownership.
+    assert_eq!(
+        remember_route(&paths, &headers("c4", Some("official")), "gpt-child", false).unwrap(),
+        "gpt-child"
+    );
+    assert_eq!(
+        remember_route(&paths, &headers("c5", Some("missing")), "gpt-child", false).unwrap(),
+        "gpt-child"
+    );
+    // Only spawn_agent children inherit; other subagent kinds do not.
+    let mut memory = headers("c6", Some("pool"));
+    memory.insert("x-openai-subagent", "memory_consolidation".parse().unwrap());
+    assert_eq!(
+        remember_route(&paths, &memory, "gpt-child", false).unwrap(),
+        "gpt-child"
+    );
+    // Grandchildren inherit through the recorded child, and compaction stays.
+    assert_eq!(
+        remember_route_with(
+            &paths,
+            &headers("g1", Some("c1")),
+            "gpt-child",
+            false,
+            &only_child
+        )
+        .unwrap(),
+        pool_child
+    );
+    assert_eq!(
+        remember_route(&paths, &headers("c1", None), "gpt-child", true).unwrap(),
+        pool_child
+    );
+    // The client mirrors the identity into client_metadata.
+    let body = json!({"client_metadata":{"x-codex-parent-thread-id":"api","x-openai-subagent":"collab_spawn"}});
+    let mirrored = routing_headers(&headers("c7", None), &body);
+    assert!(is_spawned_child(&mirrored));
+    assert_eq!(
+        remember_route(&paths, &mirrored, "gpt-child", false).unwrap(),
+        "cp-api"
+    );
+}
+
 #[tokio::test]
 async fn native_gateway_auth_routing_and_official_credentials_are_separate() {
     let temp = tempfile::tempdir().unwrap();
