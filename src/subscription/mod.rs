@@ -27,6 +27,7 @@ mod config;
 pub use config::SubscriptionConfig;
 mod activation;
 mod quota;
+mod scheduling;
 
 pub fn is_pool_route(route: &str) -> bool {
     route.starts_with(ROUTE_PREFIX)
@@ -50,6 +51,7 @@ pub struct SubscriptionApi {
     config_lock: Arc<Mutex<()>>,
     activity: Arc<Mutex<activation::Activity>>,
     foreground: Arc<tokio::sync::Notify>,
+    affinity: Arc<Mutex<HashMap<String, scheduling::Binding>>>,
 }
 
 /// Why an account is skipped for a while. Only `Quota` may be lifted early
@@ -98,6 +100,8 @@ impl SubscriptionApi {
             .unwrap_or_default();
         let temporary =
             crate::store::load_or_quarantine(&paths.state_dir.join("subscription-temporary.json"));
+        let affinity =
+            crate::store::load_or_quarantine(&paths.state_dir.join("subscription-affinity.json"));
         Self {
             paths,
             native_base: NATIVE_BASE.into(),
@@ -108,6 +112,7 @@ impl SubscriptionApi {
             config_lock: Arc::default(),
             activity: Arc::default(),
             foreground: Arc::default(),
+            affinity: Arc::new(Mutex::new(affinity)),
         }
     }
 
@@ -166,11 +171,14 @@ impl SubscriptionApi {
             .map(|id| json!({"recordId":id,"blocked":true,"reason":"凭据失效，请重新导入或登录"}))
             .collect();
         Ok(
-            json!({"status":"ok", "quotaStates":quota_states, "config":config, "accounts":accounts,"accountStates":states,"blockedAccounts":blocked}),
+            json!({"status":"ok", "quotaStates":quota_states, "schedulingStates":self.scheduling_states(&config), "config":config, "accounts":accounts,"accountStates":states,"blockedAccounts":blocked}),
         )
     }
 
     pub fn save(&self, mut config: SubscriptionConfig) -> anyhow::Result<Value> {
+        config
+            .account_priority
+            .retain(|id| config.account_order.contains(id));
         config
             .account_temporary
             .retain(|id, _| config.account_order.contains(id));
@@ -490,11 +498,29 @@ impl SubscriptionApi {
         };
         let endpoint = format!("{}/responses", self.native_base);
         let mut tried = 0;
-        let mut reserved = 0;
-        let mut unknown = 0;
-        let mut quota_budget = Duration::from_secs(25);
-        for id in &config.account_order {
-            if self.cooling(id, &model) || self.is_rejected_current(id) {
+        let quota_deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+        let (scheduled, mut reserved, mut unknown) = self
+            .scheduled_accounts(&config, &model, &headers, &client)
+            .await;
+        // Scheduling may complete an exit policy. Do not reuse that stale policy.
+        let config = match SubscriptionConfig::load(&self.paths) {
+            Ok(config) if config.enabled => config,
+            _ => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "pool_disabled",
+                    "账户池已停用或配置不可用",
+                );
+            }
+        };
+        let session_key = scheduling::session_key(&headers);
+        let mut quota_budget =
+            quota_deadline.saturating_duration_since(tokio::time::Instant::now());
+        for id in &scheduled {
+            if !config.account_order.contains(id)
+                || self.cooling(id, &model)
+                || self.is_rejected_current(id)
+            {
                 continue;
             }
             let reserve = config.account_reserves.get(id).filter(|r| r.enabled());
@@ -517,6 +543,16 @@ impl SubscriptionApi {
                     }
                 }
             }
+            let Ok(current) = SubscriptionConfig::load(&self.paths) else {
+                continue;
+            };
+            if !current.enabled
+                || !current.account_order.contains(id)
+                || current.account_reserves.get(id) != config.account_reserves.get(id)
+                || current.account_temporary.get(id) != config.account_temporary.get(id)
+            {
+                continue;
+            }
             tried += 1;
             let activity = self.begin_foreground(id);
             let response = match self
@@ -534,10 +570,7 @@ impl SubscriptionApi {
                 }
             };
             let status = response.status();
-            let track_quota = reserve.is_some() || temporary.is_some();
-            if track_quota {
-                self.observe_headers_and_temporary(id, response.headers());
-            }
+            self.observe_headers_and_temporary(id, response.headers());
             let retry_after = response
                 .headers()
                 .get("retry-after")
@@ -585,9 +618,8 @@ impl SubscriptionApi {
                     mut tail,
                     mut guard,
                 }) => {
-                    if track_quota {
-                        self.observe_event_and_temporary(id, guard.quota_update.take());
-                    }
+                    self.bind_session(session_key.as_deref(), id);
+                    self.observe_event_and_temporary(id, guard.quota_update.take());
                     if let Some(value) = &guard.failure
                         && let Some((reason, until)) = recoverable(value, retry_after)
                     {
@@ -603,7 +635,7 @@ impl SubscriptionApi {
                             match tokio::time::timeout(IDLE_TIMEOUT, tail.next()).await {
                                 Ok(Some(Ok(bytes))) => {
                                     guard.push(&bytes);
-                                    if track_quota { router.observe_event_and_temporary(&record_id, guard.quota_update.take()); }
+                                    router.observe_event_and_temporary(&record_id, guard.quota_update.take());
                                     if let Some(value) = &guard.failure {
                                         if let Some((reason, until)) = recoverable(value, retry_after) { router.cool(&record_id,&model,reason,until); }
                                     }

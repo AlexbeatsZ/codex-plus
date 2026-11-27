@@ -10,9 +10,10 @@
 
 ## 版本与部署
 
-- 公共源码 `main` 为 0.3.22（内嵌 local-tools 0.3.3）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
+- 公共源码 `main` 为 0.3.23（内嵌 local-tools 0.3.3）；OMEN/ROG 渠道见下方部署记录；OMEN/ROG 渠道为 `codex/omen` / `codex/rog`，发布身份 `<版本>-omen` / `<版本>-rog`，边界见 `docs/design/host-releases.md`。Mac 使用公共 base 版。各端固定入口的实际来源以各自 `.codex-plus/release.json` 为准；文件部署不等于运行实例已加载，须用户显式启动新版 codex-plus。
 - 2026-11-23 Mac 源码已迁到 `/Users/meta/Developer/codex-plus`；local-tools 0.3.2 的跨机 Mac 默认根已同步更新，Mac runtime 已在新物理目录重建并通过真实工具调用。仅重载 MCP，不中断当前 Codex/launcher；旧项目兼容链接已按用户授权退役；当前官方 GUI 的活动路径缓存需正常退出后另行收尾。OMEN 已迁 `C:/Users/Meta/source/repos/codex-plus`，跨机 OMEN 默认根同步切换；ROG 默认路由已随授权迁移切到 source/repos/codex-plus；设备实际切换与重启验收由 ROG 目录迁移任务记录。
-- 0.3.22（2026-11-26，Mac base）：`spawn_agent` 子代理（`x-openai-subagent: collab_spawn`）跟随父任务的 cp-* 渠道；订阅池父任务优先用池内同一模型，否则用父渠道。此前父模型显式传官方 slug，子代理全部落到登录账户。已部署 Mac 固定入口并上传 Release `v0.3.22`（固定证书签名），进程未重启；Windows 渠道未同步。详见 `docs/design/quota-routing.md`“spawn_agent 子代理”。
+- 0.3.23（2026-11-26）：订阅账户改为额外优先池 + 自动分配池。`accountOrder` 仍仅保存用户明确授权参与的账户；`accountPriority` 手动排序，自动池按周剩余百分比 / 距重置天数排序，5h 仅作可用性检查。默认会话绑定优先，`forcePriority` 才覆盖已有绑定；绑定记录在 `subscription-affinity.json`（30 天 / 4096 项）。优先目标完成恢复自动分配，5h 耗尽仅暂停；兼容旧临时条件。现有弹窗 API v19 显示新会话目标、双池、周评分和折叠退出/保留设置。详见 `docs/design/account-pool.md`。发布验收记录见当月日志。
+- 0.3.22（2026-11-26，Mac base）：`spawn_agent` 子代理（`x-openai-subagent: collab_spawn`）跟随父任务的 cp-* 渠道；订阅池父任务优先用池内同一模型，否则用父渠道。此前父模型显式传官方 slug，子代理全部落到登录账户。已部署 Mac 固定入口并上传 Release `v0.3.22`（固定证书签名）。Windows 渠道同日在 ROG 构建并文件部署：ROG 0.3.22-rog（`abd800b`，`v0.3.22-rog`）、OMEN 0.3.22-omen（`8d39e96`，`v0.3.22-omen`）。三端进程均未重启。详见 `docs/design/quota-routing.md`“spawn_agent 子代理”。
 - 0.3.21（2026-11-25，Mac base）：账户弹窗不切换账户即可查看每个账户的 credits 余额与额度重置卡，并可两步确认直接使用（官方 `wham/rate-limit-reset-credits` 与 `/consume`，用该账户自己的 vault 凭据）；订阅 API 与外部 API 配置改为自动保存，去掉保存按钮。详见 `docs/design/account-switch-lifecycle.md`、`docs/design/account-pool.md`“自动保存”。已部署 Mac 固定入口并上传 Release `v0.3.21`（`022bca5`，固定证书签名）。Windows 渠道同日在 ROG 构建并文件部署：ROG 0.3.21-rog（`03499f0`，`v0.3.21-rog`，16,221,184 字节）、OMEN 0.3.21-omen（`668ba7c`，`v0.3.21-omen`，16,222,208 字节）。三端进程均未重启；OMEN 旧运行映像在 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0321\previous\`。
 - 0.3.20（2026-11-22）：原生网关在本机拒绝“客户端按未知模型兜底”的请求。判据是目录条目为 `code_mode_only`，请求却带工具而没有 `exec`；这类请求的窗口固定为 258k、工具全部内联，每次 15～20 万 token。上游 `/models` 刷新改为 `Accept-Encoding: br, gzip` 并自行解码，修复 OMEN 自 11-20 起没有一次成功的问题（原因是 invalid JSON 和 8 秒的明文目录超时）。详见 `docs/design/mobile-remote-providers.md` 的 0.3.20 节。
 - 0.3.20 已三端文件部署并上传 Release（2026-11-22）：Mac 0.3.20（`421ea33`，`v0.3.20`，固定证书签名）；ROG 0.3.20-rog（`6cbe931`，`v0.3.20-rog`，16,096,256 字节）与 OMEN 0.3.20-omen（`9a30b97`，`v0.3.20-omen`，16,097,792 字节）均在 ROG 构建。三端进程均未重启；两台 Windows 的旧运行映像在各机 `C:\Users\Meta\AppData\Local\Temp\.agents\codex-plus-0320\running-previous-codex-plus.exe`。
@@ -43,6 +44,8 @@
 - 多 API CRUD、模型发现、单 broker、Responses/Chat Completions 转换、原生 openai 网关与手机 Remote 兼容目录、订阅账户池（顺序、保留阈值、临时加入达量自动退出、凭据续期、自动激活）、原生 reviewer 归属、登录额度与 API 发送隔离、上下文 Token 浮窗、PDF 预览 CMap、desktop helper 与 local-tools MCP、前端额度展示与 UTC+8 时间换算。
 
 # Active Work
+
+- 0.3.23 待验收：显式启动新版后检查双池分组、周评分、新会话预计账户，已有会话绑定、强制优先、5h 暂停与优先目标完成恢复自动。升级前旧会话没有账户绑定记录，首次经过新版成功发送后才建立；不从历史猜测账户。真实上游缓存收益需自然观察。
 
 - 0.3.22 待验收：显式启动新版后，在订阅池任务中让模型 spawn 子代理，`.codex-plus/native-thread-routes.json` 里子线程应记为 `cp-pool-*`，登录账户额度不再随子代理下降。
 - 0.3.21 待验收：显式启动新版后，账户弹窗每行显示余额与“重置卡 N 张”，非当前账户也能展开并使用重置卡（不触发切换）；API 接入里改动订阅账户/模型后标题下显示“已自动保存”，关闭弹窗不丢改动。三端均需用户显式启动新版后生效。

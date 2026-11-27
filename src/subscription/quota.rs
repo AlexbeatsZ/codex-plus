@@ -42,7 +42,7 @@ pub(super) struct TemporaryProgress {
 pub(super) struct QuotaTracker {
     observations: Mutex<HashMap<String, Observation>>,
     fetch_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    temporary: Mutex<HashMap<String, TemporaryProgress>>,
+    pub(super) temporary: Mutex<HashMap<String, TemporaryProgress>>,
 }
 
 struct Observation {
@@ -57,7 +57,7 @@ pub(super) enum ReserveStatus {
     Unknown,
 }
 
-fn windows(usage: &Usage) -> impl Iterator<Item = &UsageWindow> {
+pub(super) fn windows(usage: &Usage) -> impl Iterator<Item = &UsageWindow> {
     usage.rate_limit.iter().flat_map(|rate| {
         [rate.primary_window.as_ref(), rate.secondary_window.as_ref()]
             .into_iter()
@@ -73,7 +73,7 @@ fn threshold(reserve: &AccountReserve, window: &UsageWindow) -> Option<(u8, &'st
     }
 }
 
-fn remaining(window: &UsageWindow) -> Option<f64> {
+pub(super) fn remaining(window: &UsageWindow) -> Option<f64> {
     let used = window.used_percent?;
     (used.is_finite() && (0.0..=100.0).contains(&used)).then_some(100.0 - used)
 }
@@ -238,6 +238,24 @@ pub(super) fn evaluate_temporary_progress(
             unknown = true;
             continue;
         };
+        if seconds > 86400
+            && let Some(target) = temp.weekly_remaining_percent
+        {
+            if window.reset_at.is_none_or(|r| r <= now) {
+                unknown = true;
+                continue;
+            }
+            match remaining(window) {
+                Some(value) if value <= f64::from(target) => {
+                    return ReserveStatus::Reserved(format!(
+                        "周剩余额度 {value:.1}% ≤ {target}%，优先目标已完成"
+                    ));
+                }
+                None => unknown = true,
+                _ => {}
+            }
+            long_seen = true;
+        }
         if seconds == 0 {
             unknown = true;
             continue;
@@ -316,7 +334,8 @@ pub(super) fn evaluate_temporary_progress(
         }
     }
     if (temp.short_term_percent.is_some() && !short_seen)
-        || (temp.long_term_percent.is_some() && !long_seen)
+        || ((temp.long_term_percent.is_some() || temp.weekly_remaining_percent.is_some())
+            && !long_seen)
         || (temp.until_reset.is_some() && !until_reset_seen)
         || unknown
     {
@@ -369,6 +388,16 @@ impl QuotaTracker {
             })
         });
         if near_reserve {
+            return true;
+        }
+        if temporary
+            .and_then(|t| t.weekly_remaining_percent)
+            .is_some_and(|target| {
+                windows(usage)
+                    .filter(|w| w.limit_window_seconds.is_some_and(|s| s > 86400))
+                    .any(|w| remaining(w).is_some_and(|r| r <= f64::from(target) + 5.0))
+            })
+        {
             return true;
         }
         let Some(temp) = temporary.filter(|t| t.enabled()) else {
@@ -440,7 +469,7 @@ impl QuotaTracker {
         })
     }
 
-    fn record(&self, id: &str, usage: Option<Usage>) {
+    pub(super) fn record(&self, id: &str, usage: Option<Usage>) {
         self.observations.lock().unwrap().insert(
             id.into(),
             Observation {
@@ -656,8 +685,21 @@ impl SubscriptionApi {
     ) -> anyhow::Result<()> {
         let was_present = config.account_order.iter().any(|item| item == id)
             || config.account_temporary.contains_key(id);
-        config.account_order.retain(|item| item != id);
+        let was_priority = config.account_priority.contains(&id.to_string());
+        if was_priority {
+            config.account_priority.retain(|item| item != id);
+        } else {
+            config.account_order.retain(|item| item != id);
+        }
         config.account_temporary.remove(id);
+        let reason = if was_priority {
+            format!(
+                "{}；已退出优先池，恢复自动分配",
+                reason.replace("，已自动移出额度池", "")
+            )
+        } else {
+            reason
+        };
         if was_present {
             config.write_unchecked(&self.paths)?;
         }
@@ -892,6 +934,9 @@ impl SubscriptionApi {
                 let now = unix_now() as i64;
                 let progress = ledger.get(id);
                 let mut parts = Vec::new();
+                if let Some(target) = temp.weekly_remaining_percent {
+                    parts.push(format!("周剩余 ≤ {target}% 后恢复自动分配"));
+                }
                 if let Some(limit) = temp.short_term_percent {
                     if let Some((base, last)) =
                         progress.and_then(|p| p.short_baseline_used.zip(p.short_last_used))
@@ -968,7 +1013,7 @@ impl SubscriptionApi {
             }
         }
         for (id, progress) in ledger.iter() {
-            if !config.account_order.contains(id)
+            if !config.account_temporary.contains_key(id)
                 && let Some(reason) = &progress.completed_reason
             {
                 items.push(json!({
