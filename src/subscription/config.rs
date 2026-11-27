@@ -9,6 +9,11 @@ pub struct SubscriptionConfig {
     pub auto_activate: bool,
     #[serde(default)]
     pub account_order: Vec<String>,
+    /// Ordered overrides within the explicitly enabled account set.
+    #[serde(default)]
+    pub account_priority: Vec<String>,
+    #[serde(default)]
+    pub force_priority: bool,
     #[serde(default)]
     pub models: Vec<crate::providers::SaveModel>,
     #[serde(default)]
@@ -54,6 +59,8 @@ impl TemporaryResetTarget {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountTemporary {
     #[serde(default)]
+    pub weekly_remaining_percent: Option<u8>,
+    #[serde(default)]
     pub short_term_percent: Option<u8>,
     #[serde(default)]
     pub long_term_percent: Option<u8>,
@@ -65,14 +72,16 @@ pub struct AccountTemporary {
 
 impl AccountTemporary {
     pub fn enabled(&self) -> bool {
-        self.short_term_percent.is_some()
+        self.weekly_remaining_percent.is_some()
+            || self.short_term_percent.is_some()
             || self.long_term_percent.is_some()
             || self.duration_minutes.is_some()
             || self.until_reset.is_some()
     }
 
     pub fn needs_usage(&self) -> bool {
-        self.short_term_percent.is_some()
+        self.weekly_remaining_percent.is_some()
+            || self.short_term_percent.is_some()
             || self.long_term_percent.is_some()
             || self.until_reset.is_some()
     }
@@ -80,7 +89,16 @@ impl AccountTemporary {
 
 impl SubscriptionConfig {
     pub fn load(paths: &AccountPaths) -> anyhow::Result<Self> {
-        crate::store::load(&paths.state_dir.join("subscription.json"), "账户池配置")
+        let mut config: Self =
+            crate::store::load(&paths.state_dir.join("subscription.json"), "账户池配置")?;
+        // Existing temporary policies become priority overrides; participation
+        // never expands to accounts that the user did not enable.
+        for id in &config.account_order {
+            if config.account_temporary.contains_key(id) && !config.account_priority.contains(id) {
+                config.account_priority.push(id.clone());
+            }
+        }
+        Ok(config)
     }
 
     pub(crate) fn write_unchecked(&self, paths: &AccountPaths) -> anyhow::Result<()> {
@@ -96,10 +114,17 @@ impl SubscriptionConfig {
             || self.models.len() > 100
             || self.account_reserves.len() > 100
             || self.account_temporary.len() > 100
+            || self.account_priority.len() > 100
         {
             bail!("账户池最多支持 100 个账户和模型");
         }
         let accounts = AccountVault::new(paths.clone()).list_accounts()?;
+        let mut priorities = HashSet::new();
+        for id in &self.account_priority {
+            if !self.account_order.contains(id) || !priorities.insert(id) {
+                bail!("优先池必须由已参与的账户组成，且不能重复");
+            }
+        }
         for (id, reserve) in &self.account_reserves {
             if !accounts.iter().any(|a| a.record_id == *id)
                 || [reserve.short_term_percent, reserve.long_term_percent]
@@ -121,6 +146,9 @@ impl SubscriptionConfig {
             }
             if temp.duration_minutes.is_some_and(|m| m == 0 || m > 43_200) {
                 bail!("临时使用时间须为 1 至 43200 分钟的整数");
+            }
+            if temp.weekly_remaining_percent.is_some_and(|p| p > 100) {
+                bail!("周剩余额度退出阈值须为 0 至 100 的整数");
             }
             if self.account_order.contains(id) && !temp.enabled() {
                 bail!("临时加入的账户请至少设置一项 5h 或周使用额度，或设置临时使用时间");

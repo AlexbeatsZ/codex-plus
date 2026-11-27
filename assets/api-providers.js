@@ -2,7 +2,7 @@
   "use strict";
   const String = window.String;
   const core = window.__codexPlusCore;
-  const VERSION = 18;
+  const VERSION = 19;
   const OBSERVER_KEY = "api";
   const ITEM_ATTR = "data-codex-plus-api-item";
   const ACCOUNT_ATTR = "data-codex-plus-account-item";
@@ -23,8 +23,9 @@
     subscriptionStates: [],
     subscriptionBusy: false,
     accountUsage: new Map(),
+    expandedPolicies: new Set(),
     usageGeneration: 0,
-    // 最近一次成功保存到后端的订阅配置；临时加入但尚未设置条件的账户沿用这里的状态。
+    // 最近一次成功保存到后端的配置，用于刷新时保留尚未保存的编辑。
     subscriptionSaved: null,
     saveState: { kind: "idle", text: "" },
   };
@@ -70,6 +71,12 @@
       .cp-api-dialog input[type="checkbox"] { appearance:auto; display:inline-block; box-sizing:border-box; flex:0 0 auto; width:16px; height:16px; margin:0 6px 0 0; padding:0; vertical-align:middle; accent-color:var(--cp-accent); cursor:pointer; }
       .cp-api-dialog input[type="checkbox"]:focus-visible { outline:2px solid var(--cp-accent); outline-offset:2px; }
       .cp-api-dialog input[type="checkbox"]:disabled { opacity:.5; cursor:default; }
+      .cp-sub-next { padding:12px 14px; border:1px solid var(--cp-border); border-left:3px solid var(--cp-accent); border-radius:8px; font-size:12px; line-height:1.7; background:var(--cp-surface); }
+      .cp-sub-next strong { display:block; font-size:15px; font-weight:600; overflow-wrap:anywhere; }
+      .cp-sub-count { color:var(--cp-muted); font-weight:400; margin-left:5px; }
+      .cp-sub-group .cp-api-list { margin-top:8px; }
+      .cp-sub-group > .cp-api-actions { font-size:12px; }
+      .cp-api-button:focus-visible { outline:2px solid var(--cp-accent); outline-offset:2px; }
       .cp-sub-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:11px 12px; border-bottom:1px solid var(--cp-divider); }
       .cp-sub-row:last-child { border-bottom:0; }
       .cp-sub-row[data-temp="true"] { background:rgba(51,156,255,.045); box-shadow:inset 2px 0 0 var(--cp-accent); }
@@ -104,6 +111,13 @@
       .cp-sub-temp input { width:78px; min-height:28px; padding:4px 7px; }
       .cp-sub-temp-hint { flex:0 0 100%; color:#8cc9ff; font-size:11px; line-height:1.45; }
       .cp-sub-temp-hint:empty { display:none; }
+      .cp-sub-policy { flex:0 0 100%; margin-left:22px; max-width:calc(100% - 22px); box-sizing:border-box; }
+      .cp-sub-policy summary { color:var(--cp-muted); font-size:11px; line-height:24px; cursor:pointer; }
+      .cp-sub-policy summary:focus-visible { outline:2px solid var(--cp-accent); outline-offset:2px; }
+      .cp-sub-policy .cp-sub-temp { margin:5px 0 0; max-width:100%; }
+      .cp-sub-policy .cp-sub-reserve { padding:5px 0 0; }
+      .cp-sub-row-head { flex-wrap:nowrap; }
+      @media(max-width:520px) { .cp-sub-row > label { flex-basis:100%; } .cp-sub-row-actions { margin-left:22px; } }
       .cp-sub-reserve { display:flex; flex:0 0 100%; flex-wrap:wrap; gap:8px 16px; padding-left:22px; box-sizing:border-box; }
       .cp-sub-row .cp-sub-reserve label { display:flex; flex:0 1 auto; align-items:center; gap:6px; color:var(--cp-muted); }
       .cp-sub-reserve input { width:78px; min-height:30px; padding:4px 7px; }
@@ -266,7 +280,8 @@
   }
 
   function hasTemporaryCondition(temp) {
-    return temp?.shortTermPercent != null
+    return temp?.weeklyRemainingPercent != null
+      || temp?.shortTermPercent != null
       || temp?.longTermPercent != null
       || temp?.durationMinutes != null
       || temp?.untilReset === "short"
@@ -285,6 +300,8 @@
       enabled: config?.enabled === true,
       autoActivate: config?.autoActivate === true,
       accountOrder: Array.isArray(config?.accountOrder) ? config.accountOrder.slice() : [],
+      accountPriority: Array.isArray(config?.accountPriority) ? config.accountPriority.slice() : (config?.accountOrder || []).filter(id => config?.accountTemporary?.[id]),
+      forcePriority: config?.forcePriority === true,
       models: (config?.models || []).map((model) => ({ ...model })),
       proxyUrl: String(config?.proxyUrl || ""),
       accountReserves: filterMap(config?.accountReserves),
@@ -337,6 +354,7 @@
 
   function temporaryHintText(id, temp) {
     const parts = [];
+    if (temp?.weeklyRemainingPercent != null) parts.push(`周剩余 ≤ ${temp.weeklyRemainingPercent}% 时恢复自动分配`);
     const shortLimit = temp?.shortTermPercent;
     const longLimit = temp?.longTermPercent;
     if (shortLimit != null && Number.isFinite(Number(shortLimit))) {
@@ -436,6 +454,7 @@
       if (hint.dataset.subTempHint !== id) return;
       hint.textContent = temporaryHintText(id, state.subscription?.accountTemporary?.[id]);
     });
+    syncRoutingDom();
     const loading = anyUsageLoading();
     root.querySelectorAll("[data-sub-refresh-usage], [data-api-usage-refresh]").forEach((button) => {
       button.disabled = loading || !state.subscriptionAccounts.length;
@@ -489,7 +508,24 @@
       }
     }
     const workers = Math.min(3, queue.length);
-    for (let index = 0; index < workers; index += 1) void worker();
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+    if (generation !== state.usageGeneration || !document.getElementById(ROOT_ID)) return;
+    // Usage reads can complete priority goals. Reconcile only an unchanged editor.
+    const isEditing = () => document.activeElement && body()?.contains(document.activeElement) && document.activeElement.matches("input:not([type=checkbox]), select");
+    if (state.view === "subscription" && state.subscriptionLoaded && !isEditing()
+      && JSON.stringify(subscriptionPayload(state.subscription).payload) === JSON.stringify(subscriptionPayload(state.subscriptionSaved || state.subscription).payload)) {
+      const before = JSON.stringify(state.subscription);
+      try {
+        const result = await invoke("/api-providers/subscription/get");
+        if (generation !== state.usageGeneration || state.view !== "subscription" || before !== JSON.stringify(state.subscription) || isEditing()) return;
+        state.subscription = normalizeSubscriptionConfig(result.config, state.subscriptionAccounts);
+        state.subscriptionSaved = clone(state.subscription);
+        state.subscriptionStates = subscriptionStates(result);
+      } catch { /* Keep current values and retry on the next refresh. */ }
+    }
+    const active = document.activeElement;
+    const editing = active && body()?.contains(active) && active.matches("input:not([type=checkbox]), select");
+    if (state.view === "subscription" && !editing) renderSubscription();
   }
 
   function renderList() {
@@ -584,18 +620,65 @@
   }
 
   function reserveEditor(id, reserve, disabled) {
-    return `<div class="cp-sub-reserve">${[["shortTermPercent", "短期保留"], ["longTermPercent", "长期保留（如每周）"]].map(([key, label]) => `<label>${label}<input class="cp-api-input" type="number" min="0" max="100" step="1" placeholder="不限制" aria-label="${label}百分比" data-sub-reserve="${key}" data-sub-reserve-account="${esc(id)}" value="${esc(reserve?.[key] ?? "")}" ${disabled ? "disabled" : ""}>%</label>`).join("")}</div>`;
+    const summary = [["shortTermPercent", "5h"], ["longTermPercent", "周"]].filter(([key]) => reserve?.[key] != null).map(([key, name]) => `${name} ${reserve[key]}%`).join(" · ");
+    return `<details class="cp-sub-policy" data-sub-policy="reserve:${esc(id)}" ${state.expandedPolicies.has(`reserve:${id}`) ? "open" : ""}><summary>保留额度 · ${esc(summary || "不限制")}</summary><div class="cp-sub-reserve">${[["shortTermPercent", "短期保留"], ["longTermPercent", "长期保留（如每周）"]].map(([key, label]) => `<label>${label}<input class="cp-api-input" type="number" min="0" max="100" step="1" placeholder="不限制" aria-label="${label}百分比" data-sub-reserve="${key}" data-sub-reserve-account="${esc(id)}" value="${esc(reserve?.[key] ?? "")}" ${disabled ? "disabled" : ""}>%</label>`).join("")}</div></details>`;
   }
 
   function temporaryEditor(id, temp, disabled) {
-    const percentInputs = [["shortTermPercent", "本次使用 5h 额度"], ["longTermPercent", "本次使用周额度"]]
-      .map(([key, label]) => `<label>${label}<input class="cp-api-input" type="number" min="1" max="100" step="1" placeholder="留空不限" aria-label="${label}百分比" data-sub-temp="${key}" data-sub-temp-account="${esc(id)}" value="${esc(temp?.[key] ?? "")}" ${disabled ? "disabled" : ""}>%</label>`)
-      .join("");
+    const legacy = [["shortTermPercent", "原 5h 使用目标"], ["longTermPercent", "原周使用目标"]].filter(([key]) => temp?.[key] != null)
+      .map(([key, label]) => `<label>${label}<input class="cp-api-input" type="number" min="1" max="100" step="1" aria-label="${label}百分比" data-sub-temp="${key}" data-sub-temp-account="${esc(id)}" value="${esc(temp[key])}" ${disabled ? "disabled" : ""}>%</label>`).join("");
+    const percentInputs = `<label>周剩余达到<input class="cp-api-input" type="number" min="0" max="100" step="1" placeholder="不限" aria-label="周剩余额度退出阈值" data-sub-temp="weeklyRemainingPercent" data-sub-temp-account="${esc(id)}" value="${esc(temp?.weeklyRemainingPercent ?? "")}" ${disabled ? "disabled" : ""}>% 后恢复自动</label>${legacy}`;
     const durationInput = `<label>有效时间<input class="cp-api-input" type="number" min="1" max="43200" step="1" placeholder="留空不限" aria-label="临时使用时间（分钟）" data-sub-temp="durationMinutes" data-sub-temp-account="${esc(id)}" value="${esc(temp?.durationMinutes ?? "")}" ${disabled ? "disabled" : ""}>min</label>`;
-    const presetButtons = [["short", "直到下一次 5h 额度刷新为止"], ["long", "直到下一次周额度刷新为止"]]
+    const presetButtons = [["long", "周额度重置后恢复自动"], ...(temp?.untilReset === "short" ? [["short", "原 5h 重置条件"]] : [])]
       .map(([preset, label]) => `<button type="button" class="cp-api-button cp-sub-temp-preset" data-sub-temp-preset="${preset}" data-sub-temp-account="${esc(id)}" data-active="${temp?.untilReset === preset}" aria-pressed="${temp?.untilReset === preset}" ${disabled ? "disabled" : ""}>${label}</button>`)
       .join("");
-    return `<div class="cp-sub-temp"><div class="cp-sub-temp-row">${percentInputs}</div><div class="cp-sub-temp-row">${durationInput}<div class="cp-sub-temp-presets">${presetButtons}</div></div><div class="cp-sub-temp-hint" data-sub-temp-hint="${esc(id)}">${esc(temporaryHintText(id, temp))}</div></div>`;
+    return `<details class="cp-sub-policy" data-sub-policy="exit:${esc(id)}" ${state.expandedPolicies.has(`exit:${id}`) ? "open" : ""}><summary data-sub-exit-summary="${esc(id)}">退出条件 · ${esc(temporaryHintText(id, temp) || "手动移除前保持优先")}</summary><div class="cp-sub-temp"><div class="cp-sub-temp-row">${percentInputs}</div><div class="cp-sub-temp-row">${durationInput}<div class="cp-sub-temp-presets">${presetButtons}</div></div><div class="cp-sub-temp-hint" data-sub-temp-hint="${esc(id)}">${esc(temporaryHintText(id, temp) || "未设条件：保持优先，直到手动移除；5h 耗尽仅暂停使用。")}</div></div></details>`;
+  }
+
+  function routingInfo(id) {
+    const entry = state.accountUsage.get(String(id));
+    const quota = entry?.usage;
+    const windows = quota ? usageWindows(quota) : [];
+    const week = windows.find(w => Number(w.limit_window_seconds ?? w.limitWindowSeconds) === 604800)
+      || windows.find(w => windowKind(w) === "long");
+    const reset = Number(week?.reset_at ?? week?.resetAt);
+    const seconds = reset - Date.now() / 1000;
+    const remaining = week ? remainingPercent(week) : null;
+    const score = remaining != null && seconds > 0 ? remaining * 86400 / seconds : null;
+    const rate = quota?.rate_limit ?? quota?.rateLimit;
+    const reserve = state.subscription?.accountReserves?.[id];
+    const health = state.subscriptionStates.filter(item => item.recordId === id);
+    const blocked = health.some(item => item.blocked || Number(item.retryAt) > Date.now() / 1000);
+    const known = entry?.status === "ok" && windows.length > 0 && windows.every(w => {
+      const resetAt = Number(w.reset_at ?? w.resetAt);
+      return remainingPercent(w) != null && resetAt > Date.now() / 1000;
+    });
+    const exhausted = rate?.allowed === false || rate?.limit_reached === true
+      || windows.some(w => remainingPercent(w) === 0);
+    const reserved = windows.some(w => {
+      const threshold = windowKind(w) === "short" ? reserve?.shortTermPercent : reserve?.longTermPercent;
+      return threshold != null && remainingPercent(w) != null && remainingPercent(w) <= threshold;
+    });
+    const ready = !blocked && known && !exhausted && !reserved;
+    const reason = blocked ? "暂不可用" : !known ? "额度待确认" : exhausted ? "额度耗尽，恢复后继续参与" : reserved ? "已达保留额度" : "可用";
+    return { ready, score, text: `${reason}${score != null ? ` · 周评分 ${score.toFixed(1)}%/天` : " · 周评分待确认"}` };
+  }
+
+  function syncRoutingDom() {
+    const root = body(), config = state.subscription;
+    if (!root || state.view !== "subscription" || !config) return;
+    root.querySelectorAll("[data-sub-routing]").forEach(slot => {
+      slot.textContent = routingInfo(slot.dataset.subRouting).text;
+    });
+    const slot = root.querySelector("[data-sub-next]");
+    if (!slot) return;
+    const priority = config.accountPriority || [];
+    const automatic = config.accountOrder.filter(id => !priority.includes(id)).sort((a, b) => (routingInfo(b).score ?? -1) - (routingInfo(a).score ?? -1));
+    const next = [...priority, ...automatic].find(id => routingInfo(id).ready);
+    const account = state.subscriptionAccounts.find(a => a.recordId === next);
+    slot.innerHTML = !config.enabled ? "订阅 API 已停用" : next
+      ? `新会话预计使用<strong>${esc(account?.email || account?.name || next)}</strong>来自${priority.includes(next) ? "额外优先池" : "自动分配池"}`
+      : "新会话路由目标：等待可用账户与额度确认";
   }
 
   function renderSubscription() {
@@ -605,26 +688,28 @@
     const busy = state.subscriptionBusy;
     const order = config.accountOrder;
     const accounts = new Map(state.subscriptionAccounts.map(a => [String(a.recordId), a]));
-    const ids = [...order, ...accounts.keys()].filter((id, i, all) => all.indexOf(id) === i);
+    const priority = config.accountPriority || [];
+    const autoIds = order.filter(id => !priority.includes(id)).sort((a, b) => (routingInfo(b).score ?? -1) - (routingInfo(a).score ?? -1));
+    const otherIds = [...accounts.keys()].filter(id => !order.includes(id));
     const usageLoading = anyUsageLoading();
-    const rows = ids.map(id => {
-      const account = accounts.get(id), index = order.indexOf(id);
+    const row = (id) => {
+      const account = accounts.get(id), index = order.indexOf(id), rank = priority.indexOf(id);
+      const prioritized = rank >= 0;
       const tempActive = isTemporary(config, id);
-      const healthList = accountHealthItems(id);
-      const completed = healthList.some((item) => item.kind === "temporary_completed");
-      const badge = tempActive
-        ? '<span class="cp-sub-badge" data-kind="temp">临时加入</span>'
-        : index >= 0
-          ? '<span class="cp-sub-badge" data-kind="pool">常驻</span>'
-          : completed
-            ? '<span class="cp-sub-badge" data-kind="done">已自动移出</span>'
-            : "";
-      const healthHtml = healthList.map(item => `<span class="cp-sub-health" data-kind="${esc(item.kind)}">${esc(item.text)}</span>`).join("");
-      const tempButtonLabel = tempActive ? "取消临时" : index >= 0 ? "转为临时" : "临时加入";
-      return `<div class="cp-sub-row" data-temp="${tempActive}"><label><div class="cp-sub-row-head"><input type="checkbox" data-sub-account="${esc(id)}" ${index >= 0 ? "checked" : ""} ${busy ? "disabled" : ""}><span>${index >= 0 ? `${index + 1}. ` : ""}${esc(account?.email || account?.name || "账户已删除，请移出")}${account?.plan ? ` · ${esc(account.plan)}` : ""}</span>${badge}</div>${healthHtml}</label><div class="cp-sub-row-actions">${account ? `<button type="button" class="cp-api-button" data-sub-temp-toggle="${esc(id)}" ${busy ? "disabled" : ""}>${tempButtonLabel}</button>` : ""}<button type="button" class="cp-api-button" data-sub-up="${esc(id)}" aria-label="上移账户" ${busy || index <= 0 ? "disabled" : ""}>↑</button><button type="button" class="cp-api-button" data-sub-down="${esc(id)}" aria-label="下移账户" ${busy || index < 0 || index === order.length - 1 ? "disabled" : ""}>↓</button></div>${account ? `<div class="cp-sub-usage" data-sub-usage-account="${esc(id)}">${accountUsageMarkup(id)}</div>` : ""}${account && tempActive ? temporaryEditor(id, config.accountTemporary?.[id], busy) : ""}${account ? reserveEditor(id, config.accountReserves?.[id], busy || index < 0) : ""}</div>`;
-    }).join("");
-    root.innerHTML = `${status()}<div class="cp-api-form"><div class="cp-api-actions"><strong>ChatGPT 订阅 API</strong><label><input type="checkbox" data-sub-enabled ${config.enabled ? "checked" : ""} ${busy ? "disabled" : ""}> 启用</label></div><div class="cp-api-actions"><label class="cp-sub-note"><input type="checkbox" data-sub-auto-activate ${config.autoActivate ? "checked" : ""} ${busy ? "disabled" : ""}> 自动激活其他账户的 5h 计时</label><button type="button" class="cp-api-button" data-sub-refresh-usage ${busy || usageLoading || !state.subscriptionAccounts.length ? "disabled" : ""}>${usageLoading ? "刷新中…" : "刷新额度"}</button></div><div class="cp-api-list">${rows || '<div class="cp-api-row">暂无导入账户，请先添加账户。</div>'}</div><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-accounts ${busy ? "disabled" : ""}>管理导入账户</button><span></span></div><div class="cp-api-actions"><span>模型与显示名称</span><button type="button" class="cp-api-button" data-sub-discover ${busy || !order.length ? "disabled" : ""}>${busy ? "处理中…" : "读取模型"}</button></div>${modelEditor()}<div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-back ${busy ? "disabled" : ""}>返回</button><span class="cp-sub-note">改动会自动保存。</span></div></div>`;
+      const info = routingInfo(id);
+      const healthHtml = accountHealthItems(id).map(item => `<span class="cp-sub-health" data-kind="${esc(item.kind)}">${esc(item.text)}</span>`).join("");
+      const label = account?.email || account?.name || "账户已删除，请移出";
+      return `<div class="cp-sub-row" data-temp="${prioritized}" data-sub-row="${esc(id)}"><label><div class="cp-sub-row-head"><input type="checkbox" data-sub-account="${esc(id)}" aria-label="允许使用 ${esc(label)} 的额度" ${index >= 0 ? "checked" : ""} ${busy ? "disabled" : ""}><span>${prioritized ? `${rank + 1}. ` : ""}${esc(label)}${account?.plan ? ` · ${esc(account.plan)}` : ""}</span><span class="cp-sub-badge" data-kind="${prioritized ? "temp" : "pool"}">${index < 0 ? "未参与" : prioritized ? "优先" : "自动"}</span></div>${healthHtml}<span class="cp-sub-health" data-sub-routing="${esc(id)}">${esc(info.text)}</span></label><div class="cp-sub-row-actions">${account ? `<button type="button" class="cp-api-button" data-sub-temp-toggle="${esc(id)}" aria-label="${prioritized ? "恢复自动分配" : "加入优先池"} ${esc(label)}" ${busy ? "disabled" : ""}>${prioritized ? "× 恢复自动" : "加入优先池"}</button>` : ""}${prioritized ? `<button type="button" class="cp-api-button" data-sub-up="${esc(id)}" aria-label="上移账户 ${esc(label)}" ${busy || rank <= 0 ? "disabled" : ""}>↑</button><button type="button" class="cp-api-button" data-sub-down="${esc(id)}" aria-label="下移账户 ${esc(label)}" ${busy || rank === priority.length - 1 ? "disabled" : ""}>↓</button>` : ""}</div>${account ? `<div class="cp-sub-usage" data-sub-usage-account="${esc(id)}">${accountUsageMarkup(id)}</div>` : ""}${account && prioritized ? temporaryEditor(id, config.accountTemporary?.[id], busy) : ""}${account ? reserveEditor(id, config.accountReserves?.[id], busy || index < 0) : ""}</div>`;
+    };
+    const group = (title, ids, hint) => `<section class="cp-sub-group"><div class="cp-api-actions"><strong>${title} <span class="cp-sub-count">${ids.length}</span></strong><span>${hint}</span></div><div class="cp-api-list">${ids.length ? ids.map(row).join("") : '<div class="cp-api-row cp-sub-note">暂无账户</div>'}</div></section>`;
+    root.innerHTML = `${status()}<div class="cp-api-form"><div class="cp-api-actions"><strong>账号路由管理</strong><label><input type="checkbox" data-sub-enabled ${config.enabled ? "checked" : ""} ${busy ? "disabled" : ""}> 启用订阅 API</label></div><div class="cp-sub-next" data-sub-next></div><div class="cp-api-actions"><label class="cp-sub-note"><input type="checkbox" data-sub-force-priority ${config.forcePriority ? "checked" : ""} ${busy ? "disabled" : ""}> 强制优先（覆盖已有会话的账户绑定）</label><button type="button" class="cp-api-button" data-sub-refresh-usage ${busy || usageLoading || !state.subscriptionAccounts.length ? "disabled" : ""}>${usageLoading ? "刷新中…" : "刷新额度"}</button></div><p class="cp-sub-note">默认只为新会话选账户，已有会话沿用原账户。5h 额度负责可用性，自动分配按周剩余额度 ÷ 距重置天数排序。</p>${group("额外优先池", priority, "按手动顺序使用")}${group("自动分配池", autoIds, "按周额度评分排序")}${otherIds.length ? group("未参与", otherIds, "勾选后加入自动分配") : ""}<label class="cp-sub-note"><input type="checkbox" data-sub-auto-activate ${config.autoActivate ? "checked" : ""} ${busy ? "disabled" : ""}> 自动激活其他账户的 5h 计时</label><div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-accounts ${busy ? "disabled" : ""}>管理导入账户</button><span></span></div><div class="cp-api-actions"><span>模型与显示名称</span><button type="button" class="cp-api-button" data-sub-discover ${busy || !order.length ? "disabled" : ""}>${busy ? "处理中…" : "读取模型"}</button></div>${modelEditor()}<div class="cp-api-actions"><button type="button" class="cp-api-button" data-sub-back ${busy ? "disabled" : ""}>返回</button><span class="cp-sub-note">改动会自动保存。</span></div></div>`;
+    syncRoutingDom();
+    root.querySelectorAll("[data-sub-policy]").forEach(details => details.addEventListener("toggle", () => {
+      if (details.open) state.expandedPolicies.add(details.dataset.subPolicy);
+      else state.expandedPolicies.delete(details.dataset.subPolicy);
+    }));
     const saveSoon = (delay = 0) => subscriptionAutosave.schedule(delay);
+    root.querySelector("[data-sub-force-priority]").addEventListener("change", e => { config.forcePriority = e.target.checked; saveSoon(); });
     root.querySelector("[data-sub-auto-activate]").addEventListener("change", e => { config.autoActivate = e.target.checked; saveSoon(); });
     root.querySelector("[data-sub-enabled]").addEventListener("change", e => { config.enabled = e.target.checked; saveSoon(); });
     root.querySelectorAll("[data-sub-reserve]").forEach(input => input.addEventListener("input", () => {
@@ -644,7 +729,9 @@
         btn.setAttribute("aria-pressed", String(active));
       });
       const hint = root.querySelector(`[data-sub-temp-hint="${id}"]`);
-      if (hint) hint.textContent = temporaryHintText(id, temp);
+      if (hint) hint.textContent = temporaryHintText(id, temp) || "未设条件：保持优先，直到手动移除；5h 耗尽仅暂停使用。";
+      const summary = root.querySelector(`[data-sub-exit-summary="${id}"]`);
+      if (summary) summary.textContent = `退出条件 · ${temporaryHintText(id, temp) || "手动移除前保持优先"}`;
     };
     root.querySelectorAll("[data-sub-temp]").forEach(input => input.addEventListener("input", () => {
       const id = input.dataset.subTempAccount;
@@ -676,31 +763,30 @@
       const id = input.dataset.subAccount;
       config.accountOrder = order.filter(item => item !== id);
       if (input.checked) config.accountOrder.push(id);
-      else delete config.accountTemporary[id];
+      else { delete config.accountTemporary[id]; config.accountPriority = config.accountPriority.filter(item => item !== id); }
       renderSubscription();
       saveSoon();
     }));
     root.querySelectorAll("[data-sub-temp-toggle]").forEach(button => button.addEventListener("click", () => {
       syncModels(root);
       const id = button.dataset.subTempToggle;
-      if (isTemporary(config, id)) {
-        config.accountOrder = order.filter(item => item !== id);
+      if (config.accountPriority.includes(id)) {
+        config.accountPriority = config.accountPriority.filter(item => item !== id);
         delete config.accountTemporary[id];
-        renderSubscription();
-        saveSoon();
-        return;
+      } else {
+        if (!order.includes(id)) config.accountOrder.push(id);
+        config.accountPriority.push(id);
       }
-      if (!order.includes(id)) config.accountOrder.push(id);
-      config.accountTemporary[id] ||= { shortTermPercent: null, longTermPercent: null, durationMinutes: null, untilReset: null };
       renderSubscription();
       saveSoon();
-      root.querySelector(`[data-sub-temp="shortTermPercent"][data-sub-temp-account="${id}"]`)?.focus();
+      root.querySelector(`[data-sub-temp="weeklyRemainingPercent"][data-sub-temp-account="${id}"]`)?.focus();
     }));
     const move = (id, delta) => {
       syncModels(root);
-      const index = order.indexOf(id);
-      if (index < 0 || index + delta < 0 || index + delta >= order.length) return;
-      [order[index], order[index + delta]] = [order[index + delta], order[index]];
+      const priorities = config.accountPriority;
+      const index = priorities.indexOf(id);
+      if (index < 0 || index + delta < 0 || index + delta >= priorities.length) return;
+      [priorities[index], priorities[index + delta]] = [priorities[index + delta], priorities[index]];
       renderSubscription();
       saveSoon();
       root.querySelector(`[${delta < 0 ? "data-sub-up" : "data-sub-down"}="${id}"]`)?.focus();
@@ -736,30 +822,15 @@
     finally { state.subscriptionBusy = false; if (state.view === "subscription") renderSubscription(); }
   }
 
-  // 生成要保存的配置：临时加入但还没设置任何退出条件的账户先保持上次保存时的状态，
-  // 避免一点“临时加入”就以常驻身份进入账户池。
+  // Priority is valid without an exit condition. Empty policies are not persisted.
   function subscriptionPayload(config) {
-    const saved = state.subscriptionSaved || { accountOrder: [], accountTemporary: {} };
-    const savedOrder = new Set(saved.accountOrder || []);
-    const pending = new Set(config.accountOrder.filter((id) =>
-      Object.prototype.hasOwnProperty.call(config.accountTemporary || {}, id)
-      && !hasTemporaryCondition(config.accountTemporary[id])));
-    const accountOrder = config.accountOrder.filter((id) => !pending.has(id) || savedOrder.has(id));
-    const accountTemporary = {};
-    for (const id of accountOrder) {
-      const temp = pending.has(id) ? saved.accountTemporary?.[id] : config.accountTemporary?.[id];
-      if (temp && hasTemporaryCondition(temp)) accountTemporary[id] = { ...temp };
-    }
-    return {
-      payload: {
-        ...config,
-        accountOrder,
-        accountTemporary,
-        accountReserves: clone(config.accountReserves || {}),
-        models: state.models.map(m => ({ modelId: m.modelId, displayName: m.displayName, visible: m.visible })),
-      },
-      pending: pending.size,
-    };
+    return { payload: { ...config,
+      accountOrder: config.accountOrder.slice(),
+      accountPriority: (config.accountPriority || []).filter(id => config.accountOrder.includes(id)),
+      accountTemporary: clone(Object.fromEntries(Object.entries(config.accountTemporary || {}).filter(([id, temp]) => config.accountPriority.includes(id) && hasTemporaryCondition(temp)))),
+      accountReserves: clone(config.accountReserves || {}),
+      models: state.models.map(m => ({ modelId: m.modelId, displayName: m.displayName, visible: m.visible })),
+    }, pending: 0 };
   }
 
   async function saveSubscriptionNow() {
@@ -775,14 +846,21 @@
     setSaveState("saving");
     try {
       const result = await invoke("/api-providers/subscription/save", payload);
-      state.subscriptionSaved = clone(payload);
+      const unchanged = JSON.stringify(subscriptionPayload(config).payload) === JSON.stringify(payload);
+      state.subscriptionSaved = clone(result.config || payload);
+      let configChanged = false;
+      if (result.config && unchanged) {
+        const normalized = normalizeSubscriptionConfig(result.config, state.subscriptionAccounts);
+        configChanged = JSON.stringify(normalized) !== JSON.stringify(config);
+        Object.assign(config, normalized);
+      }
       const previousStates = JSON.stringify(state.subscriptionStates);
       state.subscriptionStates = subscriptionStates(result);
       setSaveState("saved", pending ? "已自动保存；临时加入的账户设置退出条件后才会生效" : "");
       void refreshProvidersAfterSave();
       const active = document.activeElement;
       const editing = active && body()?.contains(active) && active.matches("input:not([type=checkbox]), select");
-      if (state.view === "subscription" && previousStates !== JSON.stringify(state.subscriptionStates) && !editing) renderSubscription();
+      if (state.view === "subscription" && (configChanged || previousStates !== JSON.stringify(state.subscriptionStates)) && !editing) renderSubscription();
     } catch (error) { setSaveState("error", `未保存：${error.message}`); }
   }
 
