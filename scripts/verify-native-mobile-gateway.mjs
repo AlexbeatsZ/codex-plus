@@ -19,9 +19,15 @@ fs.mkdirSync(clientHome);
 fs.copyFileSync(path.join(home, "config.toml"), path.join(clientHome, "config.toml"));
 fs.writeFileSync(path.join(clientHome, "auth.json"), JSON.stringify(auth));
 fs.writeFileSync(path.join(home, "models_cache.json"), JSON.stringify({ models: [{ ...template, slug: "gpt-test", display_name: "Official fixture", use_responses_lite: false }] }));
+// Thread metadata is fixed when created. Seed all synthetic route capabilities
+// explicitly so this protocol fixture cannot race the native catalog refresh.
+const catalogFile = path.join(clientHome, "fixture-models.json");
+fs.writeFileSync(catalogFile, JSON.stringify({ models: ["gpt-test", externalRoute, poolRoute].map(slug => ({
+  ...template, slug, display_name: slug, tool_mode: "code_mode_only", supports_search_tool: true, use_responses_lite: false,
+})) }));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/TOKEN|KEY|AUTH|PROXY|CODEX|OPENAI/.test(key)));
 env.CODEX_HOME = clientHome;
-const app = spawn(binary, ["app-server", "--listen", "stdio://", "-c", "analytics.enabled=false"], { cwd: home, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+const app = spawn(binary, ["app-server", "--listen", "stdio://", "-c", "analytics.enabled=false", "-c", `model_catalog_json=${JSON.stringify(catalogFile)}`], { cwd: home, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 const lines = createInterface({ input: app.stdout });
 let sequence = 0, stderr = "";
 const calls = new Map(), waiters = [];
