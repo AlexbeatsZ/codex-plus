@@ -522,6 +522,7 @@ async fn native_mcp_auto_review_preserves_allow_and_deny_for_pool_and_external_a
         ),
     ] {
         let output = tokio::process::Command::new("node")
+            .env("CODEX_PLUS_BROKER_TOKEN", broker.token())
             .arg(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("scripts/verify-native-auto-review.mjs"),
@@ -922,6 +923,7 @@ async fn native_inherited_history_compaction_and_pool_turn() {
     .await
     .unwrap();
     let output = tokio::process::Command::new("node")
+        .env("CODEX_PLUS_BROKER_TOKEN", broker.token())
         .arg(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("scripts/verify-native-pool-compaction.mjs"),
