@@ -859,7 +859,7 @@ test("fixed subscription API configures account order and model visibility witho
   const dom=setup(async(path,payload)=>{
     calls.push({path,payload:JSON.parse(JSON.stringify(payload||{}))});
     if(path==="/api-providers/list")return {status:"ok",providers:[fixed]};
-    if(path==="/api-providers/subscription/get")return {status:"ok",config:{enabled:false,accountOrder:[a,b],models,proxyUrl:""},accounts:[{recordId:a,email:"a@example.test"},{recordId:b,email:"b@example.test"}]};
+    if(path==="/api-providers/subscription/get")return {status:"ok",config:{enabled:false,accountOrder:[a,b],accountPriority:[a,b],models,proxyUrl:""},accounts:[{recordId:a,email:"a@example.test"},{recordId:b,email:"b@example.test"}]};
     if(path==="/api-providers/subscription/save")return {status:"ok",config:payload};
     return {status:"ok",models:[]};
   });
@@ -874,7 +874,7 @@ test("fixed subscription API configures account order and model visibility witho
   const enabled=dom.window.document.querySelector('[data-sub-enabled]');enabled.checked=true;enabled.dispatchEvent(new dom.window.Event("change"));
   await dom.window.__codexPlusApi.flushSaves();await flush();
   const saved=calls.filter(c=>c.path==="/api-providers/subscription/save").at(-1).payload;
-  assert.deepEqual(saved.accountOrder,[b,a]);assert.equal(saved.enabled,true);assert.equal(saved.models[0].displayName,"Custom name");
+  assert.deepEqual(saved.accountOrder,[a,b]);assert.deepEqual(saved.accountPriority,[b,a]);assert.equal(saved.enabled,true);assert.equal(saved.models[0].displayName,"Custom name");
   assert.equal(calls.some(c=>c.path==="/accounts/switch"),false);
   assert.ok(dom.window.document.querySelector('[data-codex-plus-account-item]'));
   assert.match(dom.window.document.body.textContent,/已自动保存/);

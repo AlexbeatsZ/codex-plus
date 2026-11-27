@@ -7,15 +7,16 @@ const coreScript = await readFile(new URL("../assets/core.js", import.meta.url),
 const script = await readFile(new URL("../assets/api-providers.js", import.meta.url), "utf8");
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
 
-async function setup(config = {}, quotaStates = []) {
+async function setup(config = {}, quotaStates = [], usages = {}) {
   const saves = [];
   const dom = new JSDOM("<!doctype html><html><head><style>input { appearance:none }</style></head><body></body></html>", { runScripts: "dangerously", url: "app://-/index.html" });
   dom.window.codexPlusInvoke = async (path, payload) => {
     if (path === "/api-providers/list") return { status: "ok", providers: [{ id: "chatgpt-subscription", kind: "subscription", name: "ChatGPT 订阅", enabled: true, models: [] }] };
     if (path === "/api-providers/subscription/get") return {
-      status: "ok", config: { enabled: true, accountOrder: ["a", "b"], models: [], proxyUrl: "", ...config },
+      status: "ok", config: { enabled: true, accountPriority: ["a", "b"], accountOrder: ["a", "b"], models: [], proxyUrl: "", ...config },
       accounts: [{ recordId: "a", email: "a@example.test" }, { recordId: "b", email: "b@example.test" }], quotaStates,
     };
+    if (path === "/accounts/usage") return { status: "ok", usage: usages[payload.recordId] };
     if (path === "/api-providers/subscription/save") { saves.push(structuredClone(payload)); return { status: "ok", config: payload }; }
     return { status: "ok", models: [] };
   };
@@ -62,7 +63,8 @@ test("legacy configs leave reserve inputs blank and each account saves independe
     dom.window.document.querySelector('[data-sub-up="b"]').click();
     assert.equal(input("a", "shortTermPercent").value, "21");
     await dom.window.__codexPlusApi.flushSaves(); await flush();
-    assert.deepEqual(saves.at(-1).accountOrder, ["b", "a"]);
+    assert.deepEqual(saves.at(-1).accountOrder, ["a", "b"]);
+    assert.deepEqual(saves.at(-1).accountPriority, ["b", "a"]);
     assert.deepEqual(saves.at(-1).accountReserves, { a: { shortTermPercent: 21, longTermPercent: 30 }, b: { longTermPercent: 0 } });
   } finally { dom.window.close(); }
 });
@@ -154,65 +156,41 @@ test("API overview and subscription config display account quota in UTC+8 and su
     assert.doesNotMatch(bodyText, /UTC\+8|HTTP 代理/);
     assert.equal(dom.window.document.querySelector('[data-sub-proxy]'), null);
 
-    // Click "临时加入" on unchecked account b
+    // A priority override is immediately valid without an exit condition.
     dom.window.document.querySelector('[data-sub-temp-toggle="b"]').click();
-    assert.equal(dom.window.document.querySelector('[data-sub-account="b"]').checked, true);
-
-    // Auto-save keeps a temporary account without any exit condition out of the pool
     await dom.window.__codexPlusApi.flushSaves(); await flush();
-    assert.deepEqual(saves.at(-1).accountOrder, ["a"]);
+    assert.deepEqual(saves.at(-1).accountOrder, ["a", "b"]);
+    assert.deepEqual(saves.at(-1).accountPriority, ["b"]);
     assert.deepEqual(saves.at(-1).accountTemporary, {});
-    assert.match(dom.window.document.querySelector("[data-api-save-state]").textContent, /设置退出条件后才会生效/);
+    assert.match(dom.window.document.body.textContent, /额外优先池|自动分配池/);
+    assert.match(dom.window.document.querySelector('[data-sub-temp-hint="b"]').textContent, /直到手动移除/);
 
-    // Click preset "直到下一次 5h 额度刷新为止", then switch to custom duration, then toggle weekly reset preset
-    const presetShort = () => dom.window.document.querySelector('[data-sub-temp-preset="short"][data-sub-temp-account="b"]');
-    const presetLong = () => dom.window.document.querySelector('[data-sub-temp-preset="long"][data-sub-temp-account="b"]');
-    const durationInput = () => dom.window.document.querySelector('[data-sub-temp-account="b"][data-sub-temp="durationMinutes"]');
-    const hint = () => dom.window.document.querySelector('[data-sub-temp-hint="b"]').textContent;
-
-    presetShort().click();
-    assert.equal(presetShort().dataset.active, "true");
-    assert.equal(presetShort().getAttribute("aria-pressed"), "true");
-    assert.match(hint(), /直到下次 5h 额度刷新（11月19日 18:31）自动退出/);
-
-    // Typing custom minutes clears preset selection
-    durationInput().value = "45";
-    durationInput().dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-    assert.equal(presetShort().dataset.active, "false");
-    assert.match(hint(), /限时 45 min 自动退出/);
-
-    // Clicking weekly preset clears custom minutes and toggles back off if clicked again
-    presetLong().click();
-    assert.equal(presetLong().dataset.active, "true");
-    assert.equal(durationInput().value, "");
-    assert.match(hint(), /直到下次周额度刷新（11月20日 18:31）自动退出/);
-    presetLong().click();
-    assert.equal(presetLong().dataset.active, "false");
-    presetLong().click();
-    assert.equal(presetLong().dataset.active, "true");
-
-    // Combine with 5h temporary quota and verify live predicted stop % + time exit hint
-    const tempShort = dom.window.document.querySelector('[data-sub-temp-account="b"][data-sub-temp="shortTermPercent"]');
-    tempShort.value = "30";
-    tempShort.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-    assert.match(hint(), /5h 剩余 ≤ 50% 自动退出 · 直到下次周额度刷新（11月20日 18:31）自动退出/);
-
-    // Also switch account a to time-only temporary mode (custom durationMinutes)
-    dom.window.document.querySelector('[data-sub-temp-toggle="a"]').click();
+    const preset = () => dom.window.document.querySelector('[data-sub-temp-preset="long"][data-sub-temp-account="b"]');
+    const duration = () => dom.window.document.querySelector('[data-sub-temp="durationMinutes"][data-sub-temp-account="b"]');
+    const target = dom.window.document.querySelector('[data-sub-temp="weeklyRemainingPercent"][data-sub-temp-account="b"]');
+    preset().click();
+    assert.equal(preset().getAttribute("aria-pressed"), "true");
+    duration().value = "45";
+    duration().dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    assert.equal(preset().getAttribute("aria-pressed"), "false");
+    preset().click();
+    assert.equal(duration().value, "");
+    target.value = "10";
+    target.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    const force = dom.window.document.querySelector('[data-sub-force-priority]');
+    force.click();
     await dom.window.__codexPlusApi.flushSaves(); await flush();
-    // a 原本常驻池内：转为临时但还没设条件时保持常驻，不会被移出
-    assert.deepEqual(saves.at(-1).accountOrder, ["a", "b"]);
-    assert.equal(saves.at(-1).accountTemporary.a, undefined);
-    const aDuration = dom.window.document.querySelector('[data-sub-temp-account="a"][data-sub-temp="durationMinutes"]');
-    aDuration.value = "25";
-    aDuration.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    assert.equal(saves.at(-1).forcePriority, true);
+    assert.equal(saves.at(-1).accountTemporary.b.weeklyRemainingPercent, 10);
+    assert.equal(saves.at(-1).accountTemporary.b.untilReset, "long");
+    assert.match(dom.window.document.querySelector('[data-sub-temp-hint="b"]').textContent, /周剩余 ≤ 10% 时恢复自动分配/);
 
+    // Manual removal returns to automatic routing without revoking participation.
+    dom.window.document.querySelector('[data-sub-temp-toggle="b"]').click();
     await dom.window.__codexPlusApi.flushSaves(); await flush();
     assert.deepEqual(saves.at(-1).accountOrder, ["a", "b"]);
-    assert.deepEqual(saves.at(-1).accountTemporary, {
-      a: { shortTermPercent: null, longTermPercent: null, durationMinutes: 25, untilReset: null },
-      b: { shortTermPercent: 30, longTermPercent: null, durationMinutes: null, untilReset: "long" },
-    });
+    assert.deepEqual(saves.at(-1).accountPriority, []);
+    assert.deepEqual(saves.at(-1).accountTemporary, {});
   } finally { dom.window.close(); }
 });
 
@@ -223,7 +201,8 @@ test("every subscription change is saved automatically without a save button", a
     dom.window.document.querySelector('[data-sub-up="b"]').click();
     await flush();
     assert.equal(saves.length, 1);
-    assert.deepEqual(saves[0].accountOrder, ["b", "a"]);
+    assert.deepEqual(saves[0].accountOrder, ["a", "b"]);
+    assert.deepEqual(saves[0].accountPriority, ["b", "a"]);
     assert.match(dom.window.document.querySelector("[data-api-save-state]").textContent, /已自动保存/);
     set("a", "shortTermPercent", "15");
     await flush();
@@ -283,4 +262,36 @@ test("external API edits save automatically once required fields are filled", as
     assert.equal(saves[1].name, "Demo 2");
     assert.equal(dom.window.document.querySelector('[data-api-form] button[type="submit"]'), null);
   } finally { dom.window.close(); }
+});
+
+
+test("automatic pool ranks weekly quotas, previews new sessions and keeps exhausted priority accounts", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const usage = (short, week, days) => ({ rate_limit: {
+    primary_window: { used_percent: short, limit_window_seconds: 18000, reset_at: now + 3600 },
+    secondary_window: { used_percent: week, limit_window_seconds: 604800, reset_at: now + days * 86400 },
+  } });
+  const { dom, saves } = await setup({ accountPriority: [] }, [], { a: usage(20, 40, 1), b: usage(10, 20, 4) });
+  try {
+    const next = () => dom.window.document.querySelector('[data-sub-next]').textContent;
+    assert.match(next(), /a@example.test/);
+    assert.match(next(), /自动分配池/);
+    assert.match(dom.window.document.querySelector('[data-sub-routing="a"]').textContent, /60.0%\/天/);
+    assert.equal(dom.window.document.querySelector('[data-sub-up="a"]'), null);
+    dom.window.document.querySelector('[data-sub-temp-toggle="b"]').click();
+    assert.match(next(), /b@example.test/);
+    assert.match(next(), /额外优先池/);
+    const limit = dom.window.document.querySelector('[data-sub-temp="weeklyRemainingPercent"][data-sub-temp-account="b"]');
+    limit.value = "0";
+    limit.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    await dom.window.__codexPlusApi.flushSaves();
+    assert.equal(saves.at(-1).accountTemporary.b.weeklyRemainingPercent, 0);
+  } finally { dom.window.close(); }
+
+  const exhausted = await setup({ accountPriority: ["b"] }, [], { a: usage(20, 40, 1), b: usage(100, 20, 4) });
+  try {
+    assert.match(exhausted.dom.window.document.querySelector('[data-sub-next]').textContent, /a@example.test/);
+    assert.match(exhausted.dom.window.document.querySelector('[data-sub-routing="b"]').textContent, /额度耗尽，恢复后继续参与/);
+    assert.ok(exhausted.dom.window.document.querySelector('[data-sub-temp-toggle="b"]').textContent.includes("恢复自动"));
+  } finally { exhausted.dom.window.close(); }
 });

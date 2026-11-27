@@ -75,8 +75,15 @@ async fn fixture() -> Fixture {
             },
         )]),
         account_temporary: HashMap::new(),
+        ..Default::default()
     };
     config.save(&paths).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/usage"))
+        .and(header("chatgpt-account-id", "b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(usage(20.0, 80.0)))
+        .mount(&server)
+        .await;
     let mut router = SubscriptionApi::new(paths);
     router.native_base = server.uri();
     router.refresh_url = format!("{}/oauth/token", server.uri());
@@ -201,7 +208,7 @@ async fn config_is_backward_compatible_and_validates_each_account() {
 }
 
 #[tokio::test]
-async fn reserve_boundary_skips_account_and_cached_check_does_not_query_other_accounts() {
+async fn reserve_boundary_skips_account_and_all_availability_reads_are_cached() {
     let f = fixture().await;
     mount_usage(&f, 200, serde_json::to_value(usage(79.0, 0.0)).unwrap()).await;
     mount_response(&f, "b", success()).await;
@@ -211,7 +218,7 @@ async fn reserve_boundary_skips_account_and_cached_check_does_not_query_other_ac
         assert_eq!(response.1, f.ids[1]);
     }
     let requests = f.server.received_requests().await.unwrap();
-    assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 1);
+    assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 2);
     assert_eq!(requests.iter().filter(|r| r.method == "POST").count(), 2);
     assert_eq!(
         f.router.view().unwrap()["quotaStates"][0]["status"],
@@ -273,7 +280,7 @@ async fn unknown_quota_skips_account_and_coalesces_concurrent_queries() {
             .iter()
             .filter(|r| r.method == "GET")
             .count(),
-        1
+        2
     );
 }
 
@@ -313,11 +320,16 @@ async fn disabled_or_unselected_reserves_never_query_or_consume_unselected_accou
     f.config.save(&f.router.paths).unwrap();
     mount_response(&f, "b", success()).await;
     assert_eq!(send(&f).await.1, f.ids[1]);
-    assert_eq!(f.server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(f.server.received_requests().await.unwrap().len(), 2);
+    assert!(f.server.received_requests().await.unwrap().iter().all(|r| {
+        r.headers
+            .get("chatgpt-account-id")
+            .is_some_and(|h| h == "b")
+    }));
     f.config.enabled = false;
     f.config.save(&f.router.paths).unwrap();
     assert_eq!(send(&f).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(f.server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(f.server.received_requests().await.unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -621,7 +633,7 @@ async fn refreshed_quota_still_obeys_the_account_reserve() {
     let (status, id, _) = send(&f).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(id, f.ids[1]);
-    assert_eq!(f.server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(f.server.received_requests().await.unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -710,26 +722,28 @@ async fn temporary_account_tracks_baseline_and_retires_when_usage_limit_reached(
     assert!(r2.2.contains("TEMP_OK"));
 
     let after = SubscriptionConfig::load(&f.router.paths).unwrap();
-    assert_eq!(after.account_order, vec![f.ids[1].clone()]);
+    assert_eq!(after.account_order, f.ids);
+    assert!(after.account_priority.is_empty());
     assert!(!after.account_temporary.contains_key(&f.ids[0]));
 
     let view_after = f.router.view().unwrap();
-    assert_eq!(view_after["config"]["accountOrder"], json!([f.ids[1]]));
+    assert_eq!(view_after["config"]["accountOrder"], json!(f.ids));
     assert_eq!(
         view_after["quotaStates"][0]["status"],
         "temporary_completed"
     );
     assert_eq!(view_after["quotaStates"][0]["recordId"], f.ids[0]);
 
-    // Third request automatically skips retired temporary account and routes to b.
+    // Third request uses automatic scheduling; a still has the larger weekly score.
     mount_response(&f, "b", success()).await;
+    mount_response(&f, "a", success()).await;
     let r3 = send(&f).await;
     assert_eq!(r3.0, StatusCode::OK);
-    assert_eq!(r3.1, f.ids[1]);
+    assert_eq!(r3.1, f.ids[0]);
 
     // Re-adding manually resets baseline and clears completion notice.
     let mut readd = after;
-    readd.account_order.insert(0, f.ids[0].clone());
+    readd.account_priority.insert(0, f.ids[0].clone());
     readd.account_temporary.insert(
         f.ids[0].clone(),
         AccountTemporary {
@@ -879,11 +893,13 @@ async fn temporary_account_retired_before_send_if_usage_already_reached_limit() 
 
     mount_usage(&f, 200, serde_json::to_value(usage(15.0, 25.0)).unwrap()).await;
     mount_response(&f, "b", success()).await;
+    mount_response(&f, "a", success()).await;
     let response = send(&f).await;
     assert_eq!(response.0, StatusCode::OK);
-    assert_eq!(response.1, f.ids[1]);
+    assert_eq!(response.1, f.ids[0]);
     let after = SubscriptionConfig::load(&f.router.paths).unwrap();
-    assert_eq!(after.account_order, vec![f.ids[1].clone()]);
+    assert_eq!(after.account_order, f.ids);
+    assert!(after.account_priority.is_empty());
     assert!(!after.account_temporary.contains_key(&f.ids[0]));
 }
 
@@ -908,7 +924,8 @@ async fn temporary_account_retires_when_duration_minutes_expires() {
     );
     assert!(view["quotaStates"][0]["expiresAt"].as_i64().is_some());
 
-    // Time-only temporary mode sends without querying /usage.
+    // Time exits still check actual availability for scheduling.
+    mount_usage(&f, 200, serde_json::to_value(usage(20.0, 10.0)).unwrap()).await;
     mount_response(&f, "a", success()).await;
     let r1 = send(&f).await;
     assert_eq!(r1.0, StatusCode::OK);
@@ -921,7 +938,7 @@ async fn temporary_account_retires_when_duration_minutes_expires() {
             .iter()
             .filter(|r| r.method == "GET")
             .count(),
-        0
+        2
     );
 
     // Expire via view().
@@ -934,7 +951,7 @@ async fn temporary_account_retires_when_duration_minutes_expires() {
         .unwrap()
         .expires_at = Some(unix_now() as i64 - 1);
     let view_expired = f.router.view().unwrap();
-    assert_eq!(view_expired["config"]["accountOrder"], json!([f.ids[1]]));
+    assert_eq!(view_expired["config"]["accountOrder"], json!(f.ids));
     assert!(
         !view_expired["config"]["accountTemporary"]
             .as_object()
@@ -954,7 +971,7 @@ async fn temporary_account_retires_when_duration_minutes_expires() {
 
     // Re-add and verify expiry also triggers right before send().
     let mut next_cfg = SubscriptionConfig::load(&f.router.paths).unwrap();
-    next_cfg.account_order.insert(0, f.ids[0].clone());
+    next_cfg.account_priority.insert(0, f.ids[0].clone());
     next_cfg.account_temporary.insert(
         f.ids[0].clone(),
         AccountTemporary {
@@ -974,9 +991,10 @@ async fn temporary_account_retires_when_duration_minutes_expires() {
     mount_response(&f, "b", success()).await;
     let r2 = send(&f).await;
     assert_eq!(r2.0, StatusCode::OK);
-    assert_eq!(r2.1, f.ids[1]);
+    assert_eq!(r2.1, f.ids[0]);
     let after = SubscriptionConfig::load(&f.router.paths).unwrap();
-    assert_eq!(after.account_order, vec![f.ids[1].clone()]);
+    assert_eq!(after.account_order, f.ids);
+    assert!(after.account_priority.is_empty());
     assert!(!after.account_temporary.contains_key(&f.ids[0]));
 }
 
@@ -1048,7 +1066,8 @@ async fn temporary_account_retires_on_short_and_long_window_reset() {
     assert!(r2.2.contains("OK_RESET"));
 
     let after = SubscriptionConfig::load(&f.router.paths).unwrap();
-    assert_eq!(after.account_order, vec![f.ids[1].clone()]);
+    assert_eq!(after.account_order, f.ids);
+    assert!(after.account_priority.is_empty());
     assert!(!after.account_temporary.contains_key(&f.ids[0]));
     let view_after = f.router.view().unwrap();
     assert_eq!(

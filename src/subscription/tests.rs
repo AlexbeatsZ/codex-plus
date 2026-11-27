@@ -26,10 +26,11 @@ struct Fixture {
 }
 async fn fixture() -> Fixture {
     let temp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
     let paths = AccountPaths {
         codex_home: temp.path().join("home"),
         state_dir: temp.path().join("state"),
-        usage_endpoint: String::new(),
+        usage_endpoint: format!("{}/usage", server.uri()),
     };
     let vault = AccountVault::new(paths.clone());
     let ids = ["a", "b"]
@@ -49,9 +50,14 @@ async fn fixture() -> Fixture {
         proxy_url: String::new(),
         account_reserves: HashMap::new(),
         account_temporary: HashMap::new(),
+        ..Default::default()
     };
     config.save(&paths).unwrap();
-    let server = MockServer::start().await;
+    Mock::given(method("GET")).and(path("/usage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"rate_limit":{
+            "primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":unix_now()+3600},
+            "secondary_window":{"used_percent":20,"limit_window_seconds":604800,"reset_at":unix_now()+86400}
+        }}))).with_priority(100).mount(&server).await;
     let mut router = SubscriptionApi::new(paths);
     router.native_base = server.uri();
     router.refresh_url = format!("{}/oauth/token", server.uri());
@@ -62,6 +68,16 @@ async fn fixture() -> Fixture {
         ids,
         server,
     }
+}
+// Transport assertions count model, OAuth and generation requests separately from quota reads.
+async fn upstream_requests(f: &Fixture) -> Vec<wiremock::Request> {
+    f.server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() != "/usage")
+        .collect()
 }
 fn event(value: Value) -> String {
     format!("data: {value}\n\n")
@@ -123,7 +139,7 @@ async fn native_mobile_gateway_uses_three_channels_and_preserves_fork_history() 
         String::from_utf8_lossy(&output.stderr)
     );
     print!("{}", String::from_utf8_lossy(&output.stdout));
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     let posts: Vec<_> = requests.iter().filter(|r| r.method == "POST").collect();
     // Pool and matching native Responses relays both keep deferred tools.
     let code_mode = |r: &&wiremock::Request| {
@@ -249,7 +265,7 @@ async fn native_managed_parent_review_uses_pool_without_changing_reviewer_policy
             .contains("response.completed")
     );
     broker.shutdown().await;
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     assert_eq!(requests.len(), 1);
     let upstream: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(upstream["model"], AUTO_REVIEW_MODEL);
@@ -314,7 +330,7 @@ async fn spawned_child_of_pool_parent_uses_pool_not_the_login_account() {
         );
     }
     broker.shutdown().await;
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     assert_eq!(requests.len(), 2);
     for request in &requests {
         let upstream: Value = serde_json::from_slice(&request.body).unwrap();
@@ -365,7 +381,7 @@ async fn auto_review_uses_the_enabled_pool_from_both_broker_endpoints() {
         );
     }
     broker.shutdown().await;
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     assert_eq!(requests.len(), 2);
     for request in requests {
         let upstream: Value = serde_json::from_slice(&request.body).unwrap();
@@ -407,7 +423,7 @@ async fn auto_review_does_not_enable_a_disabled_pool_or_allow_other_hidden_model
         .unwrap();
     let error: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(error["error"]["code"], "pool_review_unavailable");
-    assert!(f.server.received_requests().await.unwrap().is_empty());
+    assert!(upstream_requests(&f).await.is_empty());
 }
 
 #[tokio::test]
@@ -526,7 +542,7 @@ async fn native_mcp_auto_review_preserves_allow_and_deny_for_pool_and_external_a
         print!("{}", String::from_utf8_lossy(&output.stdout));
     }
     broker.shutdown().await;
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     let reviews = requests
         .iter()
         .filter(|request| {
@@ -571,7 +587,7 @@ async fn uses_saved_order_and_forwards_full_tool_context() {
         json!([{"type":"function_call_output","call_id":"call-1","output":"previous tool result"}]);
     let r = f.router.responses(HeaderMap::new(), body, false).await;
     assert_eq!(r.status(), StatusCode::OK);
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     assert_eq!(requests.len(), 1);
     let b: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(b["model"], "gpt-test");
@@ -591,7 +607,7 @@ async fn quota_fails_over_and_next_request_skips_cooled_account() {
     mount(&f, "b", 200, success()).await;
     assert_eq!(send(&f).await.0, StatusCode::OK);
     assert_eq!(send(&f).await.0, StatusCode::OK);
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     assert_eq!(requests.len(), 3);
     assert!(f.router.cooling(&f.ids[0], "gpt-test"));
     assert!(!f.router.cooling(&f.ids[0], "other-model"));
@@ -622,7 +638,7 @@ async fn exhausted_account_without_reserves_is_retried_after_a_bounded_cooldown(
         .retry_at = unix_now() - 1;
     mount(&f, "a", 200, success()).await;
     assert_eq!(send(&f).await.0, StatusCode::OK);
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].headers.get("chatgpt-account-id").unwrap(), "a");
 }
@@ -644,7 +660,7 @@ async fn never_replays_after_tool_or_text_output_even_with_same_chunk_failure() 
     let (_, text) = send(&f).await;
     assert!(text.contains("write_file"));
     assert!(text.contains("response.failed"));
-    assert_eq!(f.server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(upstream_requests(&f).await.len(), 1);
     assert!(f.router.cooling(&f.ids[0], "gpt-test"));
 }
 #[tokio::test]
@@ -662,7 +678,7 @@ async fn unknown_429_or_permission_errors_do_not_rotate_or_leak_body() {
         let (actual, text) = send(&f).await;
         assert_eq!(actual.as_u16(), status);
         assert!(!text.contains("access-token-secret"));
-        assert_eq!(f.server.received_requests().await.unwrap().len(), 1);
+        assert_eq!(upstream_requests(&f).await.len(), 1);
     }
 }
 #[tokio::test]
@@ -677,7 +693,7 @@ async fn unfinished_stream_gets_explicit_failure_and_is_not_replayed() {
     .await;
     let (_, text) = send(&f).await;
     assert!(text.contains("upstream_stream_error"));
-    assert_eq!(f.server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(upstream_requests(&f).await.len(), 1);
 }
 #[tokio::test]
 async fn disabled_deleted_and_stateful_requests_cannot_escape_the_pool() {
@@ -694,7 +710,7 @@ async fn disabled_deleted_and_stateful_requests_cannot_escape_the_pool() {
     f.config.enabled = false;
     f.config.save(&f.router.paths).unwrap();
     assert_eq!(send(&f).await.0, StatusCode::NOT_FOUND);
-    assert!(f.server.received_requests().await.unwrap().is_empty());
+    assert!(upstream_requests(&f).await.is_empty());
     f.config.enabled = true;
     f.config.account_order = vec!["f".repeat(64)];
     assert!(f.config.save(&f.router.paths).is_err());
@@ -714,7 +730,7 @@ async fn exhausted_accounts_are_bounded_and_report_machine_readable_error() {
     let (status, text) = send(&f).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(text.contains("subscription_exhausted"));
-    assert_eq!(f.server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(upstream_requests(&f).await.len(), 2);
 }
 #[test]
 fn sse_handles_split_utf8_crlf_and_terminal_events() {
@@ -785,7 +801,7 @@ async fn current_live_session_is_never_refreshed_or_written() {
             .await
             .is_err()
     );
-    assert!(f.server.received_requests().await.unwrap().is_empty());
+    assert!(upstream_requests(&f).await.is_empty());
     assert_eq!(std::fs::read(f.router.paths.live_auth()).unwrap(), raw);
 }
 #[tokio::test]
@@ -793,7 +809,7 @@ async fn rejects_legacy_compact_and_exposes_native_pool_catalog_through_broker()
     let f = fixture().await;
     let r = f.router.responses(HeaderMap::new(), request(), true).await;
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
-    assert!(f.server.received_requests().await.unwrap().is_empty());
+    assert!(upstream_requests(&f).await.is_empty());
     let mut broker = crate::broker::start(
         0,
         crate::integrations::ApiIntegrations::with_subscription(
@@ -843,7 +859,7 @@ async fn previous_model_compaction_is_routed_only_on_the_subscription_endpoint()
         .unwrap();
     assert_eq!(compact.status(), StatusCode::OK);
     assert!(compact.text().await.unwrap().contains("response.completed"));
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     let sent: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(sent["model"], "gpt-test");
     assert_eq!(sent["input"], body["input"]);
@@ -875,7 +891,7 @@ async fn previous_model_compaction_is_routed_only_on_the_subscription_endpoint()
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
-    assert_eq!(f.server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(upstream_requests(&f).await.len(), 1);
     broker.shutdown().await;
 }
 
@@ -925,7 +941,7 @@ async fn native_inherited_history_compaction_and_pool_turn() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     assert_eq!(requests.len(), 2);
     let compact: Value = serde_json::from_slice(&requests[0].body).unwrap();
     let turn: Value = serde_json::from_slice(&requests[1].body).unwrap();
@@ -972,7 +988,7 @@ async fn second_401_skips_account_and_persists_rejection_across_models_and_confi
     assert_eq!(send(&f).await.0, StatusCode::OK);
     let new_router = SubscriptionApi::new(f.router.paths.clone());
     assert!(new_router.is_rejected_current(&f.ids[0]));
-    let requests = f.server.received_requests().await.unwrap();
+    let requests = upstream_requests(&f).await;
     assert_eq!(
         requests
             .iter()
@@ -1061,10 +1077,10 @@ async fn discovery_renews_once_after_401_and_preserves_model_settings() {
         .await;
     f.config.models[0].display_name = "My alias".into();
     f.config.models[0].visible = false;
-    let view = f.router.discover(f.config).await.unwrap();
+    let view = f.router.discover(f.config.clone()).await.unwrap();
     assert_eq!(view["models"][0]["displayName"], "My alias");
     assert_eq!(view["models"][0]["visible"], false);
-    assert_eq!(f.server.received_requests().await.unwrap().len(), 3);
+    assert_eq!(upstream_requests(&f).await.len(), 3);
 }
 
 #[tokio::test]
@@ -1143,7 +1159,7 @@ async fn manual_switch_waits_for_rotating_refresh_and_uses_renewed_credentials()
             .await
     });
     for _ in 0..100 {
-        if !f.server.received_requests().await.unwrap().is_empty() {
+        if !upstream_requests(&f).await.is_empty() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
